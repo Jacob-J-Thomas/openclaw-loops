@@ -1,8 +1,20 @@
 # Local verification
 
+## Alpha.9 theme and Advanced-settings verification
+
+Both isolated Gateways now run **1.0.0-alpha.9**, tarball SHA-256 `9430a9c85cff87eb1e60aa3443fe9bf0bbc96ca0c947343f17e7ccc2d7581052`. Their backend, worker and native UI hashes match the artifact. Backend and worker bytes are unchanged from alpha.7. The theme changes passed the full **115-test** source check and build as alpha.8; the final placeholder-only follow-up passed a fresh build and **21 extracted-package SDK tests** as alpha.9. Evidence: `evidence/release-alpha8/` and `evidence/release-alpha9/`.
+
+Browser testing reproduced the original defect: OpenClaw was set to Light while Loops remained dark. The native page now inherits the host's resolved color scheme without reading private host state or maintaining another preference. Both explicit Light and Dark modes were verified, including canvas controls, the inference inspector and Advanced capability explanations. The original System selection and normal viewport were restored afterward.
+
+The rendered-text sample contained 133 elements, with minimum contrast **4.92:1** in Light and **6.43:1** in Dark after expanding the version controls. An initial dark probe included closed disclosure descendants with stale computed background colors; its apparent failures were checked against the actual expanded controls and did not reproduce. That diagnostic probe is retained separately from `dark-contrast-expanded.json`. These measurements cover sampled text, not a complete accessibility audit.
+
+Advanced placeholders were a separate confirmed issue. The installed follow-up measures **5.59:1** in Light and **6.99:1** in Dark. Empty controls still inherit the host settings; this display repair does not change requested generation parameters. Temperature and output tokens remain advisory on the pinned completion API, while top_p, penalties and other unavailable controls retain explicit explanations.
+
+Full stopped-state backups are retained under `.dev-profile/backups/before-alpha8-1789187521776` and `.dev-profile/backups/before-alpha9-1789188293193`. Every definition and run record remained byte-for-byte unchanged through both upgrades; both stores pass integrity checks at schema 2. No model-server or personal-profile changes were made. Full screen-reader/browser/device acceptance and the remaining release and expansion work are still open.
+
 ## Alpha.7 actionable errors and authoring verification
 
-The alpha.7 artifact passed **115 source tests** on macOS under Node **24.16.0** and **26.1.0**, typecheck, lint, both builds, and **21 extracted-package tests through the actual OpenClaw feature SDK**. Tarball SHA-256: `9221e5d68bcaf4d741875cc4c241cc07565fce43b68f03cba0885e9596d220bc`. Both isolated Gateways successfully launched the package; installed backend, worker and native UI hashes match the tarball. Evidence: `evidence/release-alpha7/`. Subsequent documentation changes are separate from the packaged artifact.
+The alpha.7 artifact passed **115 source tests** on macOS under Node **24.16.0** and **26.1.0**, typecheck, lint, both builds, and **21 extracted-package tests through the actual OpenClaw feature SDK**. Tarball SHA-256: `9221e5d68bcaf4d741875cc4c241cc07565fce43b68f03cba0885e9596d220bc`. Both isolated Gateways successfully launched the package at this checkpoint; installed backend, worker and native UI hashes match the tarball. Evidence: `evidence/release-alpha7/`. Subsequent documentation changes are separate from the packaged artifact.
 
 A stopped-state backup is retained at `.dev-profile/backups/before-alpha7-1789186695156`. The upgrade preserved every definition and run record byte-for-byte (Codex: 9 definitions including one archived/deleted record, 124 runs; Ollama: 6 definitions, 24 runs); both SQLite integrity checks passed at schema 2. No model-server or personal-profile changes were made.
 
