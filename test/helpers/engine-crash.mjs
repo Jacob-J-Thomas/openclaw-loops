@@ -31,6 +31,9 @@ function matches(run){
 const storage={read:()=>store.read(),close:()=>store.close(),write(state){
   store.write(state);
   if(armed)for(const run of Object.values(state.runs))if(matches(run))pause(run);
+},writeRun(run){
+  store.writeRun(run);
+  if(armed&&matches(run))pause(run);
 }};
 const host={check:()=>{},modelInfo:async()=>({}),complete:async()=>{
   appendFileSync(effects,'original inference completed\n',{flush:true});

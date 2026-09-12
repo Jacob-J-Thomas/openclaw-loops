@@ -16,7 +16,7 @@ export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'run
 export type Run={id:string;requestKey:string;requestFingerprint:string;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
-export interface Storage{read():State|undefined;write(state:State):void;close?():void|Promise<void>}
+export interface Storage{read():State|undefined;write(state:State):void;writeRun?(run:Run):void;close?():void|Promise<void>}
 export class FileStorage implements Storage{
   constructor(private file:string){}
   read(){return existsSync(this.file)?JSON.parse(readFileSync(this.file,'utf8')) as State:undefined;}
@@ -71,9 +71,9 @@ export class Engine{
     }
     this.persist();
   }
-  private persist(){
+  private persist(run?:Run){
     if(this.storageFailure)throw this.storageFailure;
-    try{this.storage.write(this.state);}catch(error){
+    try{if(run&&this.storage.writeRun)this.storage.writeRun(run);else this.storage.write(this.state);}catch(error){
       try{
         const committed=this.storage.read();
         if(committed){
@@ -194,7 +194,7 @@ export class Engine{
     const checkedInput=validateInput(definition,input,this.budgets);
     const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
     if(draft)run.testMode=true;
-    this.state.runs[run.id]=run;this.persist();return this.dispatch(actor,run);
+    this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
   async retry(actor:Actor,id:string,mode:'checkpoint'|'retry-node'|'restart',requestId:string){
     const previous=this.own(actor,id);if(!['failed','interrupted','cancelled'].includes(previous.state))throw requestError('Only failed, interrupted or cancelled runs can be recovered.');
@@ -207,15 +207,15 @@ export class Engine{
     const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
     delete run.error;delete run.errorDetail;delete run.uncertainty;delete run.pending;delete run.result;delete run.cleanupPending;
     if(mode==='restart'){run.outputs={};run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;}else delete run.outputs[run.cursor];
-    this.state.runs[run.id]=run;this.persist();return this.dispatch(actor,run);
+    this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
-  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;r.cursor=this.next(r,r.cursor,'next');this.persist();return this.dispatch(actor,r);}
+  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;r.cursor=this.next(r,r.cursor,'next');this.persist(r);return this.dispatch(actor,r);}
   async review(actor:Actor,id:string,decision:'approve'|'reject'){
     this.ensureHuman(actor);const r=this.own(actor,id);if(r.state!=='review')throw requestError('Run is not awaiting human review.');this.allowedRun(actor,r);
     r.review={decision,at:now(),requester:actor.requester??'authenticated-operator'};const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;
-    r.outputs[r.cursor]={decision};r.cursor=this.next(r,r.cursor,decision);this.persist();return this.dispatch(actor,r);
+    r.outputs[r.cursor]={decision};r.cursor=this.next(r,r.cursor,decision);this.persist(r);return this.dispatch(actor,r);
   }
-  cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return this.status(actor,id);r.state='cancelled';this.queued.delete(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist();return this.status(actor,id);}
+  cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return this.status(actor,id);r.state='cancelled';this.queued.delete(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist(r);return this.status(actor,id);}
   async close(){
     this.closing=true;this.queued.clear();
     try{
@@ -227,7 +227,7 @@ export class Engine{
     }
   }
   private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw new Error(`Missing ${port} edge from ${id}.`);return next;}
-  private checkpoint(r:Run){r.updatedAt=now();this.persist();}
+  private checkpoint(r:Run){r.updatedAt=now();this.persist(r);}
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}
   private drain(){if(this.closing)return;for(const [id,actor] of this.queued){if(this.occupied()>=(this.options.concurrency??1))break;this.queued.delete(id);const run=this.state.runs[id];if(run?.state==='queued')void this.dispatch(actor,run).catch(()=>{});}}
   private trackPhysical(id:string,promise:Promise<unknown>){const pending=this.physical.get(id)??new Set();pending.add(promise);this.physical.set(id,pending);const run=this.state.runs[id];const cleanup=()=>{pending.delete(promise);if(!pending.size){this.physical.delete(id);if(run.cleanupPending){run.cleanupPending=false;if(!this.closing)this.checkpoint(run);}this.drain();}};void promise.then(cleanup,cleanup).catch(()=>{});}

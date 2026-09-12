@@ -29,6 +29,13 @@ jobs:
         run: node scripts/verify-package.mjs
         env:
           LOOPS_EVIDENCE_DIR: evidence/ci
+      - name: Verify recovery from a full filesystem
+        if: runner.os == 'Linux'
+        run: |
+          loop_fault_dir=$(mktemp -d)
+          trap 'sudo umount "$loop_fault_dir"; rmdir "$loop_fault_dir"' EXIT
+          sudo mount -t tmpfs -o size=16m,mode=0777 tmpfs "$loop_fault_dir"
+          node scripts/verify-filesystem-full.mjs "$loop_fault_dir" evidence/ci/filesystem-full.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:

@@ -45,9 +45,11 @@ let cached;
 try{if(!startupError)cached=read();}
 catch(error){startupError=error instanceof Error?error.message:String(error);}
 if(startupError){try{database?.close();}catch{/* Preserve the original startup failure. */}}
-function write(next){
+function write(next,runId){
+  const runOnly=runId!==undefined;
   database.exec('BEGIN IMMEDIATE');
   try{
+    if(!runOnly){
     database.prepare("INSERT INTO metadata VALUES ('version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(next.version));
     for(const [id,record] of Object.entries(next.loops)){
       if(JSON.stringify(record)===JSON.stringify(cached?.loops[id]))continue;
@@ -61,7 +63,8 @@ function write(next){
       }
     }
     for(const id of Object.keys(cached?.loops??{}))if(!next.loops[id])database.prepare('DELETE FROM loops WHERE id=?').run(id);
-    for(const [id,run] of Object.entries(next.runs)){
+    }
+    for(const [id,run] of runOnly?[[runId,next.runs[runId]]]:Object.entries(next.runs)){
       const previous=cached?.runs[id];
       if(JSON.stringify(run)===JSON.stringify(previous))continue;
       const owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
@@ -80,6 +83,7 @@ function write(next){
       }
       if(!previous||previous.state!==run.state)database.prepare('INSERT INTO events(run_id,state,at) VALUES (?,?,?)').run(id,run.state,run.updatedAt);
     }
+    if(!runOnly){
     for(const [key,retired] of Object.entries(next.retiredAdmissions??{})){
       const admission=database.prepare('SELECT run_id,fingerprint FROM admissions WHERE request_key=?').get(key);
       if(admission&&(admission.run_id!==retired.runId||admission.fingerprint!==retired.fingerprint))throw new Error('Retired admission identity conflict.');
@@ -94,6 +98,7 @@ function write(next){
       if(!next.retiredAdmissions?.[cached.runs[id].requestKey])throw new Error('History removal requires a retained admission identity.');
       for(const table of ['attempts','outputs','events'])database.prepare(`DELETE FROM ${table} WHERE run_id=?`).run(id);
       database.prepare('DELETE FROM runs WHERE id=?').run(id);
+    }
     }
     database.exec('COMMIT');cached=next;
   }catch(error){
@@ -116,6 +121,11 @@ parentPort.on('message',async message=>{
     switch(message.operation){
       case 'read':result=read();break;
       case 'write':write(message.payload);break;
+      case 'write-run':{
+        if(!cached)throw new Error('Initialize the Loops store before writing an execution checkpoint.');
+        const run=message.payload;
+        write({...cached,runs:{...cached.runs,[run.id]:run}},run.id);break;
+      }
       case 'backup':await backup(database,message.payload);result=message.payload;break;
       case 'integrity':result=database.prepare('PRAGMA integrity_check').all();break;
       case 'close':database.exec('PRAGMA wal_checkpoint(TRUNCATE)');database.close();break;

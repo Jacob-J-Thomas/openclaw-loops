@@ -2,7 +2,7 @@ import {MessageChannel,receiveMessageOnPort,Worker,type MessagePort} from 'node:
 import {copyFileSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync,chmodSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import type {Storage,State} from './engine.js';
+import type {Storage,State,Run} from './engine.js';
 import {parseDefinition} from './graph.js';
 import {defaultBudgets} from './budgets.js';
 // Policy changes must never make already-saved version 2 evidence unreadable.
@@ -121,6 +121,9 @@ export class SqliteStorage implements Storage{
   }
   read(){const result=this.call<State|undefined>('read');return result?validateState(result):undefined;}
   write(state:State){this.call('write',state);}
+  // Execution checkpoints send only their changed run. Authoring, migration and
+  // retention still use one whole-state transaction for their coordinated edits.
+  writeRun(run:Run){this.call('write-run',run);}
   backup(destination:string){return this.call<string>('backup',destination);}
   integrity(){return this.call<unknown>('integrity');}
   close():Promise<void>{

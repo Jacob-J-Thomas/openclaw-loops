@@ -1,6 +1,6 @@
 # Deployment and lifecycle
 
-This is an unreleased alpha. The supported host contract is OpenClaw 2026.9.3; local source evidence covers macOS with Node 24.16.0 and 26.1.0. The workflow tests macOS/Linux and both Node versions when run in GitHub. A workflow file alone is not compatibility evidence.
+This is an unreleased alpha. The supported host contract is OpenClaw 2026.9.3; local source and package evidence covers macOS and a Linux arm64 VM with Node 24.16.0 and 26.1.0. Compiled package files match across those platforms. The GitHub workflow is configured for macOS/Linux and both Node versions but has not run; native x64 and hosted CI remain unverified.
 
 ## Individual
 
@@ -43,7 +43,9 @@ The complete PID marker is published atomically. The lease makes modern stale-ma
 
 Restart preserves committed outputs, waits, human decisions and admission identities. Incomplete attempts remain inspectable and require explicit recovery. A stale `cleanupPending` flag from the stopped process is cleared while its uncertain external outcome remains recorded; clearing that flag does not claim an external provider call was cancelled successfully. No unknown call is automatically replayed.
 
-Tests kill disposable real storage/engine processes at ownership, transaction and execution boundaries. The full-database fixture uses SQLite's page-count limit to produce `SQLITE_FULL`; it does not fill the device filesystem. Actual filesystem exhaustion, OS power loss and remote provider cancellation remain separate acceptance work.
+Tests kill disposable real storage/engine processes at ownership, transaction and execution boundaries. The full-database fixture uses SQLite's page-count limit to produce `SQLITE_FULL`. A separate alpha.11 check fills a disposable 16 MB Linux tmpfs until `ENOSPC`, verifies admission rejects before any host effect with committed data unchanged, then frees space and proves recovery with a fresh explicit request on Node 24 and 26. It refuses non-tmpfs, nonempty or larger fault volumes. The Mac's filesystem is never filled. OS power loss, APFS exhaustion and remote provider cancellation remain separate acceptance work.
+
+Alpha.11 execution checkpoints transfer and update only their changed run, preserving the same SQLite transaction and acknowledgement boundary. Authoring, startup/migration and explicit history removal still commit coordinated whole-state changes. The worker and engine still retain complete state at startup; lazy history loading and asynchronous commit barriers remain scalability work. A twelve-run synthetic benchmark with 1,000 retained runs (about 90.6 MB serialized) reduced mean loop execution time from 884 ms to 2.6 ms, with observed RSS falling from 3.3 GB to 1.3 GB. This measures local deterministic execution and storage, not model latency or a production capacity guarantee.
 
 ## Rollback
 

@@ -12,6 +12,47 @@ afterEach(async()=>{for(const cleanup of cleanups.splice(0).reverse())await clea
 function setup(){const directory=mkdtempSync(join(tmpdir(),'loops-sqlite-'));cleanups.push(()=>rmSync(directory,{recursive:true,force:true}));const filename=join(directory,'loops.sqlite');return {directory,filename};}
 const initial=():State=>({version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}});
 describe('plugin-owned SQLite worker',()=>{
+  it('commits execution checkpoints without retransmitting or rewriting retained history',async()=>{
+    const {filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());
+    const actor:Actor={agentId:'main',sessionKey:'agent:main:checkpoint-history',sessionId:'history-session',source:'tool',human:false,check:()=>{}};
+    const engine=new Engine(store,{check:()=>{},modelInfo:async()=>({}),complete:async()=>({text:'Synthetic output '.repeat(1000)})});
+    const definition={...structuredClone(examples[0]),schemaVersion:2 as const,limits:{maxExecutions:20,maxOutputBytes:100000}};
+    const previous=await engine.test(actor,definition,{text:'Retained history'},'retained');
+    const retained=store.read()!;
+    const writes=vi.spyOn(store,'write');
+    const post=Worker.prototype.postMessage,requests:Array<{operation:string;payload:unknown}>=[];
+    const messages=vi.spyOn(Worker.prototype,'postMessage').mockImplementation(function(this:Worker,message,transfers){requests.push(message);return post.call(this,message,transfers);});
+    let completed;
+    try{
+      completed=await engine.test(actor,definition,{text:'New execution'},'fresh');
+      expect(completed.state).toBe('completed');expect(writes).not.toHaveBeenCalled();
+      expect(requests.length).toBeGreaterThan(1);
+      expect(requests.every(request=>request.operation==='write-run')).toBe(true);
+      expect(requests.every(request=>!JSON.stringify(request.payload).includes(previous.id))).toBe(true);
+    }finally{messages.mockRestore();writes.mockRestore();}
+    const saved=store.read()!;
+    expect(saved.loops).toEqual(retained.loops);expect(saved.runs[previous.id]).toEqual(retained.runs[previous.id]);
+    expect(saved.runs[completed.id]).toEqual(completed);
+    const inspection=new DatabaseSync(filename,{readOnly:true});
+    try{
+      expect(inspection.prepare('SELECT count(*) AS count FROM attempts WHERE run_id=?').get(completed.id)?.count).toBe(completed.trace.length);
+      expect(inspection.prepare('SELECT count(*) AS count FROM outputs WHERE run_id=?').get(completed.id)?.count).toBe(Object.keys(completed.outputs).length);
+      expect(inspection.prepare('SELECT run_id FROM admissions WHERE request_key=?').get(completed.requestKey)?.run_id).toBe(completed.id);
+    }finally{inspection.close();}
+    await engine.close();
+    const reopened=new SqliteStorage(filename);cleanups.push(()=>reopened.close());expect(reopened.read()).toEqual(saved);
+  });
+  it('rolls back a conflicting run-only admission and retains the previously committed cache',async()=>{
+    const {filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());
+    const actor:Actor={agentId:'main',sessionKey:'agent:main:checkpoint-conflict',sessionId:'conflict-session',source:'tool',human:false,check:()=>{}};
+    const engine=new Engine(store,{check:()=>{},modelInfo:async()=>({}),complete:async()=>({text:'Committed output'})});
+    const run=await engine.test(actor,examples[0],{text:'Original'},'same-admission'),before=store.read();
+    expect(()=>store.writeRun({...run,id:'conflicting-run'})).toThrow(/Admission identity conflict/);
+    expect(store.read()).toEqual(before);
+    const next=await engine.test(actor,examples[0],{text:'After rejection'},'new-admission');expect(next.state).toBe('completed');
+    expect(store.read()?.runs[run.id]).toEqual(run);expect(store.read()?.runs['conflicting-run']).toBeUndefined();
+    expect(store.integrity()).toEqual([{integrity_check:'ok'}]);await engine.close();
+  });
   it('keeps returned and persisted run outcomes consistent after SQLite rejects completion',async()=>{
     const {filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());
     const actor:Actor={agentId:'main',sessionKey:'agent:main:commit-fault',sessionId:'fault-session',source:'tool',human:false,check:()=>{}};
