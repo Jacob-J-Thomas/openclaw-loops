@@ -18,10 +18,10 @@ export function storageError(error:unknown):unknown{
   }else if(native===5||native===6){
     code='LOOPS_STORAGE_BUSY';message='Loops storage is busy or locked.';
     recovery='Wait for the existing storage operation or stop the competing owner. Do not remove a live lock; explicitly retry after ownership is resolved.';
-  }else if(native===8||native===14||os==='EACCES'||os==='EPERM'||os==='EROFS'){
+  }else if(native===8||native===14||['EACCES','EPERM','EROFS','ENOENT','ENOTDIR','EISDIR','EEXIST'].includes(os??'')){
     code='LOOPS_STORAGE_ACCESS';message='Loops cannot access writable profile storage.';
     recovery='Check the profile volume, directory permissions and read-only status, then restart the plugin and inspect recovered runs.';
-  }else if(native===10){
+  }else if(native===10||os==='EIO'){
     code='LOOPS_STORAGE_IO';message='The profile volume reported a storage I/O failure.';
     recovery='Check volume health and restart the plugin. Verify recovered state before retrying any operation with an uncertain outcome.';
   }else if(native===11||native===26){

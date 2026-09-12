@@ -112,6 +112,19 @@ The alpha already implements substantial parts of these packages. Continue from 
 
 P0 and independent P2/P4 work can proceed while upstream contracts are reviewed. P3 adoption depends on P1 and actual upstream releases. P5/P6 cannot waive missing authority or settings contracts by narrowing the agreed 1.0 requirements silently. There is no promise that upstream will accept a particular design or release date.
 
+### Work available before upstream contributions
+
+Continue these plugin-owned packages against the pinned, unmodified OpenClaw release. They do not require an OpenClaw issue or PR to begin:
+
+| Work | Next acceptance evidence |
+|---|---|
+| Transport storage failures (R05/R07/R16) | Safe errors and recovery through uploads, snapshots, UI, commands and tools; committed files survive partial writes, damaged records and actual filesystem exhaustion. This is the first independent hardening item. |
+| Persistence, cleanup and resource hardening (R07/R11–R16) | Further crash/backup-restoration and bounded workload tests; reduce synchronous storage barriers; design explicit document/staging maintenance while preserving active work and referenced evidence. No automatic deletion until configured. |
+| Editor and interface quality (R17/R19–R23) | Remaining keyboard and screen-reader journeys, responsive/browser coverage, conflict/draft recovery and complete-output journeys through the existing public adapters. Host identity and delivery gaps remain separately tracked. |
+| Packaging and deployment preparation (R24/R25) | Repeatable ordinary plugin installation, upgrade/rollback and uninstall/reinstall; sustained resource tests and platform CI; current artifact documentation and ClawHub dry run. Full team/customer authority acceptance and stable publication still depend on the required released host contracts. |
+
+Keep each result tied to its tested source/package. Fixture tests for unavailable host contracts are design evidence; they do not substitute for P3 adoption or final release acceptance.
+
 ### Upstream execution order
 
 1. Qualify the current installed release and current upstream release without changing either personal profile. `disableTools` already exists in 2026.9.3 and 2026.9.4; test its semantics before proposing another implementation for #122172. Retain the current single-completion node semantics even if a host-owned durable runner is used internally.

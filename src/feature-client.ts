@@ -19,6 +19,7 @@ export function createLoopsClient(host: FeatureTransport): Pick<FeatureClient<ty
         while (true) {
           const page = textPage(text, offset), complete = page.nextOffset === null;
           const uploaded = await wire.invoke('upload', {uploadId, offset, text: page.text, complete, ...complete ? {sha256} : {}}, options);
+          if (Value.Check(OperationFailureSchema, uploaded)) throw new LoopError(uploaded.error);
           if (complete) { payload[field] = uploaded.reference; break; }
           offset = page.nextOffset!;
         }
@@ -32,6 +33,7 @@ export function createLoopsClient(host: FeatureTransport): Pick<FeatureClient<ty
       let text = '', offset = 0;
       while (true) {
         const page = await wire.invoke('document', {documentId: reference.documentId, offset}, options);
+        if (Value.Check(OperationFailureSchema, page)) throw new LoopError(page.error);
         if (page.offset !== offset || page.sha256 !== reference.sha256 || page.nextOffset !== null && page.nextOffset <= offset) throw new Error('Document page identity or sequence changed.');
         text += page.text;
         if (page.nextOffset === null) break;

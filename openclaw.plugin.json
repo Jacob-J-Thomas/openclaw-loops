@@ -1,7 +1,7 @@
 {
   "id": "loops-poc",
   "name": "Loops",
-  "version": "1.0.0-alpha.16",
+  "version": "1.0.0-alpha.17",
   "description": "Inspectable, bounded loops shared by native UI and chat.",
   "activation": {
     "onStartup": true
@@ -56,7 +56,7 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/bf02b0a43cea88fb8be922675d00cbafa752a0cf9e00f0e0a04745b472f90862/index.js"
+    "entry": "dist/control-ui/102e2c2e35b8afab4bc1428575fdf986e0ea21f5cfac5811cf6d3149ee92bd31/index.js"
   },
   "contracts": {
     "tools": [

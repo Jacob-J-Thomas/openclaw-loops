@@ -1,5 +1,5 @@
 import {afterEach,describe,it,expect,vi} from 'vitest';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,renameSync,readFileSync,writeFileSync,readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
@@ -188,6 +188,65 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       const recovery=await s.tools.find(tool=>tool.name==='loops_run')!.execute('storage-recovered',{slug:'summarize-text',input:{text:'Explicit new request'}});
       expect(recovery.details).toMatchObject({state:'completed'});expect(s.complete).toHaveBeenCalledOnce();
     }finally{fault.close();}
+  });
+  it('reports inaccessible transport storage through UI, tools and commands and stops automatic upload before mutation',async()=>{
+    const s=setup(),before=await s.action('library',{}),directory=join(s.root,'loops-poc','documents'),backup=directory+'-before-fault';
+    renameSync(directory,backup);writeFileSync(directory,'Private filesystem fault marker');
+    const calls:string[]=[],transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
+      calls.push(params.actionId as string);return s.action(params.actionId as string,params.payload as Record<string,unknown>);
+    }} as FeatureTransport;
+    const input={uploadId:'inaccessible',offset:0,text:'{}',complete:true,sha256:createHash('sha256').update('{}').digest('hex')};
+    try{
+      const ui=await s.action('upload',input),tool=await s.tools.find(tool=>tool.name==='loops_upload')!.execute('inaccessible-tool',input);
+      const command=await s.commands.get('loops')!.handler({...s.commandContext,args:`upload ${JSON.stringify(input)}`});
+      expect(ui).toMatchObject({result:{kind:'loops-error',operation:'upload',error:{code:'LOOPS_STORAGE_ACCESS',phase:'storage',recovery:expect.stringMatching(/permissions/)}}});
+      expect(tool.details).toMatchObject({kind:'loops-error',operation:'upload',error:{code:'LOOPS_STORAGE_ACCESS'}});
+      expect(command.text).toContain('LOOPS_STORAGE_ACCESS');expect(command.text).toContain('permissions');
+      expect(JSON.stringify([ui,tool,command])).not.toContain(s.root);expect(JSON.stringify([ui,tool,command])).not.toContain('Private filesystem fault marker');
+      await expect(createLoopsClient(transport).invoke('edit',{id:'summarize-text',expectedRevision:1,changes:{description:'x'.repeat(70000)}})).rejects.toMatchObject({detail:{code:'LOOPS_STORAGE_ACCESS'}});
+      expect(calls).toEqual(['upload']);expect(s.complete).not.toHaveBeenCalled();
+    }finally{rmSync(directory);renameSync(backup,directory);}
+    expect(await s.action('library',{})).toEqual(before);
+    expect(await s.action('upload',input)).toMatchObject({result:{completed:true,reference:{$loopsUpload:expect.any(String)}}});
+  });
+  it('retains a page-read failure through the UI client and document adapters without returning partial content',async()=>{
+    const s=setup(),directory=join(s.root,'loops-poc','documents'),calls:string[]=[];
+    let damage=false,filename='',saved='';
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
+      calls.push(params.actionId as string);
+      const payload=params.payload as Record<string,unknown>;
+      if(damage&&params.actionId==='document'&&Number(payload.offset)>0){
+        filename=join(directory,`document-${payload.documentId}.json`);saved=readFileSync(filename,'utf8');writeFileSync(filename,'{private damaged snapshot');damage=false;
+      }
+      return s.action(params.actionId as string,payload);
+    }} as FeatureTransport;
+    const client=createLoopsClient(transport),large='x'.repeat(70000),definition={...structuredClone(examples[0]),schemaVersion:2 as const,revision:1};
+    definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:large}];
+    definition.edges=[{id:'edge',source:'input',target:'return',port:'next'}];definition.capabilities=[];
+    await client.invoke('save',{definition,expectedRevision:1});calls.length=0;damage=true;
+    try{
+      await expect(client.invoke('load',{id:definition.id})).rejects.toMatchObject({detail:{code:'LOOPS_DOCUMENT_CORRUPT',phase:'storage'}});
+      expect(calls).toEqual(['load','document','document']);
+      const documentId=filename.slice(filename.lastIndexOf('document-')+9,-5),input={documentId,offset:16000};
+      const ui=await s.action('document',input),tool=await s.tools.find(tool=>tool.name==='loops_document')!.execute('damaged-document',input);
+      const command=await s.commands.get('loops')!.handler({...s.commandContext,args:`document ${JSON.stringify(input)}`});
+      expect(ui).toMatchObject({result:{kind:'loops-error',operation:'document',error:{code:'LOOPS_DOCUMENT_CORRUPT'}}});
+      expect(tool.details).toMatchObject({kind:'loops-error',operation:'document',error:{code:'LOOPS_DOCUMENT_CORRUPT'}});
+      expect(command.text).toContain('LOOPS_DOCUMENT_CORRUPT');expect(command.text).toContain('Preserve');
+      expect(JSON.stringify([ui,tool,command])).not.toContain('private damaged snapshot');expect(JSON.stringify([ui,tool,command])).not.toContain(s.root);
+      expect(readFileSync(filename,'utf8')).toBe('{private damaged snapshot');
+    }finally{if(filename)writeFileSync(filename,saved);}
+    expect((await client.invoke('load',{id:definition.id})).definition.nodes[1]).toMatchObject({value:large});expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('reports upload validation conflicts consistently and preserves the previously staged value',async()=>{
+    const s=setup(),input={uploadId:'conflict',offset:0,text:'{}'};await s.action('upload',input);
+    const changed={...input,text:'[]'},ui=await s.action('upload',changed),tool=await s.tools.find(tool=>tool.name==='loops_upload')!.execute('upload-conflict',changed);
+    const command=await s.commands.get('loops')!.handler({...s.commandContext,args:`upload ${JSON.stringify(changed)}`});
+    expect(ui).toMatchObject({result:{kind:'loops-error',operation:'upload',error:{code:'LOOPS_UPLOAD_CONFLICT'}}});
+    expect(tool.details).toMatchObject({kind:'loops-error',operation:'upload',error:{code:'LOOPS_UPLOAD_CONFLICT'}});expect(command.text).toContain('LOOPS_UPLOAD_CONFLICT');
+    expect(await s.action('upload',{...input,complete:true,sha256:createHash('sha256').update(input.text).digest('hex')})).toMatchObject({result:{completed:true}});
+    const files=readdirSync(join(s.root,'loops-poc','documents'));expect(files.filter(name=>name.endsWith('.tmp'))).toEqual([]);expect(files.filter(name=>name.startsWith('document-'))).toHaveLength(1);
+    expect(s.complete).not.toHaveBeenCalled();
   });
   it('keeps provider credentials out of results and persisted history while identifying the failed node model',async()=>{
     const s=setup(),nodes=structuredClone(examples[0].nodes),node=nodes[1];

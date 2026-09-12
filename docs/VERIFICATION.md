@@ -2,9 +2,19 @@
 
 Current scope is the [standalone 1.0 delivery plan](DELIVERY_PLAN.md), revised September 12, 2026. Expansion families are deferred. Public GitHub source/history publication is now authorized; references to pending authorization in older entries describe their historical checkpoint and no longer apply. The [current status](DELIVERY_STATUS.md) records publication and release gates separately.
 
+## Alpha.17 transport storage hardening
+
+This independent plugin change uses the existing OpenClaw **2026.9.3** API. It does not require an upstream contribution. The full **181 source tests**, typecheck, lint and build pass on macOS arm64 / Node **24.16.0**. Package and hosted platform results are separate gates; consult the exact commit's [Verify plugin run](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/workflows/verify.yml).
+
+Seven new storage regression cases reproduce partial disk-full writes, a failed completion-marker rename after a snapshot committed, access/I/O read failures, malformed JSON and record shapes, reuse of a corrupt snapshot, and invalid final JSON. Failed writes preserve committed staging, remove their own temporary file when possible, and allow explicit recovery. Corrupt files stay available for diagnosis. These injected filesystem failures are deterministic evidence, not power-loss or physical-media qualification.
+
+Three new actual public SDK adapter journeys cover inaccessible transport storage, corruption between result pages and upload conflicts. UI, commands and agent tools retain the same safe error/recovery data. The UI stops before submitting an operation whose upload failed and does not return partial content after a page failure. The adapter fixtures use real temporary files and the published OpenClaw SDK with a fake model transport; no model call occurs in these failure journeys.
+
+The Linux-only filesystem-full script now also rejects uploads and snapshots on an actual full, dedicated 16 MiB tmpfs, verifies committed files and readable existing results, checks failed temporary-file cleanup, and completes an identical explicit upload retry after freeing space and reopening storage. Adding the script is not a passing Linux result; hosted CI reports its execution for each exact commit. Existing alpha.16 live model/browser receipts below remain tied to their original installed artifact.
+
 ## Alpha.16 editor Undo and draft recovery
 
-Both isolated Gateways run **1.0.0-alpha.16** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest match archive SHA-256 `df5b31c0569e999252542060847f53be42ba14767f59d839aa7c1a7ba0f5f4ee`. This documentation update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha16/`.
+At this checkpoint, both isolated Gateways ran **1.0.0-alpha.16** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest matched archive SHA-256 `df5b31c0569e999252542060847f53be42ba14767f59d839aa7c1a7ba0f5f4ee`. This documentation update followed packaging and is separate from executable identity. Evidence is under `evidence/release-alpha16/`.
 
 The preceding browser check reproduced an authoring defect: Reset followed by Undo restored the two saved Advanced overrides but left the editor marked dirty, Run disabled, and an obsolete local recovery draft. The editor now derives unsaved changes from the current definition and its saved base, ignoring JSON object-key ordering while preserving explicit zero. Undo to the base removes only the recovery snapshot last written by that editor; an existing or newer snapshot from another view stays recoverable. New definitions still have unsaved changes. This is optimistic browser draft preservation, not an atomic multi-tab collaboration protocol.
 

@@ -5,7 +5,7 @@ import { contract } from './contract.js';
 import {wireContract, uploadFields, UploadReferenceSchema} from './wire-contract.js';
 import {DocumentStore} from './document-store.js';
 import {parsePluginConfig,pluginConfigSchema,resolveBudgets} from './budgets.js';
-import { Engine } from './engine.js';
+import { Engine, type Actor } from './engine.js';
 import { SqliteStorage } from './storage.js';
 import { createBridge } from './openclaw.js';
 import {commandHelp,parseCommandInvocation,formatCommandResult} from './commands.js';
@@ -59,24 +59,28 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     create:(p,c)=>service().create(bridge.actor(c),p.definition,p.enabled),edit:(p,c)=>service().edit(bridge.actor(c),p.id,p.expectedRevision,p.changes,p.enabled),delete:(p,c)=>service().delete(bridge.actor(c),p.id,p.expectedRevision),
     enable:(p,c)=>service().enable(bridge.actor(c),p.id,p.revision,p.enabled,p.grants),revoke:(p,c)=>service().revoke(bridge.actor(c),p.id),runs:(_,c)=>service().runs(bridge.actor(c)),inspect:(p,c)=>service().status(bridge.actor(c),p.runId),review:async(p,c)=>receipt(await service().review(bridge.actor(c),p.runId,p.decision)),
   };
-  const wrapped=Object.fromEntries(Object.entries(handlers).map(([name,handler])=>[name,async(input:unknown,context:FeatureInvocationContext)=>{
-    const actor=bridge.actor(context),payload=structuredClone(input) as Record<string,unknown>;
+  const safely=async<T>(name:string,context:FeatureInvocationContext,handler:(actor:Actor)=>T|Promise<T>)=>{
+    const actor=bridge.actor(context);
     try{
+      const result=await handler(actor);actor.check();return result;
+    }catch(error){
+      actor.check();
+      if(!(error instanceof LoopError))throw error;
+      return {kind:'loops-error' as const,operation:name,error:safeFailure(error)};
+    }
+  };
+  const wrapped=Object.fromEntries(Object.entries(handlers).map(([name,handler])=>[name,(input:unknown,context:FeatureInvocationContext)=>safely(name,context,async actor=>{
+    const payload=structuredClone(input) as Record<string,unknown>;
     for(const field of uploadFields[name as keyof typeof uploadFields]??[])if(Value.Check(UploadReferenceSchema,payload[field]))payload[field]=documentStore().resolve(actor,payload[field]);
     const operation=contract.operations[name as keyof typeof contract.operations];
     if(!Value.Check(operation.input,payload))throw requestError('Uploaded or inline input does not match the operation schema.');
     const result=await (handler as (input:unknown,context:FeatureInvocationContext)=>unknown)(payload,context);
     if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
     actor.check();return documentStore().wrap(actor,result);
-    }catch(error){
-      actor.check();
-      if(!(error instanceof LoopError))throw error;
-      return {kind:'loops-error',operation:name,error:safeFailure(error)};
-    }
-  }])) as FeatureHandlers<typeof wireContract>;
+  })])) as FeatureHandlers<typeof wireContract>;
   const wireHandlers:FeatureHandlers<typeof wireContract>={...wrapped,
-    document:(p,c)=>documentStore().read(bridge.actor(c),p.documentId,p.offset,p.limit),
-    upload:(p,c)=>documentStore().upload(bridge.actor(c),p),
+    document:(p,c)=>safely('document',c,actor=>documentStore().read(actor,p.documentId,p.offset,p.limit)),
+    upload:(p,c)=>safely('upload',c,actor=>documentStore().upload(actor,p)),
   };
   return wireHandlers;
 }});
