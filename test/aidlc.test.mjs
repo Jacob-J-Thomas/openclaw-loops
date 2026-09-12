@@ -3,7 +3,7 @@ import {repository,validateContract,reviewRequests,collectContract} from '../scr
 import {mergeCandidate,requiredChecks,validateChecks} from '../scripts/merge-aidlc.mjs';
 
 const head='a'.repeat(40),base='b'.repeat(40);
-function fixture(){return {pr:{number:118,state:'open',draft:false,head:{sha:head},base:{sha:base,ref:'main',repo:{full_name:repository}}},closing:[{number:42,repository}],chain:[
+function fixture(){return {pr:{number:118,state:'open',draft:false,head:{sha:head},base:{sha:base,ref:'main',repo:{full_name:repository}}},closing:[{number:42,repository,candidates:[{number:118,repository}],moreCandidates:false}],chain:[
   {number:42,state:'open',labels:[{name:'type:bolt'},{name:'status:in-progress'}],parentNumber:9},
   {number:9,state:'open',labels:[{name:'type:uow'}],parentNumber:3},
   {number:3,state:'open',labels:[{name:'type:phase'}],parentNumber:2},
@@ -23,6 +23,10 @@ describe('Loops AIDLC contract',()=>{
     ['no closing issue',s=>{s.closing=[];}],
     ['multiple closing issues',s=>{s.closing.push({number:43,repository});}],
     ['a foreign closing issue',s=>{s.closing[0].repository='different/repository';}],
+    ['a competing candidate',s=>{s.closing[0].candidates.push({number:119,repository});}],
+    ['missing candidate metadata',s=>{delete s.closing[0].candidates;}],
+    ['additional candidate pages',s=>{s.closing[0].moreCandidates=true;}],
+    ['a foreign candidate with the same number',s=>{s.closing[0].candidates[0].repository='different/repository';}],
     ['a non-leaf Bolt',s=>{s.leafChildren=[{number:43}];}],
     ['a closed parent',s=>{s.chain[1].state='closed';}],
     ['a PR as owner',s=>{s.chain[1].pull_request={};}],
@@ -43,7 +47,7 @@ describe('Loops AIDLC contract',()=>{
     const value=fixture(),seen=[];let moved=false,reads=0;
     const request=async(path)=>{
       seen.push(path);
-      if(path==='graphql')return {data:{repository:{pullRequest:{closingIssuesReferences:{nodes:[{number:42,repository:{nameWithOwner:repository}}],pageInfo:{hasNextPage:false}}}}}};
+      if(path==='graphql')return {data:{repository:{pullRequest:{closingIssuesReferences:{nodes:[{number:42,repository:{nameWithOwner:repository},closedByPullRequestsReferences:{nodes:[{number:118,repository:{nameWithOwner:repository}}],pageInfo:{hasNextPage:false}}}],pageInfo:{hasNextPage:false}}}}}};
       if(path.endsWith('/pulls/118'))return {...value.pr,head:{sha:moved&&reads++?'c'.repeat(40):head}};
       if(path.endsWith('/issues/42'))return value.chain[0];
       if(path.endsWith('/sub_issues?per_page=1'))return [];
@@ -114,10 +118,10 @@ describe('required current-metadata merge mechanism',()=>{
     const result=await mergeCandidate(118,{head,base},{collect:async()=>{calls.push('contract');return value;},request:async path=>{expect(path).toContain(head);calls.push('checks');return passingChecks();},merge:async(number,sha)=>{calls.push('merge');expect([number,sha]).toEqual([118,head]);return {merged:true,sha:'c'.repeat(40)};}});
     expect(calls).toEqual(['contract','checks','contract','merge']);expect(result.checks).toHaveLength(5);
   });
-  it.each(['closed-parent','fourth-review','changed-head','changed-base','no-review','failed-check'])('does not merge after %s',async mode=>{
+  it.each(['closed-parent','fourth-review','competing-candidate','changed-head','changed-base','no-review','failed-check'])('does not merge after %s',async mode=>{
     const value=fixture();value.reviewRequestIds=['review:1'];let reads=0,merged=false;
     const run=()=>mergeCandidate(118,{head,base},{collect:async()=>{
-      if(++reads===2){if(mode==='closed-parent')value.chain[1].state='closed';if(mode==='fourth-review')value.reviewRequestIds=['1','2','3','4'];if(mode==='changed-head')value.pr.head.sha='c'.repeat(40);if(mode==='changed-base')value.pr.base.sha='c'.repeat(40);if(mode==='no-review')value.reviewRequestIds=[];}
+      if(++reads===2){if(mode==='closed-parent')value.chain[1].state='closed';if(mode==='fourth-review')value.reviewRequestIds=['1','2','3','4'];if(mode==='competing-candidate')value.closing[0].candidates.push({number:119,repository});if(mode==='changed-head')value.pr.head.sha='c'.repeat(40);if(mode==='changed-base')value.pr.base.sha='c'.repeat(40);if(mode==='no-review')value.reviewRequestIds=[];}
       return value;
     },request:async()=>{const checks=passingChecks();if(mode==='failed-check')checks.check_runs[0].conclusion='failure';return checks;},merge:async()=>{merged=true;return {merged:true};}});
     await expect(run()).rejects.toThrow();expect(merged).toBe(false);

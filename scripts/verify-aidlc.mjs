@@ -18,6 +18,7 @@ export function validateContract(snapshot){
   if(!/^[a-f0-9]{40}$/.test(pr.head.sha)||! /^[a-f0-9]{40}$/.test(pr.base.sha))errors.push('Exact candidate head and base are required.');
   if(closing.length!==1)errors.push('Use one GitHub closing reference to exactly one scoped Bolt issue.');
   if(closing.some(issue=>issue.repository!==repository))errors.push('The closing issue must belong to this plugin repository.');
+  if(closing.length===1){const issue=closing[0];if(issue.moreCandidates!==false||issue.candidates?.length!==1||issue.candidates[0].number!==pr.number||issue.candidates[0].repository!==repository)errors.push('The Bolt must have exactly one active closing candidate: this PR.');}
   if(chain.length!==4)errors.push('The native hierarchy must be Campaign -> Phase -> UOW -> Bolt.');
   if(leafChildren.length)errors.push('A Bolt must be a leaf with no sub-issues.');
   if(new Set(chain.map(issue=>issue.number)).size!==chain.length)errors.push('The native hierarchy contains a cycle.');
@@ -83,10 +84,11 @@ export async function collectContract(number,request=github){
   const [owner,name]=repository.split('/');
   // Ask GitHub which issues this PR actually closes, including references it
   // recognizes in commits. A local body regex is not authoritative parentage.
-  const result=await request('graphql',{body:{query:'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{nameWithOwner}} pageInfo{hasNextPage}}}}}',variables:{owner,name,number}}});
+  const result=await request('graphql',{body:{query:'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{nameWithOwner} closedByPullRequestsReferences(first:2,includeClosedPrs:false){nodes{number repository{nameWithOwner}} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}',variables:{owner,name,number}}});
   const references=result.data?.repository?.pullRequest?.closingIssuesReferences;
   if(result.errors?.length||!references||references.pageInfo.hasNextPage)throw new Error('Complete GitHub closing-issue metadata is required.');
-  const closing=references.nodes.map(issue=>({number:issue.number,repository:issue.repository.nameWithOwner}));
+  // Two candidates already disprove single ownership; further pages must reject.
+  const closing=references.nodes.map(issue=>({number:issue.number,repository:issue.repository.nameWithOwner,candidates:issue.closedByPullRequestsReferences?.nodes?.map(pr=>({number:pr.number,repository:pr.repository.nameWithOwner})),moreCandidates:issue.closedByPullRequestsReferences?.pageInfo?.hasNextPage}));
   const chain=[];let leafChildren=[],issueComments=[];
   const pages=async path=>{
     const all=[];
