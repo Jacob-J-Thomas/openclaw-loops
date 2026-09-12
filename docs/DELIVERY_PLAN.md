@@ -2,9 +2,11 @@
 
 Revised scope, September 12, 2026. This replaces the earlier goal that included every expansion milestone. It incorporates the revised release contract and retains the separately requested Advanced inference settings. The original POC handoff and earlier acceptance entries remain historical evidence.
 
+Execution update: the owner has now selected completion of all work available without changing OpenClaw core, using the [Loops AIDLC process](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/docs/AIDLC.md). The full roadmap is mirrored in the [native GitHub issue index](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/docs/ROADMAP_ISSUES.json). New work uses one Bolt per non-draft PR directly to main, up to three Codex review requests, verified autonomous merge/closure, then post-landing adversarial QA. Missing host contracts remain explicit dependencies; upstream contributions described below are a separate future execution track, not authorized core work in this goal.
+
 ## Release sequence and boundaries
 
-**Active goal: deliver and verify OpenClaw Loops 1.0 as a public, independently installable external OpenClaw plugin, using supported OpenClaw APIs for all host integration. Complete the necessary upstream issue contributions in separate OpenClaw PRs, adopt their released APIs, and verify installation from ClawHub before declaring 1.0 complete.**
+**Full release target: deliver and verify OpenClaw Loops 1.0 as a public, independently installable external OpenClaw plugin, using supported OpenClaw APIs for all host integration.** The current execution goal completes work available without OpenClaw core changes. The broader release still requires adoption of the missing released host contracts and verified installation from ClawHub before declaring 1.0 complete. Upstream issue contributions belong to a separate execution track.
 
 The 1.0 palette is Input, Inference, configured-model Action, Condition, Repeat, manual Wait, Human review, Return and Fail. Action currently reads configured-model metadata; it is not an arbitrary tool or script node. Inference performs one fresh, tool-free completion. Repeat retains its inference/condition body. Full agent control includes creating enabled loops, optional drafts, publication, activation, invocation, inspection and deletion. Only an explicitly authored Human review requires a human decision.
 
@@ -161,8 +163,8 @@ Track every R ID in `DELIVERY_STATUS.md` with evidence and remaining work. Keep 
 
 Deferred combined workflows remain scheduled research with retrieval/subagents, iterative development with scripts/tests and evidence-gated exit, external signals across restart, richer collaborative review and agent-authored loop improvement. Every later capability must participate before that later milestone is complete; these workflows are not 1.0 release gates.
 
-## Goal completion
+## Release completion and current goal
 
-Complete this goal only when P0–P6 and R01–R25 pass, the required host contracts are available in declared released OpenClaw versions, and the exact public 1.0 package passes fresh installation/migration. Keep source publication, upstream PR submission/merge, local alpha acceptance and a registry release as separate states. The owner has authorized GitHub publication and pushing the reviewed plugin history; there is no remaining request for that same authorization.
+Declare the 1.0 release complete only when P0–P6 and R01–R25 pass, the required host contracts are available in declared released OpenClaw versions, and the exact public 1.0 package passes fresh installation/migration. The current independent-work goal has the separate completion contract in [AIDLC.md](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/docs/AIDLC.md): all admitted plugin work verified and merged, no open candidate PRs, post-landing adversarial QA complete, and concrete host-contract evidence for every remaining required item. Keep source publication, upstream PR submission/merge, local alpha acceptance and a registry release as separate states. The owner has authorized GitHub publication and pushing the reviewed plugin history; there is no remaining request for that same authorization.
 
 No estimated date or unverified SDK availability is an acceptance substitute. Record genuine upstream or publication blockers explicitly while continuing independent work.
