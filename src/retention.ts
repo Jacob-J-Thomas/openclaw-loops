@@ -1,5 +1,6 @@
 import {Type,type Static} from 'typebox';
 import {Value} from 'typebox/value';
+import {requestError} from './errors.js';
 import type {Run} from './engine.js';
 
 const strict={additionalProperties:false} as const;
@@ -19,7 +20,7 @@ export const RetentionResultSchema=Type.Object({
 export type RetentionResult=Static<typeof RetentionResultSchema>;
 
 export function retentionCandidates(runs:Run[],policy:RetentionPolicy,physical:ReadonlySet<string>,referenced:ReadonlySet<string>,at=Date.now()){
-  if(!Value.Check(RetentionPolicySchema,policy)||policy.olderThanDays===undefined&&policy.keepLatest===undefined)throw new Error('History cleanup requires olderThanDays or keepLatest. No history has been deleted.');
+  if(!Value.Check(RetentionPolicySchema,policy)||policy.olderThanDays===undefined&&policy.keepLatest===undefined)throw requestError('History cleanup requires olderThanDays or keepLatest. No history has been deleted.');
   const cutoff=policy.olderThanDays===undefined?Infinity:at-policy.olderThanDays*86400000;
   const ordered=[...runs].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id));
   const protectedCounts={active:0,ancestry:0,recent:0};const candidates:Array<{id:string;updatedAt:string}>=[];

@@ -1,3 +1,4 @@
+import {requestError} from './errors.js';
 import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import {AdvancedSchema,ReasoningSchema} from './inference-settings.js';
@@ -49,11 +50,11 @@ export const DefinitionPatchSchema=Type.Partial(DefinitionContentSchema,{...obj,
 export type DefinitionContent=Static<typeof DefinitionContentSchema>;
 export type DefinitionPatch=Static<typeof DefinitionPatchSchema>;
 export function parseDefinitionContent(value:unknown,budgets:Budgets=defaultBudgets):DefinitionContent{
-  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budgets.definitionBytes||!Value.Check(DefinitionContentSchema,value))throw new Error('New definition fields do not match schemaVersion 1 or 2, or exceed the configured definition budget. Identity and revision are assigned by the server.');
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budgets.definitionBytes||!Value.Check(DefinitionContentSchema,value))throw requestError('New definition fields do not match schemaVersion 1 or 2, or exceed the configured definition budget. Identity and revision are assigned by the server.');
   return structuredClone(value);
 }
 export function parseDefinitionPatch(value:unknown,budgets:Budgets=defaultBudgets):DefinitionPatch{
-  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budgets.definitionBytes||!Value.Check(DefinitionPatchSchema,value))throw new Error('Supply at least one editable definition field within the configured definition budget. Identity and grants are server-owned; pass enabled separately to change activation.');
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budgets.definitionBytes||!Value.Check(DefinitionPatchSchema,value))throw requestError('Supply at least one editable definition field within the configured definition budget. Identity and grants are server-owned; pass enabled separately to change activation.');
   return structuredClone(value);
 }
 export type GraphNode = Definition['nodes'][number];
@@ -62,10 +63,10 @@ export type Capability = Definition['capabilities'][number];
 export type Issue = {nodeId?:string;message:string};
 export const ports = (node:GraphNode):string[] => node.kind==='condition'?['true','false']:node.kind==='review'?['approve','reject']:['return','fail'].includes(node.kind)?[]:['next'];
 export function parseDefinition(value:unknown,budgets:Budgets=defaultBudgets):Definition {
-  if (!Value.Check(DefinitionSchema,value)) throw new Error('Definition does not match schemaVersion 1 or 2.');
-  if(value.schemaVersion===1&&value.limits.timeoutMs===undefined)throw new Error('Version 1 definitions require their original explicit timeout.');
+  if (!Value.Check(DefinitionSchema,value)) throw requestError('Definition does not match schemaVersion 1 or 2.');
+  if(value.schemaVersion===1&&value.limits.timeoutMs===undefined)throw requestError('Version 1 definitions require their original explicit timeout.');
   const budget=value.schemaVersion===1?legacyBudgets.definitionBytes:budgets.definitionBytes;
-  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw new Error(`Definition exceeds its ${budget}-byte transport budget.`);
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw requestError(`Definition exceeds its ${budget}-byte transport budget.`);
   return structuredClone(value);
 }
 export function validateGraph(d:Definition):Issue[] {
@@ -136,10 +137,10 @@ export function validateGraph(d:Definition):Issue[] {
 }
 export function validateInput(d:Definition,value:unknown,budgets:Budgets=defaultBudgets):Record<string,Json>{
   const budget=d.schemaVersion===1?legacyBudgets.inputBytes:budgets.inputBytes;
-  if(!value||typeof value!=='object'||Array.isArray(value)||new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw new Error(`Input must be a JSON object of at most ${budget===16000?'16 KB':`${budget} bytes`}.`);
+  if(!value||typeof value!=='object'||Array.isArray(value)||new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw requestError(`Input must be a JSON object of at most ${budget===16000?'16 KB':`${budget} bytes`}.`);
   const input=value as Record<string,Json>;
-  for(const k of Object.keys(input))if(!d.inputSchema.some(f=>f.name===k))throw new Error(`Unexpected input: ${k}`);
-  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='json'){if(d.schemaVersion!==2||v===undefined||!isJson(v))throw new Error(`Input ${f.name} must be valid JSON in a version 2 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw new Error(`Input ${f.name} must be ${f.type}.`);}
+  for(const k of Object.keys(input))if(!d.inputSchema.some(f=>f.name===k))throw requestError(`Unexpected input: ${k}`);
+  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='json'){if(d.schemaVersion!==2||v===undefined||!isJson(v))throw requestError(`Input ${f.name} must be valid JSON in a version 2 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw requestError(`Input ${f.name} must be ${f.type}.`);}
   return structuredClone(input);
 }
 export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;repeat?:{index:number}};

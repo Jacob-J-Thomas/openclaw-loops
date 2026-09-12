@@ -5,6 +5,7 @@ import type {RunReceipt,describe} from './receipts.js';
 import type {InferenceCapabilities} from './inference-settings.js';
 import {BudgetsSchema,type Budgets} from './budgets.js';
 import {RetentionResultSchema} from './retention.js';
+import {LoopErrorSchema} from './errors.js';
 
 // Each operation publishes a concrete wire shape. Dynamic JSON data and host
 // attribution remain open values; identities, states and control fields do not.
@@ -15,7 +16,7 @@ const enums=(values:string[])=>Type.Union(values.map(value=>Type.Literal(value))
 const runState=enums(['queued','running','completed','failed','waiting','review','cancelled','interrupted']);
 const attemptState=enums(['running','completed','waiting','review','failed','cancelled','interrupted']);
 const owner=Type.Object({agentId:text,sessionKey:text,sessionId:text},strict);
-const error=Type.Object({code:text,message:text,phase:text,nodeId:Type.Optional(text),model:Type.Optional(text),retryable:Type.Boolean(),recovery:text},strict);
+const error=LoopErrorSchema;
 const review=Type.Object({decision:enums(['approve','reject']),at:text,requester:text},strict);
 const summary=Type.Object({id:text,slug:text,name:text,revision:Type.Integer({minimum:0})},strict);
 const issues=Type.Array(Type.Object({nodeId:Type.Optional(text),message:text},strict));

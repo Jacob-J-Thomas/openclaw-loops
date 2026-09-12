@@ -1,7 +1,8 @@
 import {Value} from 'typebox/value';
 import {createFeatureClient, type FeatureClient, type FeatureTransport, type FeatureInput, type FeatureOutput} from 'openclaw/plugin-sdk/feature-contract';
 import {contract} from './contract.js';
-import {DocumentReferenceSchema, uploadFields, wireContract} from './wire-contract.js';
+import {DocumentReferenceSchema, OperationFailureSchema, uploadFields, wireContract} from './wire-contract.js';
+import {LoopError} from './errors.js';
 import {fitsFeatureJson, textPage} from './feature-json.js';
 
 const digest = async(text: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))).map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -39,6 +40,7 @@ export function createLoopsClient(host: FeatureTransport): Pick<FeatureClient<ty
       if (new TextEncoder().encode(text).byteLength !== reference.bytes || await digest(text) !== reference.sha256) throw new Error('Document integrity check failed.');
       result = JSON.parse(text);
     }
+    if(Value.Check(OperationFailureSchema,result))throw new LoopError(result.error);
     if (!Value.Check(contract.operations[operation].output, result)) throw new Error('Operation result does not match its Loops schema.');
     return result as FeatureOutput<typeof contract, typeof operation>;
   };

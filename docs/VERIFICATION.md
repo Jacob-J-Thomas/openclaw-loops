@@ -1,8 +1,20 @@
 # Local verification
 
+## Alpha.7 actionable errors and authoring verification
+
+The alpha.7 artifact passed **115 source tests** on macOS under Node **24.16.0** and **26.1.0**, typecheck, lint, both builds, and **21 extracted-package tests through the actual OpenClaw feature SDK**. Tarball SHA-256: `9221e5d68bcaf4d741875cc4c241cc07565fce43b68f03cba0885e9596d220bc`. Both isolated Gateways successfully launched the package; installed backend, worker and native UI hashes match the tarball. Evidence: `evidence/release-alpha7/`. Subsequent documentation changes are separate from the packaged artifact.
+
+A stopped-state backup is retained at `.dev-profile/backups/before-alpha7-1789186695156`. The upgrade preserved every definition and run record byte-for-byte (Codex: 9 definitions including one archived/deleted record, 124 runs; Ollama: 6 definitions, 24 runs); both SQLite integrity checks passed at schema 2. No model-server or personal-profile changes were made.
+
+The previously failing live removed-history replay assertion now passes after restart. The plugin returns a typed `loops-error` with `LOOPS_HISTORY_REMOVED`; no replacement execution is admitted. Its shared UI client surfaces known operation failures, including stale revisions and invalid inputs. The real feature SDK tests assert that failed calls do not dispatch inference or overwrite the saved definition. Unexpected exceptions remain subject to OpenClaw's masking behavior; this is not a claim that every host error path is complete.
+
+Native browser acceptance at **390 × 844** used keyboard activation to create and enable a dedicated synthetic loop. A concurrent session action saved revision 2 while the browser held revision 1 edits. The stale save opened the conflict UI; an explicit field choice plus merge saved revision 3, retaining the browser's name/node label, the other editor's independent description and enabled publication revision 1. All three immutable versions remain. Actual state assertions and before/after browser evidence are in `codex/authoring/` and `ui/`.
+
+Dark canvas controls and destructive/text buttons are readable in the captured desktop and mobile screenshots. A broader acceptance claim is still pending: browser inspection found faint muted labels, and the plugin must follow host theme overrides as well as system preference. The normal viewport was restored after the narrow-screen check. This remains an alpha, not 1.0 release acceptance.
+
 ## Alpha.6 history and durability verification
 
-The alpha.6 artifact passed **114 source tests** on macOS under Node **24.16.0** and **26.1.0**, plus typecheck, lint, both builds, and **20 extracted-package SDK tests**. Tarball SHA-256: `3bfdb3c7368c5a707ccb378cc28b7ca7beebe3ec53d688d58ffe29af0c2d8ae6`. Both isolated Gateways run that artifact; backend, worker and UI files match the tarball. Evidence is under `evidence/release-alpha6/`. Documentation and live-verification helper edits made afterward are separate from the packaged executable identity.
+The alpha.6 artifact passed **114 source tests** on macOS under Node **24.16.0** and **26.1.0**, plus typecheck, lint, both builds, and **20 extracted-package SDK tests**. Tarball SHA-256: `3bfdb3c7368c5a707ccb378cc28b7ca7beebe3ec53d688d58ffe29af0c2d8ae6`. Both isolated Gateways ran that artifact at this checkpoint; backend, worker and UI files match the tarball. Evidence is under `evidence/release-alpha6/`. Documentation and live-verification helper edits made afterward are separate from the packaged executable identity.
 
 Both live SQLite stores upgraded from schema 1 to 2 with verified automatic backups. All pre-existing definitions and run counts were unchanged immediately after migration (Codex: 8 definitions/21 runs; Ollama: 6 definitions/24 runs). Full stopped-state backups are retained under `.dev-profile/backups/before-alpha6-1789184971882`.
 

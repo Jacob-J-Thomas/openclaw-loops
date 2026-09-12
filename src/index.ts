@@ -9,6 +9,7 @@ import { Engine } from './engine.js';
 import { SqliteStorage } from './storage.js';
 import { createBridge, formatRun, help, parseCommand } from './openclaw.js';
 import {receipt,describe} from './receipts.js';
+import {LoopError,requestError,safeFailure} from './errors.js';
 
 // OpenClaw may evaluate the external plugin for more than one registry scope.
 // Keep one plugin-owned executor per state directory in this Gateway process.
@@ -33,11 +34,11 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
   });
   const handlers:FeatureHandlers<typeof contract> = {
     retention:(p,c)=>service().retention(bridge.actor(c),p.policy,p.applyPlanId),
-    test:async(p,c)=>receipt(await service().test(bridge.actor(c),p.definition,p.input,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw new Error('requestId is required.');})()))),retry:async(p,c)=>receipt(await service().retry(bridge.actor(c),p.runId,p.mode,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw new Error('requestId is required.');})()))),
+    test:async(p,c)=>receipt(await service().test(bridge.actor(c),p.definition,p.input,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),retry:async(p,c)=>receipt(await service().retry(bridge.actor(c),p.runId,p.mode,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),
     draft:(p,c)=>service().draft(bridge.actor(c),p.definition,p.expectedRevision),versions:(p,c)=>service().versions(bridge.actor(c),p.id),publish:(p,c)=>service().publish(bridge.actor(c),p.id,p.revision,p.expectedRevision),restore:(p,c)=>service().restore(bridge.actor(c),p.id,p.revision,p.expectedRevision),archive:(p,c)=>service().archive(bridge.actor(c),p.id,p.expectedRevision,p.archived),deleted:(_,c)=>service().deleted(bridge.actor(c)),recover:(p,c)=>service().recover(bridge.actor(c),p.id,p.expectedRevision),output:(p,c)=>service().output(bridge.actor(c),p.runId,p.nodeId,p.offset,p.limit),history:(p,c)=>service().history(bridge.actor(c),p.cursor,p.limit),
     capabilities:(p,c)=>service().capabilities(bridge.actor(c),p),validate:(p,c)=>service().validate(bridge.actor(c),p.definition),
     list:(_,c)=>service().list(bridge.actor(c)),describe:(p,c)=>describe(service().describe(bridge.actor(c),p.slug)),
-    run:async(p,c)=>{if(p.input!==undefined&&p.text!==undefined)throw new Error('Supply input or the text shortcut, not both.');return receipt(await service().run(bridge.actor(c),p.slug,p.input??(p.text===undefined?{}:{text:p.text}),p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw new Error('requestId is required for UI execution.');})())));},
+    run:async(p,c)=>{if(p.input!==undefined&&p.text!==undefined)throw requestError('Supply input or the text shortcut, not both.');return receipt(await service().run(bridge.actor(c),p.slug,p.input??(p.text===undefined?{}:{text:p.text}),p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required for UI execution.');})())));},
     status:(p,c)=>receipt(service().status(bridge.actor(c),p.runId)),resume:async(p,c)=>receipt(await service().resume(bridge.actor(c),p.runId)),cancel:(p,c)=>receipt(service().cancel(bridge.actor(c),p.runId)),
     library:(_,c)=>service().library(bridge.actor(c)),load:(p,c)=>service().load(bridge.actor(c),p.id),save:(p,c)=>service().save(bridge.actor(c),p.definition,p.expectedRevision,p.enabled),
     create:(p,c)=>service().create(bridge.actor(c),p.definition,p.enabled),edit:(p,c)=>service().edit(bridge.actor(c),p.id,p.expectedRevision,p.changes,p.enabled),delete:(p,c)=>service().delete(bridge.actor(c),p.id,p.expectedRevision),
@@ -45,12 +46,18 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
   };
   const wrapped=Object.fromEntries(Object.entries(handlers).map(([name,handler])=>[name,async(input:unknown,context:FeatureInvocationContext)=>{
     const actor=bridge.actor(context),payload=structuredClone(input) as Record<string,unknown>;
+    try{
     for(const field of uploadFields[name as keyof typeof uploadFields]??[])if(Value.Check(UploadReferenceSchema,payload[field]))payload[field]=documentStore().resolve(actor,payload[field]);
     const operation=contract.operations[name as keyof typeof contract.operations];
-    if(!Value.Check(operation.input,payload))throw new Error('Uploaded or inline input does not match the operation schema.');
+    if(!Value.Check(operation.input,payload))throw requestError('Uploaded or inline input does not match the operation schema.');
     const result=await (handler as (input:unknown,context:FeatureInvocationContext)=>unknown)(payload,context);
     if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
     actor.check();return documentStore().wrap(actor,result);
+    }catch(error){
+      actor.check();
+      if(!(error instanceof LoopError))throw error;
+      return {kind:'loops-error',operation:name,error:safeFailure(error)};
+    }
   }])) as FeatureHandlers<typeof wireContract>;
   return {...wrapped,
     document:(p,c)=>documentStore().read(bridge.actor(c),p.documentId,p.offset,p.limit),

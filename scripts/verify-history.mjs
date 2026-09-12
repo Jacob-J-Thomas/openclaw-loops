@@ -16,7 +16,7 @@ function cli(args){
 }
 const call=(method,params)=>{const response=cli(['gateway','call',method,'--params',JSON.stringify(params),'--json','--timeout','60000']);if(response.ok===false)throw new Error(response.error?.message??'Gateway action failed');return response;};
 const session=mode==='prepare'?call('sessions.create',{agentId:'main',label:`Loops alpha.6 history ${randomUUID().slice(0,8)}`}):JSON.parse(readFileSync(`${directory}/session.json`,'utf8'));
-const action=(actionId,payload)=>call('plugins.sessionAction',{pluginId:'loops-poc',actionId,payload,agentId:'main',sessionKey:session.key}).result;
+const action=(actionId,payload)=>{const result=call('plugins.sessionAction',{pluginId:'loops-poc',actionId,payload,agentId:'main',sessionKey:session.key}).result;if(result?.kind==='loops-error')throw new Error(`${result.error.code}: ${result.error.message}`);return result;};
 if(mode==='prepare'){
   save('session',session);const slug=`history-${randomUUID().slice(0,8)}`;
   const definition={slug,name:'History acceptance',description:'Synthetic pagination and explicit retention fixture. No model calls or external effects.',inputSchema:[{name:'index',label:'Index',type:'number',required:true}],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return index',value:'{{input.index}}'}],edges:[{id:'edge',source:'input',target:'return',port:'next'}],layout:{input:{x:0,y:0},return:{x:260,y:0}},capabilities:[],limits:{maxExecutions:1000,maxOutputBytes:1024*1024}};

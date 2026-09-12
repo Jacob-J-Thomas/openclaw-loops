@@ -1,6 +1,17 @@
+import {Type} from 'typebox';
+export const LoopErrorSchema=Type.Object({code:Type.String(),message:Type.String(),phase:Type.String(),nodeId:Type.Optional(Type.String()),model:Type.Optional(Type.String()),retryable:Type.Boolean(),recovery:Type.String()},{additionalProperties:false});
 export type LoopErrorData = {code:string;message:string;phase:string;nodeId?:string;model?:string;retryable:boolean;recovery:string};
 export class LoopError extends Error {
   constructor(readonly detail:LoopErrorData,options?:ErrorOptions){super(detail.message,options);this.name='LoopError';}
+}
+// Use only for expected plugin-owned failures. Unexpected host/transport errors
+// remain private; the Gateway intentionally masks thrown plugin exceptions.
+export function requestError(message:string,code='LOOPS_INVALID_REQUEST',recovery='Review the request and current loop or run state before retrying.'){
+  return new LoopError({code,message,phase:'operation',retryable:false,recovery});
+}
+export function safeFailure(error:LoopError):LoopErrorData{
+  const {code,message,phase,nodeId,model,retryable,recovery}=error.detail;
+  return {code,message:message.slice(0,4000),phase,retryable,recovery:recovery.slice(0,4000),...nodeId===undefined?{}:{nodeId},...model===undefined?{}:{model}};
 }
 export function errorDetail(error:unknown, context:{phase:string;nodeId?:string;model?:string}):LoopErrorData {
   const location={phase:context.phase,...context.nodeId===undefined?{}:{nodeId:context.nodeId},...context.model===undefined?{}:{model:context.model}};

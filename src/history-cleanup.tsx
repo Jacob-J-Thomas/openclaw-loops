@@ -9,7 +9,7 @@ export function HistoryCleanup({invoke,onApplied,disabled}:{invoke:(policy:Reten
     try{
       const policy=apply?preview!.policy:{...days!==''?{olderThanDays:Number(days)}:{},...keep!==''?{keepLatest:Number(keep)}:{}};
       const result=await invoke(policy,apply?preview!.planId:undefined);
-      if(result.applied){setPreview(undefined);setMessage(`Removed ${result.candidates.length} runs from this conversation's history.`);onApplied(result.candidates.map(run=>run.id));}else setPreview(result);
+      if(result.applied){setPreview(undefined);setMessage(`Removed ${result.candidates.length} ${result.candidates.length===1?'run':'runs'} from this conversation's history.`);onApplied(result.candidates.map(run=>run.id));}else setPreview(result);
     }catch(error){setError(error instanceof Error?error.message:String(error));setPreview(undefined);}finally{setBusy(false);}
   };
   const change=(set:(value:string)=>void,value:string)=>{set(value);setPreview(undefined);setMessage('');};
@@ -21,7 +21,7 @@ export function HistoryCleanup({invoke,onApplied,disabled}:{invoke:(policy:Reten
     {preview&&<><p role="status">{preview.candidates.length} eligible of {preview.total}. Protected: {preview.protected.active} active or settling, {preview.protected.ancestry} recovery parents, {preview.protected.recent} recent.</p>
       <details><summary>Runs to remove</summary><ul>{preview.candidates.map(run=><li key={run.id}><code>{run.id}</code> · {run.updatedAt}</li>)}</ul></details>
       <p className="lp-hint">Deleted run evidence cannot be restored here. Existing backups and transport documents are retained separately. Old request IDs will remain reserved.</p>
-      <button className="danger" disabled={disabled||busy||!preview.candidates.length} onClick={()=>void act(true)}>Delete {preview.candidates.length} eligible runs</button>
+      <button className="danger" disabled={disabled||busy||!preview.candidates.length} onClick={()=>void act(true)}>Delete {preview.candidates.length} eligible {preview.candidates.length===1?'run':'runs'}</button>
     </>}
     {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}
   </details>;
