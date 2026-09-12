@@ -1,0 +1,56 @@
+{
+  "id": "loops-poc",
+  "name": "Loops",
+  "version": "1.0.0-alpha.4",
+  "description": "Inspectable, bounded loops shared by native UI and chat.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "maxConcurrentRuns": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 1,
+        "description": "Maximum executing/settling runs. Additional requests queue. Keep 1 for a 16 GB local-model machine."
+      }
+    }
+  },
+  "controlUi": {
+    "entry": "dist/control-ui/06d599eec3d9d9bce82a49d345b28f591ec0b1aae6c211a50ca618fbab604813/index.js"
+  },
+  "contracts": {
+    "tools": [
+      "loops_archive",
+      "loops_cancel",
+      "loops_capabilities",
+      "loops_create",
+      "loops_delete",
+      "loops_deleted",
+      "loops_describe",
+      "loops_draft",
+      "loops_edit",
+      "loops_enable",
+      "loops_history",
+      "loops_inspect",
+      "loops_library",
+      "loops_list",
+      "loops_read",
+      "loops_output",
+      "loops_publish",
+      "loops_recover",
+      "loops_restore",
+      "loops_resume",
+      "loops_retry",
+      "loops_revoke",
+      "loops_run",
+      "loops_runs",
+      "loops_status",
+      "loops_test",
+      "loops_validate",
+      "loops_versions"
+    ]
+  }
+}

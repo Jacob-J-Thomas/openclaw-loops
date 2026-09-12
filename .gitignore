@@ -1,0 +1,17 @@
+node_modules/
+.dev-runtime/
+.dev-host/
+.dev-profile/
+dist/
+*.tgz
+coverage/
+.DS_Store
+evidence/private/
+.playwright-cli/
+
+# Keep local runtime evidence and supplied handoff material on this device.
+evidence/
+output/
+.dev-upstream/
+docs/HANDOFF.md
+docs/references/

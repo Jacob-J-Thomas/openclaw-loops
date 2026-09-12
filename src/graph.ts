@@ -1,0 +1,170 @@
+import { Type, type Static } from 'typebox';
+import { Value } from 'typebox/value';
+import {AdvancedSchema,ReasoningSchema} from './inference-settings.js';
+import {defaultBudgets,legacyBudgets} from './budgets.js';
+
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+const key = Type.String({pattern:'^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$'});
+const text = Type.String();
+const obj = {additionalProperties:false} as const;
+export const PredicateSchema = Type.Object({
+  left:text, op:Type.Union([Type.Literal('equals'),Type.Literal('not-equals'),Type.Literal('contains'),Type.Literal('less-than'),Type.Literal('greater-than'),Type.Literal('truthy')]), right:text,
+},obj);
+const infer = {
+  prompt:text, output:Type.Union([Type.Literal('text'),Type.Literal('json')]),
+  model:Type.Optional(Type.String({minLength:1,maxLength:300})),
+  agentId:Type.Optional(key),reasoning:Type.Optional(ReasoningSchema),advanced:Type.Optional(AdvancedSchema),
+};
+const identity = {id:key,label:Type.String({minLength:1,maxLength:100})};
+const bodySchema = Type.Tuple([
+  Type.Object({...identity,kind:Type.Literal('inference'),...infer},obj),
+  Type.Object({...identity,kind:Type.Literal('condition'),predicate:PredicateSchema},obj),
+]);
+export const NodeSchema = Type.Union([
+  Type.Object({...identity,kind:Type.Literal('input')},obj),
+  Type.Object({...identity,kind:Type.Literal('inference'),...infer},obj),
+  Type.Object({...identity,kind:Type.Literal('action'),capability:Type.Literal('model-info')},obj),
+  Type.Object({...identity,kind:Type.Literal('condition'),predicate:PredicateSchema},obj),
+  Type.Object({...identity,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:bodySchema},obj),
+  Type.Object({...identity,kind:Type.Literal('wait'),message:text},obj),
+  Type.Object({...identity,kind:Type.Literal('review'),proposal:text},obj),
+  Type.Object({...identity,kind:Type.Literal('return'),value:text},obj),
+  Type.Object({...identity,kind:Type.Literal('fail'),reason:text},obj),
+]);
+export const DefinitionSchema = Type.Object({
+  schemaVersion:Type.Union([Type.Literal(1),Type.Literal(2)]), id:key, slug:key, name:Type.String({minLength:1,maxLength:100}),
+  description:Type.String({maxLength:500}), revision:Type.Integer({minimum:0}),
+  inputSchema:Type.Array(Type.Object({name:key,label:Type.String({minLength:1,maxLength:100}),type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json')]),required:Type.Boolean()},obj)),
+  nodes:Type.Array(NodeSchema,{minItems:2}),
+  edges:Type.Array(Type.Object({id:key,source:key,target:key,port:Type.Union([Type.Literal('next'),Type.Literal('true'),Type.Literal('false'),Type.Literal('approve'),Type.Literal('reject')])},obj)),
+  layout:Type.Record(key,Type.Object({x:Type.Number({minimum:-10000,maximum:10000}),y:Type.Number({minimum:-10000,maximum:10000})},obj)),
+  capabilities:Type.Array(Type.Union([Type.Literal('llm'),Type.Literal('model-info')]),{maxItems:2,uniqueItems:true}),
+  limits:Type.Object({maxExecutions:Type.Integer({minimum:2}),timeoutMs:Type.Optional(Type.Integer({minimum:1000})),maxOutputBytes:Type.Integer({minimum:128})},obj),
+},obj);
+export type Definition = Static<typeof DefinitionSchema>;
+// Portable graph content excludes server identity and runtime state. Authoring
+// operations take activation as a separate enabled flag, not an imported grant.
+export const DefinitionContentSchema=Type.Omit(DefinitionSchema,['schemaVersion','id','revision'],obj);
+export const DefinitionPatchSchema=Type.Partial(DefinitionContentSchema,{...obj,minProperties:1});
+export type DefinitionContent=Static<typeof DefinitionContentSchema>;
+export type DefinitionPatch=Static<typeof DefinitionPatchSchema>;
+export function parseDefinitionContent(value:unknown):DefinitionContent{
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>defaultBudgets.definitionBytes||!Value.Check(DefinitionContentSchema,value))throw new Error('New definition fields do not match schemaVersion 1 or 2. Identity and revision are assigned by the server.');
+  return structuredClone(value);
+}
+export function parseDefinitionPatch(value:unknown):DefinitionPatch{
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>defaultBudgets.definitionBytes||!Value.Check(DefinitionPatchSchema,value))throw new Error('Supply at least one editable definition field within the definition transport budget. Identity and grants are server-owned; pass enabled separately to change activation.');
+  return structuredClone(value);
+}
+export type GraphNode = Definition['nodes'][number];
+export type Predicate = Static<typeof PredicateSchema>;
+export type Capability = Definition['capabilities'][number];
+export type Issue = {nodeId?:string;message:string};
+export const ports = (node:GraphNode):string[] => node.kind==='condition'?['true','false']:node.kind==='review'?['approve','reject']:['return','fail'].includes(node.kind)?[]:['next'];
+export function parseDefinition(value:unknown):Definition {
+  if (!Value.Check(DefinitionSchema,value)) throw new Error('Definition does not match schemaVersion 1 or 2.');
+  if(value.schemaVersion===1&&value.limits.timeoutMs===undefined)throw new Error('Version 1 definitions require their original explicit timeout.');
+  const budget=value.schemaVersion===1?legacyBudgets.definitionBytes:defaultBudgets.definitionBytes;
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw new Error(`Definition exceeds its ${budget}-byte transport budget.`);
+  return structuredClone(value);
+}
+export function validateGraph(d:Definition):Issue[] {
+  const issues:Issue[]=[];
+  const error=(message:string,nodeId?:string)=>issues.push({message,...nodeId?{nodeId}:{}});
+  const ids=new Set<string>();
+  for(const n of d.nodes){
+    if(ids.has(n.id))error('Node IDs must be unique.',n.id);
+    ids.add(n.id);
+    if(n.kind==='repeat')for(const b of n.body){if(ids.has(b.id)||d.nodes.some(x=>x.id===b.id))error('Body node IDs must be unique.',n.id);ids.add(b.id);}
+  }
+  if(new Set(d.inputSchema.map(f=>f.name)).size!==d.inputSchema.length)error('Input names must be unique.');
+  const entries=d.nodes.filter(n=>n.kind==='input');
+  if(entries.length!==1)error('Exactly one Input node is required.');
+  const edgeIds=new Set<string>();
+  for(const e of d.edges){
+    if(edgeIds.has(e.id))error('Edge IDs must be unique.',e.source);edgeIds.add(e.id);
+    if(!d.nodes.some(n=>n.id===e.source)||!d.nodes.some(n=>n.id===e.target))error('Edge endpoint does not exist.',e.source);
+    if(entries.some(n=>n.id===e.target))error('Input cannot have an incoming edge.',e.target);
+  }
+  for(const n of d.nodes){
+    const outgoing=d.edges.filter(e=>e.source===n.id);
+    for(const p of ports(n))if(outgoing.filter(e=>e.port===p).length!==1)error(`Connect exactly one ${p} edge.`,n.id);
+    if(outgoing.some(e=>!ports(n).includes(e.port)))error('Unexpected outgoing port.',n.id);
+    if((n.kind==='inference'||n.kind==='repeat')&&!d.capabilities.includes('llm'))error('Declare the llm capability.',n.id);
+    if(n.kind==='action'&&!d.capabilities.includes(n.capability))error('Declare the model-info capability.',n.id);
+  }
+  const visited=new Set<string>(),active=new Set<string>();
+  function visit(id:string){if(active.has(id)){error('Graph cycles are forbidden; use Repeat.',id);return;}if(visited.has(id))return;active.add(id);visited.add(id);for(const e of d.edges.filter(e=>e.source===id))visit(e.target);active.delete(id);}
+  if(entries.length===1)visit(entries[0].id);
+  for(const n of d.nodes)if(!visited.has(n.id))error('Node is unreachable from Input.',n.id);
+  if(!d.nodes.some(n=>n.kind==='return'||n.kind==='fail'))error('A terminal Return or Fail is required.');
+  // A binding must name an input, or a node that dominates the consuming node.
+  const predecessors=(id:string)=>d.edges.filter(e=>e.target===id).map(e=>e.source);
+  const all=new Set(d.nodes.map(n=>n.id));
+  const dom=new Map(d.nodes.map(n=>[n.id,new Set(n.kind==='input'?[n.id]:all)]));
+  for(let pass=0;pass<d.nodes.length;pass++)for(const n of d.nodes.filter(n=>n.kind!=='input')){
+    const pred=predecessors(n.id);const common=new Set(pred.length?[...(dom.get(pred[0])??[])].filter(x=>pred.every(p=>dom.get(p)?.has(x))):[]);
+    common.add(n.id);dom.set(n.id,common);
+  }
+  const checkText=(s:string,n:GraphNode,bodyPrior:string[]=[])=>{
+    for(const match of s.matchAll(/\{\{(.*?)\}\}/g)){
+      const path=match[1].trim();
+      const pattern=d.schemaVersion===1?/^(input\.[a-z][\w-]*|nodes\.[a-z][\w-]*\.(text|value|succeeded|iterations|exhausted|provider|model|agentId)|repeat\.index)$/:/^(input\.[a-z][\w-]*(?:\.[\w-]+)*|nodes\.[a-z][\w-]*\.[a-z][\w-]*(?:\.[\w-]+)*|repeat\.index)$/;
+      if(!pattern.test(path)||path.split('.').some(p=>['__proto__','constructor','prototype'].includes(p))){error(`Unsupported binding: ${path}`,n.id);continue;}
+      const [root,id,field]=path.split('.');
+      if(root==='input'&&!d.inputSchema.some(f=>f.name===id))error(`Unknown input: ${id}`,n.id);
+      if(root==='repeat'&&n.kind!=='repeat')error('repeat.index is only available inside Repeat.',n.id);
+      if(root==='nodes'&&!bodyPrior.includes(id)&&(id===n.id||!dom.get(n.id)?.has(id)))error(`Binding ${id} is not guaranteed to have executed.`,n.id);
+      if(root==='nodes'){
+        const producer=d.nodes.flatMap<GraphNode>(node=>node.kind==='repeat'?[node,...node.body]:[node]).find(node=>node.id===id);
+        const fields=producer?outputFields(producer):[];
+        if(producer&&!fields.includes(field))error(`Node ${id} (${producer.kind}) does not produce ${field}.`,n.id);
+      }
+    }
+    if(s.replace(/\{\{.*?\}\}/g,'').includes('{{'))error('Unclosed binding.',n.id);
+  };
+  for(const n of d.nodes){
+    if(n.kind==='inference')checkText(n.prompt,n);
+    if(n.kind==='return')checkText(n.value,n);
+    if(n.kind==='fail')checkText(n.reason,n);
+    if(n.kind==='wait')checkText(n.message,n);
+    if(n.kind==='review')checkText(n.proposal,n);
+    if(n.kind==='condition'){checkText(n.predicate.left,n);if(n.predicate.op!=='truthy')checkText(n.predicate.right,n);}
+    if(n.kind==='repeat'){checkText(n.body[0].prompt,n);checkText(n.body[1].predicate.left,n,[n.body[0].id]);if(n.body[1].predicate.op!=='truthy')checkText(n.body[1].predicate.right,n,[n.body[0].id]);}
+  }
+  return issues;
+}
+export function validateInput(d:Definition,value:unknown):Record<string,Json>{
+  const budget=d.schemaVersion===1?legacyBudgets.inputBytes:defaultBudgets.inputBytes;
+  if(!value||typeof value!=='object'||Array.isArray(value)||new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw new Error(`Input must be a JSON object of at most ${budget===16000?'16 KB':`${budget} bytes`}.`);
+  const input=value as Record<string,Json>;
+  for(const k of Object.keys(input))if(!d.inputSchema.some(f=>f.name===k))throw new Error(`Unexpected input: ${k}`);
+  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='json'){if(d.schemaVersion!==2||v===undefined||!isJson(v))throw new Error(`Input ${f.name} must be valid JSON in a version 2 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw new Error(`Input ${f.name} must be ${f.type}.`);}
+  return structuredClone(input);
+}
+export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;repeat?:{index:number}};
+export function bind(template:string,ctx:BindingContext):Json{
+  const resolve=(raw:string):Json=>{let value:unknown=ctx;for(const part of raw.trim().split('.')){if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))throw new Error(`Binding unavailable: ${raw}`);value=(value as Record<string,unknown>)[part];}if(value===undefined)throw new Error(`Binding unavailable: ${raw}`);return value as Json;};
+  const exact=/^\{\{([^{}]+)\}\}$/.exec(template);if(exact)return resolve(exact[1]);
+  return template.replace(/\{\{([^{}]+)\}\}/g,(_,p:string)=>{const v=resolve(p);return typeof v==='string'?v:JSON.stringify(v);});
+}
+export const display=(value:Json):string=>typeof value==='string'?value:JSON.stringify(value);
+export function compare(p:Predicate,ctx:BindingContext,version:1|2=1):boolean{
+  const l=bind(p.left,ctx);
+  if(p.op==='truthy')return l===true||l==='true';
+  const r=bind(p.right,ctx);
+  switch(p.op){case'equals':return version===1?display(l)===display(r):equalJson(l,r);case'not-equals':return version===1?display(l)!==display(r):!equalJson(l,r);case'contains':return version===2&&Array.isArray(l)?l.some(value=>equalJson(value,r)):display(l).includes(display(r));case'less-than':return version===2?typeof l==='number'&&typeof r==='number'&&l<r:Number.isFinite(Number(l))&&Number.isFinite(Number(r))&&Number(l)<Number(r);case'greater-than':return version===2?typeof l==='number'&&typeof r==='number'&&l>r:Number.isFinite(Number(l))&&Number.isFinite(Number(r))&&Number(l)>Number(r);}
+}
+function equalJson(left:Json,right:Json):boolean{if(left===right)return true;if(typeof left!==typeof right||!left||!right||typeof left!=='object'||typeof right!=='object'||Array.isArray(left)!==Array.isArray(right))return false;const entries=Object.entries(left);return entries.length===Object.keys(right).length&&entries.every(([key,value])=>Object.hasOwn(right,key)&&equalJson(value,(right as Record<string,Json>)[key]));}
+export function isJson(value:unknown,depth=0):value is Json{if(depth>100)return false;if(value===null||typeof value==='boolean'||typeof value==='string')return true;if(typeof value==='number')return Number.isFinite(value);if(Array.isArray(value))return value.every(item=>isJson(item,depth+1));if(value&&typeof value==='object'&&Object.getPrototypeOf(value)===Object.prototype)return Object.entries(value).every(([key,item])=>!['__proto__','constructor','prototype'].includes(key)&&isJson(item,depth+1));return false;}
+export function outputFields(node:GraphNode):string[]{
+  switch(node.kind){
+    case'inference':return ['text','provider','model','agentId','usage','execution','audit','settings',...(node.output==='json'?['value']:[])];
+    case'repeat':return [...outputFields(node.body[0]),'succeeded','iterations','exhausted'];
+    case'action':return ['provider','model','agentId'];
+    case'condition':return ['value'];
+    case'input':return ['fields'];
+    case'review':return ['decision'];
+    default:return [];
+  }
+}

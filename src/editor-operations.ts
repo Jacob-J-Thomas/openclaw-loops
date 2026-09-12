@@ -1,0 +1,70 @@
+import {outputFields,type Definition,type GraphNode} from './graph.js';
+
+export function autoLayout(definition:Definition):Definition{
+  const depth=new Map<string,number>();
+  for(const node of definition.nodes)depth.set(node.id,0);
+  // Bound the relaxation so invalid cyclic drafts remain editable.
+  for(let pass=0;pass<definition.nodes.length;pass++)for(const edge of definition.edges){
+    const candidate=Math.min(definition.nodes.length,(depth.get(edge.source)??0)+1);
+    if(candidate>(depth.get(edge.target)??0))depth.set(edge.target,candidate);
+  }
+  const rows=new Map<number,number>();const layout:Definition['layout']={};
+  for(const node of definition.nodes){const column=depth.get(node.id)??0,row=rows.get(column)??0;rows.set(column,row+1);layout[node.id]={x:40+column*265,y:60+row*180};}
+  return {...definition,layout};
+}
+export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:string)=>string):Definition{
+  const original=definition.nodes.find(n=>n.id===nodeId);if(!original)return definition;
+  const duplicate=structuredClone(original);duplicate.id=fresh(original.kind);duplicate.label=`${duplicate.label} copy`.slice(0,100);
+  if(duplicate.kind==='repeat'){
+    const previous=duplicate.body[0].id;duplicate.body[0].id=fresh('inference');duplicate.body[1].id=fresh('condition');
+    duplicate.body[1].predicate.left=duplicate.body[1].predicate.left.replaceAll(`nodes.${previous}.`,`nodes.${duplicate.body[0].id}.`);
+    duplicate.body[1].predicate.right=duplicate.body[1].predicate.right.replaceAll(`nodes.${previous}.`,`nodes.${duplicate.body[0].id}.`);
+  }
+  const position=definition.layout[nodeId]??{x:0,y:0};
+  return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}}};
+}
+export function bindingChoices(definition:Definition,consumer:GraphNode):string[]{
+  const reachableWithout=(blocked:string)=>{
+    const seen=new Set<string>(),pending=definition.nodes.filter(n=>n.kind==='input').map(n=>n.id);
+    while(pending.length){const id=pending.pop()!;if(id===blocked||seen.has(id))continue;seen.add(id);for(const edge of definition.edges.filter(e=>e.source===id))pending.push(edge.target);}
+    return seen;
+  };
+  const prior=definition.nodes.filter(node=>node.id!==consumer.id&&!reachableWithout(node.id).has(consumer.id));
+  return [...definition.inputSchema.map(field=>`{{input.${field.name}}}`),...prior.flatMap(node=>outputFields(node).map(field=>`{{nodes.${node.id}.${field}}}`)),...consumer.kind==='repeat'?['{{repeat.index}}']:[]];
+}
+export function revisionChanges(before:Definition,after:Definition):string[]{
+  const changes:string[]=[];
+  for(const key of ['name','slug','description','inputSchema','capabilities','limits','edges','layout'] as const)if(JSON.stringify(before[key])!==JSON.stringify(after[key]))changes.push(`${key} changed`);
+  for(const node of after.nodes){const old=before.nodes.find(n=>n.id===node.id);if(!old)changes.push(`Added ${node.label}`);else if(JSON.stringify(old)!==JSON.stringify(node))changes.push(`Changed ${node.label}`);}
+  for(const node of before.nodes)if(!after.nodes.some(n=>n.id===node.id))changes.push(`Removed ${node.label}`);
+  return changes;
+}
+
+export type MergeConflict={path:string;local:unknown;remote:unknown};
+export function mergeDefinitions(base:Definition|null,local:Definition,remote:Definition,choices:Record<string,'local'|'remote'>={}):{definition:Definition;conflicts:MergeConflict[]}{
+  if(local.id!==remote.id||base&&base.id!==local.id)throw new Error('Only revisions of the same loop can be merged.');
+  const conflicts:MergeConflict[]=[];
+  const equal=(a:unknown,b:unknown):boolean=>JSON.stringify(a)===JSON.stringify(b);
+  const plain=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value);
+  const merge=(before:unknown,ours:unknown,theirs:unknown,path:string):unknown=>{
+    if(equal(ours,theirs))return ours;
+    if(equal(before,ours))return theirs;
+    if(equal(before,theirs))return ours;
+    if(plain(before)&&plain(ours)&&plain(theirs))return Object.fromEntries([...new Set([...Object.keys(before),...Object.keys(ours),...Object.keys(theirs)])].flatMap(key=>{const value=merge(before[key],ours[key],theirs[key],path?`${path}.${key}`:key);return value===undefined?[]:[[key,value]];}));
+    if(Array.isArray(before)&&Array.isArray(ours)&&Array.isArray(theirs)&&['nodes','edges','inputSchema'].includes(path)){
+      const key=path==='inputSchema'?'name':'id';
+      const map=(values:unknown[])=>new Map(values.filter(plain).map(value=>[String(value[key]),value]));
+      const b=map(before),l=map(ours),r=map(theirs);
+      // Preserve changed local ordering when the remote ordering is unchanged;
+      // otherwise prefer remote order and append independent local additions.
+      const order=equal([...b.keys()],[...r.keys()])?[...l.keys(),...r.keys()]:[...r.keys(),...l.keys()];
+      return [...new Set(order)].flatMap(id=>{const value=merge(b.get(id),l.get(id),r.get(id),`${path}.${id}`);return value===undefined?[]:[value];});
+    }
+    if(!choices[path])conflicts.push({path,local:ours,remote:theirs});
+    return choices[path]==='remote'?theirs:ours;
+  };
+  const definition=merge(base??{},{...local,revision:remote.revision},remote,'') as Definition;
+  // A merge is an unsaved edit based on the current remote revision. It does
+  // not publish, replace a running revision or resolve an optimistic write.
+  return {definition:{...structuredClone(definition),id:remote.id,revision:remote.revision},conflicts};
+}

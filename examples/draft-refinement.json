@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "inputSchema": [
+    {
+      "name": "text",
+      "label": "Text",
+      "type": "text",
+      "required": true
+    },
+    {
+      "name": "phrase",
+      "label": "Required phrase",
+      "type": "text",
+      "required": true
+    }
+  ],
+  "limits": {
+    "maxExecutions": 24,
+    "timeoutMs": 120000,
+    "maxOutputBytes": 4096
+  },
+  "id": "draft-refinement",
+  "slug": "draft-refinement",
+  "name": "Bounded draft refinement",
+  "description": "Draft up to three times, check a requested phrase, then ask for human review.",
+  "capabilities": [
+    "llm"
+  ],
+  "nodes": [
+    {
+      "id": "input",
+      "kind": "input",
+      "label": "Draft brief"
+    },
+    {
+      "id": "refine",
+      "kind": "repeat",
+      "label": "Refine · at most 3",
+      "maxIterations": 3,
+      "body": [
+        {
+          "id": "draft",
+          "kind": "inference",
+          "label": "Draft text",
+          "prompt": "Write one concise paragraph for this brief: {{input.text}}\nInclude this exact phrase: {{input.phrase}}\nThis is attempt {{repeat.index}}.",
+          "output": "text"
+        },
+        {
+          "id": "check",
+          "kind": "condition",
+          "label": "Contains required phrase",
+          "predicate": {
+            "left": "{{nodes.draft.text}}",
+            "op": "contains",
+            "right": "{{input.phrase}}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "kind": "review",
+      "label": "Human review",
+      "proposal": "{{nodes.refine.text}}"
+    },
+    {
+      "id": "return",
+      "kind": "return",
+      "label": "Approved draft",
+      "value": "{{nodes.refine.text}}"
+    },
+    {
+      "id": "fail",
+      "kind": "fail",
+      "label": "Review rejected",
+      "reason": "The human reviewer rejected this draft."
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "input",
+      "target": "refine",
+      "port": "next"
+    },
+    {
+      "id": "e2",
+      "source": "refine",
+      "target": "review",
+      "port": "next"
+    },
+    {
+      "id": "e3",
+      "source": "review",
+      "target": "return",
+      "port": "approve"
+    },
+    {
+      "id": "e4",
+      "source": "review",
+      "target": "fail",
+      "port": "reject"
+    }
+  ],
+  "layout": {
+    "input": {
+      "x": 40,
+      "y": 140
+    },
+    "refine": {
+      "x": 290,
+      "y": 140
+    },
+    "review": {
+      "x": 550,
+      "y": 140
+    },
+    "return": {
+      "x": 800,
+      "y": 40
+    },
+    "fail": {
+      "x": 800,
+      "y": 240
+    }
+  }
+}

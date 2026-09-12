@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "inputSchema": [
+    {
+      "name": "text",
+      "label": "Text",
+      "type": "text",
+      "required": true
+    }
+  ],
+  "limits": {
+    "maxExecutions": 24,
+    "timeoutMs": 120000,
+    "maxOutputBytes": 4096
+  },
+  "id": "read-pause-continue",
+  "slug": "read-pause-continue",
+  "name": "Read, pause, continue",
+  "description": "Read the configured agent model through OpenClaw, park durably, then explain after Continue.",
+  "capabilities": [
+    "model-info",
+    "llm"
+  ],
+  "nodes": [
+    {
+      "id": "input",
+      "kind": "input",
+      "label": "Your question"
+    },
+    {
+      "id": "model",
+      "kind": "action",
+      "label": "Read configured model",
+      "capability": "model-info"
+    },
+    {
+      "id": "wait",
+      "kind": "wait",
+      "label": "Manual checkpoint",
+      "message": "Model metadata is saved. Continue when ready, including after a Gateway restart."
+    },
+    {
+      "id": "explain",
+      "kind": "inference",
+      "label": "Explain model metadata",
+      "prompt": "Answer this question: {{input.text}}\nThe configured agent model is {{nodes.model.provider}}/{{nodes.model.model}}. Explain only what this metadata tells you; do not invent capabilities.",
+      "output": "text"
+    },
+    {
+      "id": "return",
+      "kind": "return",
+      "label": "Return explanation",
+      "value": "{{nodes.explain.text}}"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "input",
+      "target": "model",
+      "port": "next"
+    },
+    {
+      "id": "e2",
+      "source": "model",
+      "target": "wait",
+      "port": "next"
+    },
+    {
+      "id": "e3",
+      "source": "wait",
+      "target": "explain",
+      "port": "next"
+    },
+    {
+      "id": "e4",
+      "source": "explain",
+      "target": "return",
+      "port": "next"
+    }
+  ],
+  "layout": {
+    "input": {
+      "x": 0,
+      "y": 140
+    },
+    "model": {
+      "x": 240,
+      "y": 140
+    },
+    "wait": {
+      "x": 480,
+      "y": 140
+    },
+    "explain": {
+      "x": 720,
+      "y": 140
+    },
+    "return": {
+      "x": 960,
+      "y": 140
+    }
+  }
+}
