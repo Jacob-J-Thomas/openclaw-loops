@@ -12,6 +12,7 @@ The development alpha uses **OpenClaw 2026.9.3** and **Node 24.16.0**. It is an 
 | Persistence | Plugin-owned SQLite on a serialized worker; immutable revisions and admission/attempt/output/event records; transactional commits, integrity checks, process lock and verified legacy JSON migration. |
 | Recovery | Durable wait/review; explicit checkpoint/retry-node/restart with ancestry. Unknown effects require an explicit choice and are never automatically replayed. |
 | Agent parity | 31 tools expose discovery, authoring, publication, versions, archive/recovery, execution/test/retry/status/history/full inspection/output. Explicit human review uses authenticated UI or human command authority. |
+| Commands | `/loops <operation> <JSON object>` exposes all 33 shared operations, including upload and document paging. `help` lists them; `help <operation>` derives arguments from the shared schema. Existing execution shortcuts remain available. The host's command write gate and explicit Human review authority apply. |
 
 Inference and the read-only configured-model Action are host-backed. The remaining palette is deterministic plugin logic. Repeat still has a fixed Inference/Condition body. Scripts, subagents, schedules, parallel branches and nested loops are accepted expansion milestones, not implemented capabilities yet.
 

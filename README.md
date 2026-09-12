@@ -29,7 +29,7 @@ Then build and install the plugin, and start the development Gateway:
 bash scripts/ollama.sh pull qwen3.5:4b
 npm run check
 node scripts/verify-package.mjs
-bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.13.tgz" --force --accept-capabilities
+bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.14.tgz" --force --accept-capabilities
 bash scripts/dev.sh gateway run
 ```
 
@@ -67,7 +67,18 @@ For source updates, rebuild/package, install that tarball explicitly in each des
 /loops resume <run-id>
 /loops cancel <run-id>
 /loops review <run-id> approve|reject
+/loops help
+/loops help <operation>
+/loops <operation> <JSON object>
+/loops read <loop-id>
+/loops versions <loop-id>
 ```
+
+Every editor operation is also available through the command's JSON argument form and uses the same backend schema. For example, `/loops capabilities {}`, `/loops history {"limit":20}`, `/loops enable {"id":"loop-id","revision":2,"enabled":true}`, or `/loops publish {"id":"loop-id","revision":2,"expectedRevision":3}`. Use `help` for discovery and `help <operation>` for its exact fields. Authoring commands require the host's write authority; a Human review still requires authenticated human authority. The `read` command aliases the backend's `load` operation.
+
+The JSON form returns the same receipt as tools and the editor. Text shortcuts preserve the readable run summary. Large results return a document reference or an explicitly labeled preview; use `document` or `output` pages to retrieve the complete result. Large input fields accept staged references from `upload`, with the same authorization and validation as agent tools.
+
+OpenClaw 2026.9.3 limits inline command arguments to 4,096 UTF-16 units. Loops detects host-altered arguments and returns `HOST_COMMAND_INPUT_CHANGED` before executing an operation. For a larger definition or input, stage JSON with `upload` chunks small enough that each complete command argument fits that host limit, then pass the returned reference. The editor and agent tools have their own documented transport budgets.
 
 A normal command invocation receives a fresh identity. Reuse an explicit request ID only for a retry of the same admission; changed inputs with that ID conflict. Tool-call IDs and UI request UUIDs provide equivalent retry identity. This does not promise exactly-once external side effects.
 

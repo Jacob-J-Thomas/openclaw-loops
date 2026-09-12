@@ -7,7 +7,8 @@ import {DocumentStore} from './document-store.js';
 import {parsePluginConfig,pluginConfigSchema,resolveBudgets} from './budgets.js';
 import { Engine } from './engine.js';
 import { SqliteStorage } from './storage.js';
-import { createBridge, formatRun, parseCommand } from './openclaw.js';
+import { createBridge } from './openclaw.js';
+import {commandHelp,parseCommandInvocation,formatCommandResult} from './commands.js';
 import {receipt,describe} from './receipts.js';
 import {LoopError,requestError,errorDetail,safeFailure} from './errors.js';
 
@@ -32,12 +33,18 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     const engine=engines.get(stateFile);
     try{await engine?.close();}finally{if(engines.get(stateFile)===engine)engines.delete(stateFile);}
   }});
-  api.registerCommand({name:'loops',description:'Discover and execute saved bounded loops.',acceptsArgs:true,requireAuth:true,requiredScopes:['operator.write'],
+  api.registerCommand({name:'loops',description:'Author, manage and execute loops. Use /loops help for operations and arguments.',acceptsArgs:true,requireAuth:true,requiredScopes:['operator.write'],
     agentPromptGuidance:['Loops tools provide full loop lifecycle control on user request. Use loops_library and loops_read for all saved definitions, including drafts. loops_create creates enabled loops by default; set enabled:false only when a draft is wanted. loops_edit preserves activation by default and accepts enabled:true/false to publish or save a draft. loops_enable enables or disables any valid saved revision without a human-only activation step; loops_revoke also stops future host actions in parked runs. Use loops_delete for requested deletion. Read the current revision before changing existing loops and reload on a conflict. To invoke a requested loop, use loops_list/loops_describe then actually call loops_run with the required inputs. If the requested loop is disabled, read and enable it as part of the request to run it, unless the user asks to keep it disabled. Report the actual result or pending/failed state; use loops_status for long-running results. A graph containing an explicit Human review node still pauses for that human decision. If tools are deferred, search for the specific loops_* tool using host discovery. Never claim loops are unavailable just because loops_list is empty. Never simulate calls or edit the plugin store directly.'],
-    async handler(command){try{const actor=bridge.actor({source:'command',command,api}),parsed=parseCommand(command,budgets.inputBytes),e=service();
-      if(parsed.op==='list')return {text:JSON.stringify(e.list(actor),null,2)};
-      const run=parsed.op==='run'?await e.run(actor,parsed.slug,parsed.input,parsed.requestId):parsed.op==='status'?e.status(actor,parsed.runId):parsed.op==='resume'?await e.resume(actor,parsed.runId):parsed.op==='review'?await e.review(actor,parsed.runId,parsed.decision):e.cancel(actor,parsed.runId);
-      return {text:formatRun(run)};
+    async handler(command){try{
+      const context:FeatureInvocationContext={source:'command',command,api},actor=bridge.actor(context);
+      const parsed=parseCommandInvocation(command,Math.max(budgets.definitionBytes,budgets.inputBytes)*2);
+      if(parsed.kind==='help')return {text:formatCommandResult(documentStore().wrap(actor,commandHelp(parsed.operation)))};
+      const operation=wireContract.operations[parsed.operation];
+      if(operation.kind==='action'&&!actor.canManage)throw requestError('This command requires an operator with write access.','HOST_POLICY_DENIED');
+      const handler=wireHandlers[parsed.operation] as (input:unknown,context:FeatureInvocationContext)=>unknown;
+      const result=await handler(parsed.input,context);
+      if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
+      actor.check();return {text:formatCommandResult(result,parsed.format)};
     }catch(error){const detail=errorDetail(error,{phase:'operation'});return {text:`Loops [${detail.code}]: ${detail.message}\n${detail.recovery}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
@@ -67,10 +74,11 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
       return {kind:'loops-error',operation:name,error:safeFailure(error)};
     }
   }])) as FeatureHandlers<typeof wireContract>;
-  return {...wrapped,
+  const wireHandlers:FeatureHandlers<typeof wireContract>={...wrapped,
     document:(p,c)=>documentStore().read(bridge.actor(c),p.documentId,p.offset,p.limit),
     upload:(p,c)=>documentStore().upload(bridge.actor(c),p),
   };
+  return wireHandlers;
 }});
 Object.assign(plugin.configSchema.jsonSchema??={},pluginConfigSchema);
 plugin.configSchema.parse=parsePluginConfig;

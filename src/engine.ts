@@ -96,7 +96,7 @@ export class Engine{
     try{this.options.onChange?.();}catch{/* A disconnected subscriber cannot roll back a committed write. */}
   }
   private ensureHuman(actor:Actor){actor.check();if(!actor.human||actor.source==='tool')throw requestError('This operation requires an authenticated human in the Loops UI or an authorized human command.');}
-  private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!(actor.source==='session-action'&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access in the Loops UI.');}
+  private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}
   private own(actor:Actor,id:string){actor.check();const run=this.state.runs[id];if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');return run;}
   private allowed(actor:Actor,d:Definition,record:LoopRecord|undefined){actor.check();if(!record||record.revoked)throw requestError('Loop permission revoked.');for(const c of d.capabilities){if(!record.grants.includes(c))throw requestError(`Loop permission revoked: ${c}`);this.host.check(actor,c);}}
   private allowedRun(actor:Actor,run:Run){if(run.testMode){this.ensureAuthor(actor);for(const capability of run.definition.capabilities)this.host.check(actor,capability);}else this.allowed(actor,run.definition,this.state.loops[run.definition.id]);}

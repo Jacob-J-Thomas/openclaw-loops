@@ -8,6 +8,7 @@ import {resolveSessionModelRef} from 'openclaw/plugin-sdk/model-session-runtime'
 import {completionParameters,validateAdvanced,type InferenceSettings,type InferenceCapabilities} from './inference-settings.js';
 import {LoopError,requestError} from './errors.js';
 import {defaultBudgets} from './budgets.js';
+import type {RunReceipt} from './receipts.js';
 
 export function createBridge(api:OpenClawPluginApi){
   const current=()=>api.runtime.config.current() as typeof api.config;
@@ -28,7 +29,11 @@ export function createBridge(api:OpenClawPluginApi){
     const model=context.source==='tool'&&context.tool.activeModel?.modelRef?context.tool.activeModel.modelRef:`${resolved.provider}/${resolved.model}`;
     const requester=context.source==='tool'?context.tool.requesterSenderId:context.source==='command'?context.command.senderId:context.action.client?.connId;
     const human=context.source==='session-action'&&!!context.action.client?.scopes.includes('operator.admin')||context.source==='command'&&context.command.isAuthorizedSender&&!!context.command.gatewayClientScopes?.includes('operator.admin');
-    const canManage=context.source==='session-action'&&!!context.action.client?.scopes.some(s=>s==='operator.admin'||s==='operator.write');
+    // OpenClaw's registered command gate requires operator.write, or an owner
+    // channel sender when Gateway scopes are absent. Do not infer command scope
+    // from its text or from the session's model/account attribution.
+    const canManage=context.source==='session-action'?!!context.action.client?.scopes.some(s=>s==='operator.admin'||s==='operator.write'):
+      context.source==='command'&&context.command.isAuthorizedSender&&(!context.command.gatewayClientScopes||context.command.gatewayClientScopes.some(s=>s==='operator.admin'||s==='operator.write'));
     const a:Actor={agentId,sessionKey,sessionId,source:context.source,human,canManage,check:()=>checkActor(agentId,sessionKey,sessionId),...requester?{requester}:{},model,
       ...entry?.thinkingLevel?{reasoning:entry.thinkingLevel}:{},...entry?.authProfileOverride?{authProfileId:entry.authProfileOverride}:{},
       ...context.source==='command'&&context.command.runtimeContext?.llm?.complete?{complete:context.command.runtimeContext.llm.complete}:{},
@@ -86,9 +91,12 @@ export function parseCommand(context:PluginCommandContext,maxInputBytes=defaultB
   const requestId=requestMatch?.[1]??randomUUID();
   return {op:'run' as const,slug:target,input:input as Record<string,Json>,requestId:`command:${requestId}`};
 }
-export function formatRun(run:Run):string{
+export function formatRun(run:Run|RunReceipt):string{
   const summary=`${run.definition.name} · revision ${run.definition.revision} · ${run.state}\nRun: ${run.id}`;
-  if(run.state==='completed')return `${summary}\n\n${display(run.result??null)}`;
+  if(run.state==='completed'){
+    if('resultTruncated' in run&&run.resultTruncated)return `${summary}\n\n${run.resultPreview}\n\nResult preview. Retrieve the complete output with /loops output ${JSON.stringify({runId:run.id,offset:0})}; follow nextOffset until null.`;
+    return `${summary}\n\n${display('result' in run?run.result??null:null)}`;
+  }
   if(run.state==='review')return `${summary}\nHuman review is pending. Use the Loops UI or /loops review ${run.id} approve|reject. Continue cannot approve it.`;
   if(run.state==='waiting')return `${summary}\n${run.pending??''}\nContinue with /loops resume ${run.id}`;
   if(run.errorDetail)return `${summary}\n[${run.errorDetail.code}] ${run.errorDetail.message}\n${run.errorDetail.recovery}`;

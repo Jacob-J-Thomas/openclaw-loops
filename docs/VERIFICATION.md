@@ -1,8 +1,29 @@
 # Local verification
 
+## Alpha.14 conversation-command parity
+
+Both isolated Gateways run **1.0.0-alpha.14** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest match archive SHA-256 `87d9960c2a1dab4d2713036c55fc248a4763b8160702a869bf7f460595b72a18`. This evidence update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha14/`.
+
+All 33 shared operations now accept the conversation form `/loops <operation> <JSON object>`, with schema-derived help, the existing text shortcuts, structured failures, staged input and complete result retrieval. Commands use the same validation and backend handlers as UI actions and agent tools. Authenticated command write authority permits enabled authoring and lifecycle control; Human review retains its explicit human decision requirement. The 31 agent tools remain available.
+
+The actual host truncates inline command arguments at 4,096 UTF-16 units. Loops now detects changed arguments and rejects them before executing, with `HOST_COMMAND_INPUT_CHANGED` and a chunked-upload recovery path. A dedicated acceptance journey sent **65 real chat commands on each Gateway**. It covered enabled creation, UI read parity, drafts that preserve publication, publication/version restoration, conflicts, unpublished tests, wait/resume, cancellation/recovery, approve/reject, archive/recovery/deletion, fresh admission IDs, explicit retry deduplication, and a fully retrieved **50,000-byte Unicode result** from staged input. Its final completion used the selected real model: Codex run `a00e84d3-d4d3-47d0-be45-f3de26266019` and Ollama run `6b60b490-93ff-4ff7-b634-a332d334df4f`.
+
+The first Codex test client tried to parse OpenClaw's truncated display preview as full JSON. Evidence is retained under `commands/codex-attempt1-preview-client/`. The client now follows the exact transcript message identity through authorized `chat.message.get`; the full committed result was present. Its temporary definition was archived through the normal API. The subsequent complete journeys passed, without weakening plugin budgets or replaying a command to retrieve its output.
+
+Fresh independent invocation smoke tests used the same saved enabled revision 1:
+
+| Profile | User command | Agent tool | Outcome |
+|---|---|---|---|
+| Codex, Sol selected only in its synthetic conversation | `3aa2eb55-9fe7-42dd-b701-730c147e31ba` | `da0a5d72-ed29-4560-ba33-2bb69cd47004` | Completed; exact fresh input and agent-reported new run ID verified. |
+| Separate Ollama server, `qwen3.5:4b` | `c8b46d24-3c63-4776-8e31-3f0c490a7dd6` | `d7478500-66cd-4d37-9c26-455ecfb7d21e` | Completed; exact fresh input and agent-reported new run ID verified. |
+
+**161 source tests** pass on macOS arm64 and Linux arm64 with Node **24.16.0/26.1.0**, together with types, lint, build and **31 extracted-package actual SDK tests**. All five compiled/metadata files match across platforms. Linux rebuilt current source using the earlier verified dependency images; the entire dependency lock was checked equal apart from this package's own version. Both test containers had no network or host mounts, exited 0 and had no OOM. Real 16 MB tmpfs exhaustion returned `LOOPS_STORAGE_FULL` before a host effect, preserved committed state, and recovered with exactly one explicit new invocation and `integrity_check=ok`. The task-only 2 GB VM was stopped after collection.
+
+The stopped-state backup is `.dev-profile/backups/before-alpha14-1789231333235`. Every application-table row stayed unchanged through installation and restart: Codex 10 definitions/133 runs, Ollama 6 definitions/32 runs. Later acceptance added only its synthetic definitions and runs. No personal-profile or model-server settings changed. This remains a local alpha; identity/account SDK dependencies, public CI/registry installation and the remaining release and expansion gates are open.
+
 ## Alpha.13 shared node contracts and worker memory
 
-Both isolated Gateways run **1.0.0-alpha.13** on OpenClaw **2026.9.3**. Tarball SHA-256: `f160c6e6c1062204d79a54d56bb1f5511263ae0ac29241db772ceb96328125f3`. Installed backend, worker, UI and manifest match the archive. This evidence update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha13/`.
+At this checkpoint, both isolated Gateways ran **1.0.0-alpha.13** on OpenClaw **2026.9.3**. Tarball SHA-256: `f160c6e6c1062204d79a54d56bb1f5511263ae0ac29241db772ceb96328125f3`. Installed backend, worker, UI and manifest matched the archive. This evidence update followed packaging and is separate from executable identity. Evidence is under `evidence/release-alpha13/`.
 
 The internal node registry now supplies the schemas, binding inputs, producer outputs, capability declarations, exit ports, execution and editor defaults for all nine current kinds. The complete definition schema matches commit `8feee20` byte for byte (SHA-256 `02990425c54289c384d33e54ddd7cfe8648138122971ca90d72ce2a5eace1020`). Existing version 1/2 definitions retain their contract. A registry-authored combined workflow executes six Repeat iterations, forwards explicit temperature zero, survives a parked restart, rejects agent approval, and reaches both human-approved Return and human-rejected Fail outcomes. Native browser inspection verifies the palette, model-action inspector and Advanced controls without editing saved definitions or local drafts.
 
@@ -18,6 +39,8 @@ The stopped-state upgrade backup is `.dev-profile/backups/before-alpha13-1789228
 | Separate Ollama server, `qwen3.5:4b` | `6f5b75f1-cfeb-46f6-92ef-f4b67e83c37c` | `5f554d9a-e16c-4906-b255-ac926972f4fe` | Same enabled revision 1; exact input and newly reported run-ID assertions passed. |
 
 This is a verified local alpha, not a 1.0 release. Public CI/registry publication, host identity/account integration, broader deployment/resource acceptance and the later expansion milestones remain open.
+
+ClawHub CLI 0.23.3 static validation of the exact extracted alpha.13 artifact against OpenClaw 2026.9.3 passed with zero issues. A source-aligned candidate at `f759cc7a9bda02c5d7c0d71c318323d821ad8cf7`, SHA-256 `bf191267eacc4108f096eb075663b0130c1e411579465c0a67e6e3594106da38`, also passed the code-plugin publication dry run. Its 19 non-document files match the installed archive; four documentation files differ, and 25 extracted-package tests pass. The dry run did not authenticate or upload, and does not establish namespace ownership, source availability or registry acceptance. Publisher authentication and actual publication remain pending.
 
 ## Alpha.12 actionable failure diagnostics
 

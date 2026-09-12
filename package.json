@@ -1,6 +1,6 @@
 {
   "name": "openclaw-loops-poc",
-  "version": "1.0.0-alpha.13",
+  "version": "1.0.0-alpha.14",
   "private": true,
   "type": "module",
   "description": "Inspectable, bounded loops for OpenClaw chat and native UI",

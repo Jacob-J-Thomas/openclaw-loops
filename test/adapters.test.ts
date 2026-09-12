@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
+import {createHash} from 'node:crypto';
 import {SqliteStorage} from '../src/storage.js';
 import type {OpenClawPluginApi,OpenClawPluginToolContext,PluginCommandContext,PluginSessionActionRegistration,OpenClawPluginService,OpenClawPluginCommandDefinition} from 'openclaw/plugin-sdk/plugin-entry';
 import sourcePlugin from '../src/index.js';
@@ -22,7 +23,7 @@ function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenCl
   const commands=new Map<string,OpenClawPluginCommandDefinition>(),actions=new Map<string,PluginSessionActionRegistration>(),registered:ToolRegistration[]=[];const services:OpenClawPluginService[]=[];
   const key='agent:main:adapter-test',sessionId='adapter-session';
   // The real published feature SDK registers these adapters. Only host capabilities are faked.
-  const complete=vi.fn(async()=>({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
+  const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async()=>({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
   const config={plugins:{entries:{'loops-poc':{enabled:true}}}};
   const api={id:'loops-poc',config,runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>agentId==='main'&&sessionKey===key?{sessionId}:undefined}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
   plugin.register(api);
@@ -34,6 +35,106 @@ function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenCl
   return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('exposes capability discovery through the real conversation command',async()=>{
+    const s=setup();
+    const reply=await s.commands.get('loops')!.handler({...s.commandContext,args:'capabilities {}'});
+    expect(JSON.parse(reply.text!)).toMatchObject({parameters:expect.any(Array),concurrency:1});
+  });
+  it('authors and versions the same enabled definitions through commands, tools and UI',async()=>{
+    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);
+    definition.slug='command-authored';const inference=definition.nodes.find(node=>node.kind==='inference');if(inference?.kind!=='inference')throw Error();inference.advanced={temperature:0,maxTokens:800};
+    const created=await command('create',{definition}),id=created.record.definition.id;
+    expect(created).toMatchObject({record:{enabledRevision:1,definition:{revision:1,nodes:expect.arrayContaining([expect.objectContaining({advanced:{temperature:0,maxTokens:800}})])}}});
+    expect(JSON.parse((await handler({...s.commandContext,args:`read ${id}`})).text!)).toEqual(created.record);
+    expect((await s.tools.find(tool=>tool.name==='loops_read')!.execute('command-authored-read',{id})).details).toEqual(created.record);
+    expect(await s.action('load',{id})).toEqual({ok:true,result:created.record});
+    const draft=await command('draft',{definition:{...created.record.definition,name:'Command draft'},expectedRevision:1});
+    expect(draft.record).toMatchObject({enabledRevision:1,publishedRevision:1,definition:{revision:2,name:'Command draft'}});
+    expect(await command('validate',{definition:draft.record.definition})).toMatchObject({issues:[]});
+    expect((await command('versions',{id})).map((version:{revision:number})=>version.revision)).toEqual([2,1]);
+    expect(await command('publish',{id,revision:2,expectedRevision:2})).toMatchObject({enabledRevision:2,publishedRevision:2});
+    expect((await s.tools.find(tool=>tool.name==='loops_describe')!.execute('command-publication',{slug:definition.slug})).details).toMatchObject({revision:2,name:'Command draft'});
+    expect(await command('edit',{id,expectedRevision:2,changes:{description:'Explicit command draft'},enabled:false})).toMatchObject({record:{enabledRevision:null,definition:{revision:3}}});
+    expect(await command('enable',{id,revision:3,enabled:true})).toMatchObject({enabledRevision:3});
+    const restored=await command('restore',{id,revision:1,expectedRevision:3});
+    expect(restored.record).toMatchObject({enabledRevision:3,definition:{revision:4,nodes:expect.arrayContaining([expect.objectContaining({advanced:{temperature:0,maxTokens:800}})])}});
+    expect(await command('archive',{id,expectedRevision:4,archived:true})).toMatchObject({archived:true,enabledRevision:null});
+    expect(await command('deleted')).toEqual([expect.objectContaining({id,archived:true})]);
+    expect(await command('recover',{id,expectedRevision:4})).toMatchObject({archived:false,enabledRevision:null});
+    expect(await command('delete',{id,expectedRevision:4})).toMatchObject({id,deleted:true});
+    expect(await s.action('load',{id})).toMatchObject({result:{kind:'loops-error'}});
+    expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('uses command-bound inference and fresh or explicit retry identities for JSON invocation and recovery',async()=>{
+    const s=setup(),handler=s.commands.get('loops')!.handler,bound=vi.fn(s.complete.getMockImplementation()!);
+    const context={...s.commandContext,runtimeContext:{llm:{complete:bound}}};
+    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...context,args:`${op} ${JSON.stringify(input)}`})).text!);
+    await command('enable',{id:'summarize-text',revision:1,enabled:true});
+    const input={slug:'summarize-text',input:{text:'JSON command inference'}};
+    const first=await command('run',input),second=await command('run',input);
+    expect(first).toMatchObject({state:'completed',source:'command'});expect(second.id).not.toBe(first.id);
+    const intentional=await command('run',{...input,requestId:'one-admission'});
+    expect(await command('run',{...input,requestId:'one-admission'})).toEqual(intentional);
+    expect(bound).toHaveBeenCalledTimes(3);expect(s.complete).not.toHaveBeenCalled();
+    expect(await command('history',{limit:1})).toMatchObject({total:3,nextCursor:1,items:[expect.any(Object)]});
+    expect(await command('inspect',{runId:first.id})).toMatchObject({id:first.id,outputs:{summary:{text:'An actual adapter result.'}}});
+    expect(await command('output',{runId:first.id})).toMatchObject({text:'An actual adapter result.',nextOffset:null});
+    bound.mockRejectedValueOnce(new Error('Synthetic failed provider call'));
+    const failed=await command('run',input);expect(failed.state).toBe('failed');
+    const retry=await command('retry',{runId:failed.id,mode:'retry-node'});
+    expect(retry).toMatchObject({state:'completed',parentRunId:failed.id});
+    const definition=(await command('read',{id:'summarize-text'})).definition;
+    const tested=await command('test',{definition,input:input.input});
+    expect(tested).toMatchObject({state:'completed',testMode:true});expect(bound).toHaveBeenCalledTimes(6);
+  });
+  it('validates command identity and authority before mutation and retains optimistic conflicts',async()=>{
+    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const args=`edit ${JSON.stringify({id:'summarize-text',expectedRevision:1,changes:{name:'Command edit'}})}`;
+    expect((await handler({...s.commandContext,isAuthorizedSender:false,args})).text).toContain('Unauthorized');
+    expect((await handler({...s.commandContext,gatewayClientScopes:['operator.read'],args})).text).toContain('write access');
+    for(const injected of [{agentId:'other'},{sessionId:'forged'},{human:true}]){
+      const denied=await handler({...s.commandContext,args:`edit ${JSON.stringify({id:'summarize-text',expectedRevision:1,changes:{name:'Injected'},...injected})}`});
+      expect(denied.text).toContain('schema');
+    }
+    expect((await handler({...s.commandContext,args:'toString {}'})).text).toContain('Unknown Loops operation');
+    expect((await handler({...s.commandContext,args:'run summarize-text bad --request-id'})).text).not.toContain('completed');
+    expect(await s.action('load',{id:'summarize-text'})).toMatchObject({result:{definition:{revision:1,name:examples[0].name}}});
+    await handler({...s.commandContext,args});
+    expect((await handler({...s.commandContext,args})).text).toContain('LOOPS_REVISION_CONFLICT');
+    expect(await s.action('load',{id:'summarize-text'})).toMatchObject({result:{definition:{revision:2,name:'Command edit'}}});
+    expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('rejects host-truncated commands before admitting an altered input',async()=>{
+    const s=setup(),handler=s.commands.get('loops')!.handler;
+    await s.action('enable',{id:'summarize-text',revision:1,enabled:true});
+    const args='run summarize-text '+'Important source. '.repeat(400),before=await s.action('runs',{});
+    const reply=await handler({...s.commandContext,commandBody:'/loops '+args,args:args.slice(0,4096)});
+    expect(reply.text).toContain('HOST_COMMAND_INPUT_CHANGED');expect(reply.text).toContain('upload');
+    expect(await s.action('runs',{})).toEqual(before);expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('retrieves complete command results and accepts the same staged inputs as tools',async()=>{
+    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='command-large';
+    definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];definition.edges=[{id:'edge',source:'input',target:'return',port:'next'}];definition.capabilities=[];definition.limits.maxOutputBytes=1024*1024;
+    await command('create',{definition});
+    const text='🙂"\\'.repeat(15000),json=JSON.stringify({text}),characters=Array.from(json),sha256=createHash('sha256').update(json).digest('hex');
+    let reference:unknown;
+    for(let offset=0;offset<characters.length;offset+=16000){
+      const response=await command('upload',{uploadId:'command-large-input',offset,text:characters.slice(offset,offset+16000).join(''),complete:offset+16000>=characters.length,sha256});reference=response.reference;
+    }
+    const run=await command('run',{slug:definition.slug,input:reference});expect(run).toMatchObject({state:'completed',resultTruncated:true});
+    const inspection=await handler({...s.commandContext,args:`inspect ${JSON.stringify({runId:run.id})}`});
+    expect(inspection.text).toContain('loops-document');expect(inspection.text).toContain('/loops document');
+    const documentId=/"documentId": "([a-f0-9]{64})"/.exec(inspection.text!)![1];
+    let full='',offset=0;while(true){const page=await command('document',{documentId,offset});full+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+    expect(JSON.parse(full)).toMatchObject({id:run.id,input:{text},result:text});
+    expect((await handler({...s.commandContext,args:`status ${run.id}`})).text).toContain('Result preview');
+    let output='';offset=0;while(true){const page=await command('output',{runId:run.id,offset});output+=page.text;if(page.nextOffset===null)break;offset=page.nextOffset;}
+    expect(output).toBe(text);expect(s.complete).not.toHaveBeenCalled();
+  });
   it('restarts after a failed storage close instead of retaining a stopped executor',async()=>{
     const s=setup(),service=s.services.find(service=>service.id==='loops-poc-store')!,ctx={} as Parameters<OpenClawPluginService['start']>[0];
     const post=Worker.prototype.postMessage;
@@ -188,7 +289,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await del.execute('stale',{id:'summarize-text',expectedRevision:1})).details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_REVISION_CONFLICT'}});
     expect(await s.action('edit',{id:'summarize-text',expectedRevision:2,changes:{name:'Forbidden'}},['operator.read'])).toMatchObject({result:{kind:'loops-error',error:{message:expect.stringMatching(/authorized/)}}});
   });
-  it('requires a trusted main-agent conversation for all authoring tools',async()=>{
+  it('requires a matching host-resolved conversation for all authoring tools',async()=>{
     for(const context of [{agentId:'other'},{sessionKey:'agent:main:forged'},{sessionId:'forged'}]){
       const s=setup({toolContext:context});
       await expect(s.tools.find(t=>t.name==='loops_library')!.execute('bad-reader',{})).rejects.toThrow();
