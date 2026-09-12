@@ -29,3 +29,7 @@ summary:focus-visible{outline:2px solid #8177d5;outline-offset:3px}button:disabl
 .lp-local-drafts{margin:12px 0;padding:12px;border:1px solid #73758a;border-radius:8px}
 .lp-local-drafts button{margin:5px;white-space:normal}
 @media(max-width:620px){.lp-canvas-heading>div:last-child{flex-wrap:wrap}.lp-canvas-footer{flex-direction:column;gap:6px}.lp-conflict button,.lp-library-recovery button{white-space:normal;max-width:100%}}
+.lp-history-pages{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.lp-history-cleanup{margin:12px 0;padding:12px;border:1px solid var(--lp-border,#8d91a2);border-radius:8px}
+.lp-history-cleanup>summary{cursor:pointer;font-weight:600}
+.lp-history-cleanup .lp-field{max-width:320px}

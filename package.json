@@ -1,6 +1,6 @@
 {
   "name": "openclaw-loops-poc",
-  "version": "1.0.0-alpha.5",
+  "version": "1.0.0-alpha.6",
   "private": true,
   "type": "module",
   "description": "Inspectable, bounded loops for OpenClaw chat and native UI",
@@ -19,7 +19,8 @@
     "docs/UPSTREAM_REQUIREMENTS.md",
     "docs/DEPLOYMENT.md",
     "docs/THIRD_PARTY_NOTICES.md",
-    "docs/TRANSPORT.md"
+    "docs/TRANSPORT.md",
+    "docs/HISTORY.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

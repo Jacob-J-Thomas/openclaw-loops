@@ -8,6 +8,7 @@ import {defaultBudgets} from './budgets.js';
 const persistedBudgets={...defaultBudgets,definitionBytes:Number.MAX_SAFE_INTEGER};
 import {Value} from 'typebox/value';
 import {outputs} from './output-schemas.js';
+import {RetiredAdmissionSchema} from './retention.js';
 
 export function validateState(value:unknown):State{
   if(!value||typeof value!=='object'||!('version' in value)||value.version!==1||!('loops' in value)||!('runs' in value))throw new Error('Invalid or unsupported Loops state. The original store has been preserved.');
@@ -28,6 +29,10 @@ export function validateState(value:unknown):State{
     if(!Value.Check(outputs.completeRun,run))throw new Error(`Invalid saved run structure: ${id}`);
     parseDefinition(run.definition,persistedBudgets);
     if(id!==run.id||!run.owner?.agentId||!run.owner.sessionKey||!run.owner.sessionId||!Array.isArray(run.trace)||!run.outputs||!run.requestKey||!run.requestFingerprint||!['queued','running','completed','failed','waiting','review','cancelled','interrupted'].includes(run.state))throw new Error(`Invalid saved run: ${id}`);
+  }
+  if(state.retiredAdmissions!==undefined){
+    if(!state.retiredAdmissions||typeof state.retiredAdmissions!=='object'||Array.isArray(state.retiredAdmissions))throw new Error('Invalid retired admissions.');
+    for(const [key,retired] of Object.entries(state.retiredAdmissions))if(!/^[a-f0-9]{64}$/.test(key)||!Value.Check(RetiredAdmissionSchema,retired)||state.runs[retired.runId])throw new Error('Invalid retired admission identity.');
   }
   return state;
 }

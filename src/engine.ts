@@ -5,16 +5,17 @@ import { bind, compare, display, isJson, parseDefinition, parseDefinitionContent
 import { examples } from './examples.js';
 import type {OpenClawPluginApi} from 'openclaw/plugin-sdk/plugin-entry';
 import {completionParameters,validateAdvanced,type InferenceSettings,type InferenceCapabilities} from './inference-settings.js';
-import {errorDetail,type LoopErrorData} from './errors.js';
+import {LoopError,errorDetail,type LoopErrorData} from './errors.js';
 import {resolveBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {textPage} from './feature-json.js';
+import {retentionCandidates,type RetentionPolicy,type RetentionResult,type RetiredAdmission} from './retention.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string};
 export type Run={id:string;requestKey:string;requestFingerprint:string;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
-export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>};
+export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
 export interface Storage{read():State|undefined;write(state:State):void;close?():void}
 export class FileStorage implements Storage{
   constructor(private file:string){}
@@ -33,7 +34,10 @@ const canonical=(value:unknown):string=>JSON.stringify(value,(_key,item)=>item&&
 const ownerKey=(a:Owner)=>JSON.stringify([a.agentId,a.sessionKey,a.sessionId]);
 const terminal=(r:Run)=>['completed','failed','cancelled','interrupted'].includes(r.state);
 export class Engine{
-  private state:State;
+  private cachedState!:State;
+  private storageFailure?:LoopError;
+  private get state(){if(this.storageFailure)throw this.storageFailure;return this.cachedState;}
+  private set state(value:State){this.cachedState=value;}
   readonly budgets:Budgets;
   private queued=new Map<string,Actor>();
   private physical=new Map<string,Set<Promise<unknown>>>();
@@ -58,7 +62,29 @@ export class Engine{
     }
     this.persist();
   }
-  private persist(){try{this.storage.write(this.state);}catch(error){const committed=this.storage.read();if(committed)this.state=committed;for(const active of this.active.values())active.controller.abort(new Error('Storage commit failed; execution stopped.'));throw error;}try{this.options.onChange?.();}catch{/* A disconnected subscriber cannot roll back a committed write. */}}
+  private persist(){
+    if(this.storageFailure)throw this.storageFailure;
+    try{this.storage.write(this.state);}catch(error){
+      try{
+        const committed=this.storage.read();
+        if(committed){
+          // Pumps hold Run references across host calls. Replacing only the
+          // state map leaves them updating orphaned objects after rollback.
+          for(const [id,run] of Object.entries(this.state.runs)){
+            const previous=committed.runs[id];if(!previous)continue;
+            for(const key of Object.keys(run))if(!Object.hasOwn(previous,key))Reflect.deleteProperty(run,key);
+            Object.assign(run,previous);committed.runs[id]=run;
+          }
+          this.state=committed;
+        }else throw new Error('The committed store is unavailable.',{cause:error});
+      }catch(readError){
+        this.storageFailure=new LoopError({code:'LOOPS_STORAGE_UNAVAILABLE',message:'The last storage commit could not be verified. Loops execution is stopped until the store is reopened.',phase:'storage',retryable:false,recovery:'Check storage health and restart the plugin. Inspect recovered attempts before retrying any uncertain effects.'},{cause:new AggregateError([error,readError],'Storage commit and verification failed.')});
+        this.closing=true;this.queued.clear();
+      }finally{for(const active of this.active.values())active.controller.abort(new Error('Storage commit failed; execution stopped.'));}
+      throw this.storageFailure??error;
+    }
+    try{this.options.onChange?.();}catch{/* A disconnected subscriber cannot roll back a committed write. */}
+  }
   private ensureHuman(actor:Actor){actor.check();if(!actor.human||actor.source==='tool')throw new Error('This operation requires an authenticated human in the Loops UI or an authorized human command.');}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!(actor.source==='session-action'&&(actor.human||actor.canManage)))throw new Error('Loop changes require an authorized agent tool or an operator with write access in the Loops UI.');}
   private own(actor:Actor,id:string){actor.check();const run=this.state.runs[id];if(!run||ownerKey(run.owner)!==ownerKey(actor))throw new Error('Run not found in this session.');return run;}
@@ -122,8 +148,28 @@ export class Engine{
   recover(actor:Actor,id:string,expectedRevision:number){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r)throw new Error('Loop not found.');if(r.definition.revision!==expectedRevision)throw new Error('Recovery conflict: reload the current revision.');if(Object.values(this.state.loops).some(other=>other!==r&&!other.deletedAt&&other.definition.slug===r.definition.slug))throw new Error('Slug is already in use; restore to a new loop instead.');delete r.deletedAt;r.archived=false;r.enabledRevision=null;this.persist();return structuredClone(r);}
   output(actor:Actor,id:string,nodeId?:string,offset=0,limit=8000){const run=this.own(actor,id);const value=nodeId===undefined?run.result:run.outputs[nodeId];if(value===undefined)throw new Error('Output not found.');return {runId:id,nodeId:nodeId??null,...textPage(display(value),offset,limit),format:typeof value==='string'?'text':'json'};}
   history(actor:Actor,cursor=0,limit=100){if(!Number.isInteger(cursor)||cursor<0||!Number.isInteger(limit)||limit<1||limit>1000)throw new Error('History page requires a nonnegative cursor and limit 1–1000.');const rows=this.runs(actor);return {items:rows.slice(cursor,cursor+limit),nextCursor:cursor+limit<rows.length?cursor+limit:null,total:rows.length};}
+  retention(actor:Actor,policy:RetentionPolicy,applyPlanId?:string):RetentionResult{
+    this.ensureAuthor(actor);
+    const all=Object.values(this.state.runs),owner=ownerKey(actor);
+    const plan=retentionCandidates(all.filter(run=>ownerKey(run.owner)===owner),policy,new Set([...this.active.keys(),...this.physical.keys()]),new Set(all.flatMap(run=>run.parentRunId?[run.parentRunId]:[])));
+    const planId=hash(canonical({owner,policy,candidates:plan.candidates}));
+    if(applyPlanId!==undefined){
+      if(applyPlanId!==planId)throw new Error('History cleanup changed since preview. Preview again before applying. No history has been deleted.');
+      if(plan.candidates.length){
+        const retiredAt=now();this.state.retiredAdmissions??={};
+        for(const {id} of plan.candidates){const run=this.state.runs[id];this.state.retiredAdmissions[run.requestKey]={runId:id,fingerprint:run.requestFingerprint,owner:run.owner,retiredAt};delete this.state.runs[id];}
+        this.persist();
+      }
+    }
+    return {planId,policy:structuredClone(policy),...plan,applied:applyPlanId!==undefined};
+  }
+  private rejectRetiredAdmission(key:string,fingerprint:string){
+    const retired=this.state.retiredAdmissions?.[key];if(!retired)return;
+    if(retired.fingerprint!==fingerprint)throw new Error('Request ID conflict: this admission belongs to deliberately removed history.');
+    throw new LoopError({code:'LOOPS_HISTORY_REMOVED',message:`Run ${retired.runId} was deliberately removed from history. This request ID will not execute again.`,phase:'admission',retryable:false,recovery:'Use a new request ID only for an intentional new execution.'});
+  }
   runs(actor:Actor){actor.check();return Object.values(this.state.runs).filter(r=>ownerKey(r.owner)===ownerKey(actor)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(r=>({id:r.id,slug:r.definition.slug,revision:r.definition.revision,state:r.state,createdAt:r.createdAt,updatedAt:r.updatedAt,executions:r.executions}));}
-  status(actor:Actor,id:string){const run=structuredClone(this.own(actor,id));if(this.physical.has(id)&&!this.active.has(id))run.cleanupPending=true;return run;}
+  status(actor:Actor,id:string){const run=structuredClone(this.own(actor,id));if(terminal(run)&&(this.active.has(id)||this.physical.has(id)))run.cleanupPending=true;return run;}
   async run(actor:Actor,slug:string,input:unknown,requestId:string):Promise<Run>{
     return this.admit(actor,slug,input,requestId);
   }
@@ -131,6 +177,7 @@ export class Engine{
   private async admit(actor:Actor,slug:string,input:unknown,requestId:string,draft?:Definition):Promise<Run>{
     actor.check();if(!requestId||requestId.length>200)throw new Error('A stable request ID of at most 200 characters is required.');
     const requestKey=hash(ownerKey(actor)+':'+requestId);const fingerprint=hash(canonical({slug,input,...draft?{draft}:{}}));
+    this.rejectRetiredAdmission(requestKey,fingerprint);
     const prior=Object.values(this.state.runs).find(r=>r.requestKey===requestKey);
     if(prior){if(prior.requestFingerprint!==fingerprint)throw new Error('Request ID conflict: input changed.');return this.status(actor,prior.id);}
     const definition=draft??this.describe(actor,slug);const issues=this.validate(actor,definition).issues;if(issues.length)throw new Error(issues.map(i=>i.message).join(' '));
@@ -144,7 +191,7 @@ export class Engine{
     if(this.active.has(id)||this.physical.has(id))throw new Error('Wait for physical execution cleanup before recovery.');
     this.allowedRun(actor,previous);
     if(!requestId||requestId.length>200)throw new Error('Recovery requires an admission request ID of at most 200 characters.');
-    const key=hash(ownerKey(actor)+':'+requestId),fingerprint=hash(canonical({parentRunId:id,mode}));const prior=Object.values(this.state.runs).find(r=>r.requestKey===key);
+    const key=hash(ownerKey(actor)+':'+requestId),fingerprint=hash(canonical({parentRunId:id,mode}));this.rejectRetiredAdmission(key,fingerprint);const prior=Object.values(this.state.runs).find(r=>r.requestKey===key);
     if(prior){if(prior.requestFingerprint!==fingerprint)throw new Error('Request ID conflict.');return this.status(actor,prior.id);}
     if(mode==='checkpoint'&&(previous.uncertainty||previous.trace.some(t=>['running','interrupted','cancelled','failed'].includes(t.state))))throw new Error('The current attempt is not a committed checkpoint. Inspect its outcome, then explicitly retry the node or restart.');
     const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
@@ -158,8 +205,17 @@ export class Engine{
     r.review={decision,at:now(),requester:actor.requester??'authenticated-operator'};const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;
     r.outputs[r.cursor]={decision};r.cursor=this.next(r,r.cursor,decision);this.persist();return this.dispatch(actor,r);
   }
-  cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return structuredClone(r);r.state='cancelled';this.queued.delete(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist();return structuredClone(r);}
-  async close(){this.closing=true;this.queued.clear();for(const [id,active] of this.active){const r=this.state.runs[id];r.state='interrupted';r.error='Gateway service stopped during execution.';r.uncertainty='A dispatched host call may have completed.';active.controller.abort(new Error(r.error));}this.persist();await Promise.allSettled([...this.active.values()].map(x=>x.promise));this.storage.close?.();}
+  cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return this.status(actor,id);r.state='cancelled';this.queued.delete(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist();return this.status(actor,id);}
+  async close(){
+    this.closing=true;this.queued.clear();
+    try{
+      for(const [id,active] of this.active){const r=this.cachedState.runs[id];r.state='interrupted';r.error='Gateway service stopped during execution.';r.uncertainty='A dispatched host call may have completed.';active.controller.abort(new Error(r.error));}
+      if(!this.storageFailure)this.persist();
+    }finally{
+      await Promise.allSettled([...this.active.values()].map(x=>x.promise));
+      this.storage.close?.();
+    }
+  }
   private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw new Error(`Missing ${port} edge from ${id}.`);return next;}
   private checkpoint(r:Run){r.updatedAt=now();this.persist();}
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}

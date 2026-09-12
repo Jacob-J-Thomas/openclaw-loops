@@ -32,6 +32,7 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     }catch(error){return {text:`Loops: ${error instanceof Error?error.message:'Command failed.'}\n${help}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
+    retention:(p,c)=>service().retention(bridge.actor(c),p.policy,p.applyPlanId),
     test:async(p,c)=>receipt(await service().test(bridge.actor(c),p.definition,p.input,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw new Error('requestId is required.');})()))),retry:async(p,c)=>receipt(await service().retry(bridge.actor(c),p.runId,p.mode,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw new Error('requestId is required.');})()))),
     draft:(p,c)=>service().draft(bridge.actor(c),p.definition,p.expectedRevision),versions:(p,c)=>service().versions(bridge.actor(c),p.id),publish:(p,c)=>service().publish(bridge.actor(c),p.id,p.revision,p.expectedRevision),restore:(p,c)=>service().restore(bridge.actor(c),p.id,p.revision,p.expectedRevision),archive:(p,c)=>service().archive(bridge.actor(c),p.id,p.expectedRevision,p.archived),deleted:(_,c)=>service().deleted(bridge.actor(c)),recover:(p,c)=>service().recover(bridge.actor(c),p.id,p.expectedRevision),output:(p,c)=>service().output(bridge.actor(c),p.runId,p.nodeId,p.offset,p.limit),history:(p,c)=>service().history(bridge.actor(c),p.cursor,p.limit),
     capabilities:(p,c)=>service().capabilities(bridge.actor(c),p),validate:(p,c)=>service().validate(bridge.actor(c),p.definition),

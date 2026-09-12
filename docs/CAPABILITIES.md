@@ -11,7 +11,7 @@ The development alpha uses **OpenClaw 2026.9.3** and **Node 24.16.0**. It is an 
 | Inference | Public isolated-agent-runtime completion; model/agent/reasoning/Advanced overrides; unset values inherit. Actual provider/model and requested/transmitted settings are recorded. Applied values remain unknown unless observable. |
 | Persistence | Plugin-owned SQLite on a serialized worker; immutable revisions and admission/attempt/output/event records; transactional commits, integrity checks, process lock and verified legacy JSON migration. |
 | Recovery | Durable wait/review; explicit checkpoint/retry-node/restart with ancestry. Unknown effects require an explicit choice and are never automatically replayed. |
-| Agent parity | 30 tools expose discovery, authoring, publication, versions, archive/recovery, execution/test/retry/status/history/full inspection/output. Explicit human review uses authenticated UI or human command authority. |
+| Agent parity | 31 tools expose discovery, authoring, publication, versions, archive/recovery, execution/test/retry/status/history/full inspection/output. Explicit human review uses authenticated UI or human command authority. |
 
 Inference and the read-only configured-model Action are host-backed. The remaining palette is deterministic plugin logic. Repeat still has a fixed Inference/Condition body. Scripts, subagents, schedules, parallel branches and nested loops are accepted expansion milestones, not implemented capabilities yet.
 

@@ -31,6 +31,17 @@ function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenCl
   return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId};
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('exposes matching requested history cleanup to agent tools and authorized UI operations',async()=>{
+    const s=setup(),definition={...structuredClone(examples[0]),schemaVersion:2,capabilities:[],inputSchema:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'Synthetic retained result'}],edges:[{id:'a',source:'input',target:'return',port:'next'}]};
+    const run=(await s.tools.find(tool=>tool.name==='loops_test')!.execute('history-fixture',{definition,input:{}})).details as {id:string};
+    const retention=s.tools.find(tool=>tool.name==='loops_retention')!;
+    const preview=(await retention.execute('preview',{policy:{keepLatest:0}})).details as {planId:string;candidates:Array<{id:string}>};
+    expect(preview.candidates.map(candidate=>candidate.id)).toEqual([run.id]);
+    await expect(s.action('retention',{policy:{keepLatest:0},applyPlanId:preview.planId},['operator.read'])).rejects.toThrow(/authorized/);
+    expect(await s.action('retention',{policy:{keepLatest:0},applyPlanId:preview.planId})).toMatchObject({result:{applied:true,candidates:[{id:run.id}]}});
+    await expect(s.tools.find(tool=>tool.name==='loops_test')!.execute('history-fixture',{definition,input:{}})).rejects.toThrow(/will not execute again/);
+    expect(s.complete).not.toHaveBeenCalled();
+  });
   it('authors, executes, reads and edits large data through real SDK envelopes without losing content',async()=>{
     const s=setup();
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
@@ -77,7 +88,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',()=>{const s=setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retry','loops_revoke','loops_run','loops_runs','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(32);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('registers authoring and execution tools with a single command namespace',()=>{const s=setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(33);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
   it('authors through real SDK tools and shares definitions with the UI across registry scopes',async()=>{
     const gateway=setup(),s=setup({root:gateway.root,start:false});
     const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('authoring-call',p);

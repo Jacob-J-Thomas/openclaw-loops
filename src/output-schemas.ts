@@ -4,6 +4,7 @@ import type {Engine,LoopRecord,Run} from './engine.js';
 import type {RunReceipt,describe} from './receipts.js';
 import type {InferenceCapabilities} from './inference-settings.js';
 import {BudgetsSchema,type Budgets} from './budgets.js';
+import {RetentionResultSchema} from './retention.js';
 
 // Each operation publishes a concrete wire shape. Dynamic JSON data and host
 // attribution remain open values; identities, states and control fields do not.
@@ -43,7 +44,7 @@ const completeRun=Type.Unsafe<Run>(Type.Object({
   errorDetail:Type.Optional(error),pending:Type.Optional(text),uncertainty:Type.Optional(text),review:Type.Optional(review),
 },strict));
 export const outputs={
-  receipt,record,completeRun,
+  receipt,record,completeRun,retention:RetentionResultSchema,
   saved:Type.Unsafe<ReturnType<Engine['save']>>(Type.Object({record:loopRecord,issues},strict)),
   validation:Type.Unsafe<ReturnType<Engine['validate']>>(Type.Object({valid:Type.Boolean(),issues},strict)),
   versions:Type.Unsafe<ReturnType<Engine['versions']>>(Type.Array(Type.Object({revision:integer,name:text,enabled:Type.Boolean(),published:Type.Boolean(),definition:DefinitionSchema},strict))),

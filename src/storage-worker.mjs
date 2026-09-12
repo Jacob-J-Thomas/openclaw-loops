@@ -1,5 +1,6 @@
 import {parentPort,workerData} from 'node:worker_threads';
 import {DatabaseSync,backup} from 'node:sqlite';
+import {chmodSync} from 'node:fs';
 
 // Only this worker opens the plugin database. The host database is never used.
 let database;
@@ -8,18 +9,27 @@ try{
 database=new DatabaseSync(workerData.file);
 database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
 const schemaVersion=database.prepare('PRAGMA user_version').get().user_version;
-if(schemaVersion>1)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
+if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
+if(schemaVersion===1){
+  const destination=`${workerData.file}.before-schema-2-${Date.now()}.bak`;
+  await backup(database,destination);chmodSync(destination,0o600);
+  const snapshot=new DatabaseSync(destination,{readOnly:true});
+  try{if(snapshot.prepare('PRAGMA quick_check').get().quick_check!=='ok'||snapshot.prepare('PRAGMA user_version').get().user_version!==1)throw new Error('Pre-migration backup verification failed. The original schema has not been changed.');}finally{snapshot.close();}
+}
 database.exec(`
+  BEGIN IMMEDIATE;
   CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS loops(id TEXT PRIMARY KEY, record TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS revisions(loop_id TEXT NOT NULL, revision INTEGER NOT NULL, definition TEXT NOT NULL, PRIMARY KEY(loop_id,revision));
   CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, owner_key TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, record TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS runs_owner_created ON runs(owner_key,created_at DESC,id);
   CREATE TABLE IF NOT EXISTS admissions(request_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, run_id TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS retired_admissions(request_key TEXT PRIMARY KEY, record TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS attempts(run_id TEXT NOT NULL, sequence INTEGER NOT NULL, node_id TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(run_id,sequence));
   CREATE TABLE IF NOT EXISTS outputs(run_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(run_id,node_id));
   CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
-  PRAGMA user_version=1;
+  PRAGMA user_version=2;
+  COMMIT;
 `);
 const integrity=database.prepare('PRAGMA quick_check').get().quick_check;
 if(integrity!=='ok')throw new Error(`Loops database integrity check failed: ${integrity}`);
@@ -28,7 +38,8 @@ const port=workerData.port;
 const read=()=>{
   const version=database.prepare("SELECT value FROM metadata WHERE key='version'").get();
   if(!version)return undefined;
-  return {version:JSON.parse(version.value),loops:Object.fromEntries(database.prepare('SELECT id,record FROM loops').all().map(row=>[row.id,JSON.parse(row.record)])),runs:Object.fromEntries(database.prepare('SELECT id,record FROM runs').all().map(row=>[row.id,JSON.parse(row.record)]))};
+  const retired=database.prepare('SELECT request_key,record FROM retired_admissions').all();
+  return {version:JSON.parse(version.value),loops:Object.fromEntries(database.prepare('SELECT id,record FROM loops').all().map(row=>[row.id,JSON.parse(row.record)])),runs:Object.fromEntries(database.prepare('SELECT id,record FROM runs').all().map(row=>[row.id,JSON.parse(row.record)])),...retired.length?{retiredAdmissions:Object.fromEntries(retired.map(row=>[row.request_key,JSON.parse(row.record)]))}:{}};
 };
 let cached=startupError?undefined:read();
 function write(next){
@@ -66,9 +77,19 @@ function write(next){
       }
       if(!previous||previous.state!==run.state)database.prepare('INSERT INTO events(run_id,state,at) VALUES (?,?,?)').run(id,run.state,run.updatedAt);
     }
+    for(const [key,retired] of Object.entries(next.retiredAdmissions??{})){
+      const admission=database.prepare('SELECT run_id,fingerprint FROM admissions WHERE request_key=?').get(key);
+      if(admission&&(admission.run_id!==retired.runId||admission.fingerprint!==retired.fingerprint))throw new Error('Retired admission identity conflict.');
+      if(!admission)database.prepare('INSERT INTO admissions VALUES (?,?,?)').run(key,retired.fingerprint,retired.runId);
+      const previous=database.prepare('SELECT record FROM retired_admissions WHERE request_key=?').get(key);
+      if(previous&&previous.record!==JSON.stringify(retired))throw new Error('Retired admission is immutable.');
+      if(!previous)database.prepare('INSERT INTO retired_admissions VALUES (?,?)').run(key,JSON.stringify(retired));
+    }
+    for(const key of Object.keys(cached?.retiredAdmissions??{}))if(!next.retiredAdmissions?.[key])throw new Error('Retired admission identity cannot be removed.');
     for(const id of Object.keys(cached?.runs??{}))if(!next.runs[id]){
       // Explicit retention is the only caller allowed to remove a run.
-      for(const table of ['attempts','outputs','admissions','events'])database.prepare(`DELETE FROM ${table} WHERE run_id=?`).run(id);
+      if(!next.retiredAdmissions?.[cached.runs[id].requestKey])throw new Error('History removal requires a retained admission identity.');
+      for(const table of ['attempts','outputs','events'])database.prepare(`DELETE FROM ${table} WHERE run_id=?`).run(id);
       database.prepare('DELETE FROM runs WHERE id=?').run(id);
     }
     database.exec('COMMIT');cached=next;

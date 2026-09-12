@@ -1,5 +1,6 @@
 node_modules/
 .dev-runtime/
+.dev-runtime-node26/
 .dev-host/
 .dev-profile/
 dist/

@@ -2,14 +2,32 @@ import {afterEach,describe,it,expect} from 'vitest';
 import {mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 import {SqliteStorage} from '../src/storage.js';
 import {examples} from '../src/examples.js';
-import type {State} from '../src/engine.js';
+import {Engine,type Actor,type State} from '../src/engine.js';
 const cleanups:Array<()=>void>=[];
 afterEach(()=>{for(const cleanup of cleanups.splice(0).reverse())cleanup();});
 function setup(){const directory=mkdtempSync(join(tmpdir(),'loops-sqlite-'));cleanups.push(()=>rmSync(directory,{recursive:true,force:true}));const filename=join(directory,'loops.sqlite');return {directory,filename};}
 const initial=():State=>({version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}});
 describe('plugin-owned SQLite worker',()=>{
+  it('keeps returned and persisted run outcomes consistent after SQLite rejects completion',async()=>{
+    const {filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());
+    const actor:Actor={agentId:'main',sessionKey:'agent:main:commit-fault',sessionId:'fault-session',source:'tool',human:false,check:()=>{}};
+    const engine=new Engine(store,{check:()=>{},modelInfo:async()=>({}),complete:async()=>({text:'Unused'})});
+    // Fault injection changes only this disposable fixture. The real worker's
+    // transaction must roll back, and its caller must retain the committed run.
+    const fault=new DatabaseSync(filename);cleanups.push(()=>fault.close());
+    fault.exec("CREATE TRIGGER reject_completion BEFORE INSERT ON runs WHEN json_extract(NEW.record,'$.state')='completed' BEGIN SELECT RAISE(ABORT,'Injected completion commit failure'); END;");
+    const definition={...structuredClone(examples[0]),schemaVersion:2 as const,inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'return',kind:'return' as const,label:'Return',value:'Completed value'}],edges:[{id:'edge',source:'input',target:'return',port:'next' as const}]};
+    const returned=await engine.test(actor,definition,{},'completion-commit-fault');
+    expect(returned.state).toBe('failed');expect(returned.error).toContain('Injected completion commit failure');
+    expect(engine.status(actor,returned.id)).toEqual(returned);
+    expect(store.read()?.runs[returned.id]).toEqual(returned);
+    fault.exec('DROP TRIGGER reject_completion');
+    const recovered=await engine.retry(actor,returned.id,'retry-node','explicit-recovery');expect(recovered).toMatchObject({state:'completed',result:'Completed value',parentRunId:returned.id});
+    await engine.close();
+  });
   it('migrates JSON transactionally, retains original and backup, then reopens the database',()=>{
     const {directory,filename}=setup(),legacy=join(directory,'state.json'),state=initial();writeFileSync(legacy,JSON.stringify(state));
     const store=new SqliteStorage(filename,legacy);cleanups.push(()=>store.close());

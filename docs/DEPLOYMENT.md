@@ -28,10 +28,12 @@ The isolated development profile uses Ollama `qwen3.5:4b`, Q4_K_M, 32,768 contex
 
 1. Keep the previous plugin artifact and stop the affected Gateway so no host calls are active.
 2. Back up the entire profile state and configuration as a matched pair, including `loops-poc/loops.sqlite`, any WAL files and `loops-poc/documents` (immutable large responses and staged requests). A stopped Gateway is required for a raw filesystem copy; the storage adapter's SQLite backup operation is suitable for a live database snapshot.
-3. Install the new artifact through OpenClaw. On first SQLite startup, legacy JSON is validated, copied to a timestamped backup and imported transactionally. The original JSON is retained. Integrity and exact readback are checked.
+3. Install the new artifact through OpenClaw. On first SQLite startup, legacy JSON is validated, copied to a timestamped backup and imported transactionally. The original JSON is retained. Integrity and exact readback are checked. Alpha.6 also backs up a schema 1 SQLite database before transactionally upgrading it to schema 2 for immutable history-removal admission records.
 4. Restart, check plugin startup, compare library identities/revisions and run history counts, then run a synthetic command/tool/UI smoke test. Existing runs keep their pinned definitions. Uncertain interrupted effects require an explicit inspected recovery decision.
 
 Do not copy a live SQLite main file without its transactional state. Do not delete the original JSON/backup as part of upgrade acceptance.
+
+History retention and its explicit UI/agent cleanup policy are documented in [HISTORY.md](HISTORY.md). Cleanup is disabled until requested; no upgrade deletes old history automatically.
 
 ## Rollback
 

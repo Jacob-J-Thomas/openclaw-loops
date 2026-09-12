@@ -1,5 +1,17 @@
 # Local verification
 
+## Alpha.6 history and durability verification
+
+The alpha.6 artifact passed **114 source tests** on macOS under Node **24.16.0** and **26.1.0**, plus typecheck, lint, both builds, and **20 extracted-package SDK tests**. Tarball SHA-256: `3bfdb3c7368c5a707ccb378cc28b7ca7beebe3ec53d688d58ffe29af0c2d8ae6`. Both isolated Gateways run that artifact; backend, worker and UI files match the tarball. Evidence is under `evidence/release-alpha6/`. Documentation and live-verification helper edits made afterward are separate from the packaged executable identity.
+
+Both live SQLite stores upgraded from schema 1 to 2 with verified automatic backups. All pre-existing definitions and run counts were unchanged immediately after migration (Codex: 8 definitions/21 runs; Ollama: 6 definitions/24 runs). Full stopped-state backups are retained under `.dev-profile/backups/before-alpha6-1789184971882`.
+
+The dedicated Codex conversation `agent:main:dashboard:e34e4747-f56a-4d13-9ccb-6ea63653a8b0` received 105 synthetic deterministic runs. The live API and native UI showed pages of 100 and 5 without losing rows. The UI previewed and removed one oldest run while retaining 104. A real Sol agent then called `loops_retention` twice, previewing and applying the same plan to remove exactly one more run and retain 103. The recorded tool calls and results agree with saved history. No existing conversation or definition was targeted for cleanup.
+
+Negative live acceptance found an unresolved error surface: replay of a removed request is rejected, but OpenClaw's session-action handler replaces its actionable message with `plugin session action failed`. The strict replay-message assertion is preserved as a failure; this does not establish the complete R05/R09 live gate. Known safe typed operation failures need to cross the public feature result contract.
+
+Regression tests cover SQLite refusal of a completed run, failure of both commit and readback, atomic rollback of pruning/admission tombstones, stale cleanup previews, conversation isolation, ancestry protection and physical cleanup after cancellation. These are fixture failures, not claims of a completed disk-full/process-crash/soak matrix. The dark-theme browser check also identified graph-control and destructive-button contrast work still to finish.
+
 ## Alpha.5 acceptance — September 11, 2026
 
 The installed alpha.5 tarball passed **105 source tests**, types, lint and both builds, plus **19 extracted-package tests through the actual OpenClaw feature SDK**. Tarball SHA-256: `89c52da82c3fec26f51c3978e04c1b69edf218d761cfd00d971342c0e7378a89`. Package metadata and test evidence: `evidence/release-alpha5/package*.json`. Both isolated Gateways started successfully from that artifact after an idle-state backup at `.dev-profile/backups/before-alpha5-1789181933`. No personal profile was changed. Subsequent documentation and verification-script edits are separate from this installed artifact.

@@ -3,6 +3,7 @@ import { defineFeatureContract } from 'openclaw/plugin-sdk/feature-contract';
 import { DefinitionSchema, DefinitionContentSchema, DefinitionPatchSchema, type Capability } from './graph.js';
 import {toolSchema} from './tool-schema.js';
 import {outputs} from './output-schemas.js';
+import {RetentionPolicySchema} from './retention.js';
 const object={additionalProperties:false} as const;
 const id=Type.String({minLength:1,maxLength:100});
 const runId=Type.Object({runId:id},object);
@@ -12,6 +13,7 @@ const saved=outputs.saved;
 const revision=Type.Integer({minimum:1});
 const expectedRevision=Type.Integer({minimum:0});
 export const contract=defineFeatureContract({pluginId:'loops-poc',operations:{
+  retention:{kind:'action',description:'Preview or apply requested history cleanup for this conversation. Omit applyPlanId to preview; use its planId with the same policy to delete exactly that unchanged candidate set. olderThanDays deletes older terminal runs; keepLatest protects at least that many newest runs. Active, waiting, settling and recovery-parent runs are protected. Loop definitions stay intact. Removed request IDs never execute again. History deletion is permanent; retained transport documents and backups require separate maintenance.',input:Type.Object({policy:RetentionPolicySchema,applyPlanId:Type.Optional(Type.String({pattern:'^[a-f0-9]{64}$'}))},object),output:outputs.retention,tool:{name:'loops_retention'}},
   test:{kind:'action',description:'Execute an unpublished definition with the current caller authority, without changing its draft/publication or activation. Explicit human review nodes still require a real human.',input:Type.Object({definition:toolSchema(DefinitionSchema),input:Type.Record(Type.String(),Type.Unknown()),requestId:Type.Optional(id)},object),output,tool:{name:'loops_test'}},
   retry:{kind:'action',description:'Recover a failed, interrupted or cancelled run with explicit ancestry. checkpoint requires a known committed boundary; retry-node repeats the current node after inspecting possible side effects; restart begins from Input. Wait for cleanup before recovery.',input:Type.Object({runId:id,mode:Type.Union([Type.Literal('checkpoint'),Type.Literal('retry-node'),Type.Literal('restart')]),requestId:Type.Optional(id)},object),output,tool:{name:'loops_retry'}},
   draft:{kind:'action',description:'Save a new draft revision without disabling or changing the published revision. Agents and users have the same control. Publish separately when ready.',input:Type.Object({definition:toolSchema(DefinitionSchema),expectedRevision},object),output:saved,tool:{name:'loops_draft'}},

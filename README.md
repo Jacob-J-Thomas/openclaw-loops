@@ -1,6 +1,6 @@
 # OpenClaw Loops — development alpha
 
-An external OpenClaw plugin with a native graph editor and one executor shared by the UI, `/loops`, and 30 agent tools. Agents can read, create, edit, publish, enable, disable, invoke, inspect and delete loops. Valid agent-created loops are enabled by default; drafts are optional. OpenClaw's model and permission policies remain authoritative.
+An external OpenClaw plugin with a native graph editor and one executor shared by the UI, `/loops`, and 31 agent tools. Agents can read, create, edit, publish, enable, disable, invoke, inspect and delete loops. Valid agent-created loops are enabled by default; drafts are optional. OpenClaw's model and permission policies remain authoritative.
 
 **This is an unreleased alpha, not a finished 1.0.** The existing palette includes Input, Inference, model metadata, Condition, bounded Repeat, Wait, Human review, Return and Fail. The [delivery plan](docs/DELIVERY_PLAN.md) also covers context, scripts, full agents, subagents, broader control flow, triggers, evaluations and operations. Those expansion families remain unimplemented. [Delivery status](docs/DELIVERY_STATUS.md) and [verification](docs/VERIFICATION.md) distinguish source tests, live acceptance and remaining gates.
 
@@ -73,7 +73,7 @@ A normal command invocation receives a fresh identity. Reuse an explicit request
 
 Agents use `loops_library` and `loops_read` for the full library, `loops_create`/`loops_edit` for authoring, and `loops_run` for real execution. `loops_run` accepts either named `input` values or a `text` shortcut; omit both for zero-input loops. An empty enabled list does not mean the library is empty. Agents can publish, enable, disable, archive, recover and delete on request. Only a graph containing an explicit **Human review** pauses for the authenticated human decision path.
 
-The manifest lists all 30 tools. Additional operations cover capability/preflight checks, draft testing, immutable versions, full inspection, paged output/history and explicit recovery. For an older dev profile with explicit tool additions, merge the current inventory before restarting:
+The manifest lists all 31 tools. Additional operations cover capability/preflight checks, draft testing, immutable versions, full inspection, paged output/history and explicit recovery. For an older dev profile with explicit tool additions, merge the current inventory before restarting:
 
 ```sh
 node scripts/enable-agent-tools.mjs .dev-profile/openclaw.json

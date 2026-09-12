@@ -29,6 +29,19 @@ describe('release fault regressions',()=>{
     expect(engine.load(actor,'summarize-text')).toEqual(before);
     storage.fail=false;expect(engine.edit(actor,'summarize-text',1,{name:'Committed'}).record.definition.revision).toBe(2);
   });
+  it('never serves unverified memory or dispatches work when both commit and readback fail',async()=>{
+    const {engine,storage,host}=setup();const committed=structuredClone(storage.value);
+    storage.fail=true;const read=vi.spyOn(storage,'read').mockImplementation(()=>{throw new Error('Store disappeared');});
+    expect(()=>engine.edit(actor,'summarize-text',1,{name:'Uncommitted'})).toThrow(/could not be verified/);
+    read.mockRestore();storage.fail=false;
+    // A later successful read is not permission to continue a poisoned engine.
+    // Restart owns recovery and decides which committed attempts are uncertain.
+    expect(()=>engine.load(actor,'summarize-text')).toThrow(/could not be verified/);
+    await expect(engine.run(actor,'summarize-text',{text:'Must not dispatch'},'after-store-loss')).rejects.toThrow(/could not be verified/);
+    expect(host.complete).not.toHaveBeenCalled();await engine.close();
+    expect(storage.value).toEqual(committed);
+    const reopened=new Engine(storage,host);expect(reopened.load(actor,'summarize-text').definition.name).toBe(committed?.loops['summarize-text'].definition.name);await reopened.close();
+  });
   it('publishing a smaller capability set does not revoke a pinned wait',async()=>{
     const {engine}=setup();engine.enable(actor,'read-pause-continue',1,true);
     const parked=await engine.run(actor,'read-pause-continue',{text:'Request'},'pin');
