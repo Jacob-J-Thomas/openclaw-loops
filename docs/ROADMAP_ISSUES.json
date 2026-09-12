@@ -1,0 +1,1168 @@
+{
+  "version": 1,
+  "repository": "Jacob-J-Thomas/openclaw-loops",
+  "planningBaseline": "0bffa054529535c7818959b1948c909ee0cdaa72",
+  "note": "Stable navigation index. Read live native relationships and issue evidence for state or acceptance.",
+  "issues": [
+    {
+      "key": "C1",
+      "kind": "campaign",
+      "number": 2,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/2",
+      "parent": null,
+      "parentKey": null,
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "P0",
+      "kind": "phase",
+      "number": 3,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/3",
+      "parent": 2,
+      "parentKey": "C1",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "P2",
+      "kind": "phase",
+      "number": 4,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/4",
+      "parent": 2,
+      "parentKey": "C1",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "P4",
+      "kind": "phase",
+      "number": 5,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/5",
+      "parent": 2,
+      "parentKey": "C1",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "P5",
+      "kind": "phase",
+      "number": 6,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/6",
+      "parent": 2,
+      "parentKey": "C1",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "P6",
+      "kind": "phase",
+      "number": 7,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/7",
+      "parent": 2,
+      "parentKey": "C1",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "P1P3",
+      "kind": "phase",
+      "number": 8,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/8",
+      "parent": 2,
+      "parentKey": "C1",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "GOV",
+      "kind": "uow",
+      "number": 9,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/9",
+      "parent": 3,
+      "parentKey": "P0",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "DEPS",
+      "kind": "uow",
+      "number": 10,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/10",
+      "parent": 3,
+      "parentKey": "P0",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "R01",
+      "kind": "uow",
+      "number": 11,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/11",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R01",
+      "existingPR": null
+    },
+    {
+      "key": "R02",
+      "kind": "uow",
+      "number": 12,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/12",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R02",
+      "existingPR": null
+    },
+    {
+      "key": "R03",
+      "kind": "uow",
+      "number": 13,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/13",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R03",
+      "existingPR": null
+    },
+    {
+      "key": "R04",
+      "kind": "uow",
+      "number": 14,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/14",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R04",
+      "existingPR": null
+    },
+    {
+      "key": "R05",
+      "kind": "uow",
+      "number": 15,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/15",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R05",
+      "existingPR": null
+    },
+    {
+      "key": "R06",
+      "kind": "uow",
+      "number": 16,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/16",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R06",
+      "existingPR": null
+    },
+    {
+      "key": "R07",
+      "kind": "uow",
+      "number": 17,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/17",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R07",
+      "existingPR": null
+    },
+    {
+      "key": "R08",
+      "kind": "uow",
+      "number": 18,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/18",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R08",
+      "existingPR": null
+    },
+    {
+      "key": "R09",
+      "kind": "uow",
+      "number": 19,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/19",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R09",
+      "existingPR": null
+    },
+    {
+      "key": "R10",
+      "kind": "uow",
+      "number": 20,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/20",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R10",
+      "existingPR": null
+    },
+    {
+      "key": "R11",
+      "kind": "uow",
+      "number": 21,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/21",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R11",
+      "existingPR": null
+    },
+    {
+      "key": "R12",
+      "kind": "uow",
+      "number": 22,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/22",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R12",
+      "existingPR": null
+    },
+    {
+      "key": "R13",
+      "kind": "uow",
+      "number": 23,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/23",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R13",
+      "existingPR": null
+    },
+    {
+      "key": "R14",
+      "kind": "uow",
+      "number": 24,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/24",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R14",
+      "existingPR": null
+    },
+    {
+      "key": "R15",
+      "kind": "uow",
+      "number": 25,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/25",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R15",
+      "existingPR": null
+    },
+    {
+      "key": "R16",
+      "kind": "uow",
+      "number": 26,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/26",
+      "parent": 4,
+      "parentKey": "P2",
+      "requirement": "R16",
+      "existingPR": null
+    },
+    {
+      "key": "R17",
+      "kind": "uow",
+      "number": 27,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/27",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R17",
+      "existingPR": null
+    },
+    {
+      "key": "R18",
+      "kind": "uow",
+      "number": 28,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/28",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R18",
+      "existingPR": null
+    },
+    {
+      "key": "R19",
+      "kind": "uow",
+      "number": 29,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/29",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R19",
+      "existingPR": null
+    },
+    {
+      "key": "R20",
+      "kind": "uow",
+      "number": 30,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/30",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R20",
+      "existingPR": null
+    },
+    {
+      "key": "R21",
+      "kind": "uow",
+      "number": 31,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/31",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R21",
+      "existingPR": null
+    },
+    {
+      "key": "R22",
+      "kind": "uow",
+      "number": 32,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/32",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R22",
+      "existingPR": null
+    },
+    {
+      "key": "R23",
+      "kind": "uow",
+      "number": 33,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/33",
+      "parent": 5,
+      "parentKey": "P4",
+      "requirement": "R23",
+      "existingPR": null
+    },
+    {
+      "key": "R24",
+      "kind": "uow",
+      "number": 34,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/34",
+      "parent": 6,
+      "parentKey": "P5",
+      "requirement": "R24",
+      "existingPR": null
+    },
+    {
+      "key": "R25",
+      "kind": "uow",
+      "number": 35,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/35",
+      "parent": 7,
+      "parentKey": "P6",
+      "requirement": "R25",
+      "existingPR": null
+    },
+    {
+      "key": "SDK01",
+      "kind": "uow",
+      "number": 36,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/36",
+      "parent": 8,
+      "parentKey": "P1P3",
+      "requirement": "SDK01",
+      "existingPR": null
+    },
+    {
+      "key": "SDK02",
+      "kind": "uow",
+      "number": 37,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/37",
+      "parent": 8,
+      "parentKey": "P1P3",
+      "requirement": "SDK02",
+      "existingPR": null
+    },
+    {
+      "key": "SDK03",
+      "kind": "uow",
+      "number": 38,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/38",
+      "parent": 8,
+      "parentKey": "P1P3",
+      "requirement": "SDK03",
+      "existingPR": null
+    },
+    {
+      "key": "SDK04",
+      "kind": "uow",
+      "number": 39,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/39",
+      "parent": 8,
+      "parentKey": "P1P3",
+      "requirement": "SDK04",
+      "existingPR": null
+    },
+    {
+      "key": "SDK06",
+      "kind": "uow",
+      "number": 40,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/40",
+      "parent": 8,
+      "parentKey": "P1P3",
+      "requirement": "SDK06",
+      "existingPR": null
+    },
+    {
+      "key": "SDK05",
+      "kind": "uow",
+      "number": 41,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/41",
+      "parent": 8,
+      "parentKey": "P1P3",
+      "requirement": "SDK05",
+      "existingPR": null
+    },
+    {
+      "key": "B-GOV-1",
+      "kind": "bolt",
+      "number": 42,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/42",
+      "parent": 9,
+      "parentKey": "GOV",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-DEPS-1",
+      "kind": "bolt",
+      "number": 43,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/43",
+      "parent": 10,
+      "parentKey": "DEPS",
+      "requirement": null,
+      "existingPR": 1
+    },
+    {
+      "key": "B-R01-1",
+      "kind": "bolt",
+      "number": 44,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/44",
+      "parent": 11,
+      "parentKey": "R01",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R02-1",
+      "kind": "bolt",
+      "number": 45,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/45",
+      "parent": 12,
+      "parentKey": "R02",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R03-1",
+      "kind": "bolt",
+      "number": 46,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/46",
+      "parent": 13,
+      "parentKey": "R03",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R04-1",
+      "kind": "bolt",
+      "number": 47,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/47",
+      "parent": 14,
+      "parentKey": "R04",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R05-1",
+      "kind": "bolt",
+      "number": 48,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/48",
+      "parent": 15,
+      "parentKey": "R05",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R06-1",
+      "kind": "bolt",
+      "number": 49,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/49",
+      "parent": 16,
+      "parentKey": "R06",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R07-1",
+      "kind": "bolt",
+      "number": 50,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/50",
+      "parent": 17,
+      "parentKey": "R07",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R08-1",
+      "kind": "bolt",
+      "number": 51,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/51",
+      "parent": 18,
+      "parentKey": "R08",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R09-1",
+      "kind": "bolt",
+      "number": 52,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/52",
+      "parent": 19,
+      "parentKey": "R09",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R10-1",
+      "kind": "bolt",
+      "number": 53,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/53",
+      "parent": 20,
+      "parentKey": "R10",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R11-1",
+      "kind": "bolt",
+      "number": 54,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/54",
+      "parent": 21,
+      "parentKey": "R11",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R11-2",
+      "kind": "bolt",
+      "number": 55,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/55",
+      "parent": 21,
+      "parentKey": "R11",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R12-1",
+      "kind": "bolt",
+      "number": 56,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/56",
+      "parent": 22,
+      "parentKey": "R12",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R13-1",
+      "kind": "bolt",
+      "number": 57,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/57",
+      "parent": 23,
+      "parentKey": "R13",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R14-1",
+      "kind": "bolt",
+      "number": 58,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/58",
+      "parent": 24,
+      "parentKey": "R14",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R14-2",
+      "kind": "bolt",
+      "number": 59,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/59",
+      "parent": 24,
+      "parentKey": "R14",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R15-1",
+      "kind": "bolt",
+      "number": 60,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/60",
+      "parent": 25,
+      "parentKey": "R15",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R16-1",
+      "kind": "bolt",
+      "number": 61,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/61",
+      "parent": 26,
+      "parentKey": "R16",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R17-1",
+      "kind": "bolt",
+      "number": 62,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/62",
+      "parent": 27,
+      "parentKey": "R17",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R18-1",
+      "kind": "bolt",
+      "number": 63,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/63",
+      "parent": 28,
+      "parentKey": "R18",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R19-1",
+      "kind": "bolt",
+      "number": 64,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/64",
+      "parent": 29,
+      "parentKey": "R19",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R20-1",
+      "kind": "bolt",
+      "number": 65,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/65",
+      "parent": 30,
+      "parentKey": "R20",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R21-1",
+      "kind": "bolt",
+      "number": 66,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/66",
+      "parent": 31,
+      "parentKey": "R21",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R22-1",
+      "kind": "bolt",
+      "number": 67,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/67",
+      "parent": 32,
+      "parentKey": "R22",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R23-1",
+      "kind": "bolt",
+      "number": 68,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/68",
+      "parent": 33,
+      "parentKey": "R23",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R23-2",
+      "kind": "bolt",
+      "number": 69,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/69",
+      "parent": 33,
+      "parentKey": "R23",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R24-1",
+      "kind": "bolt",
+      "number": 70,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/70",
+      "parent": 34,
+      "parentKey": "R24",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R24-2",
+      "kind": "bolt",
+      "number": 71,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/71",
+      "parent": 34,
+      "parentKey": "R24",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R24-3",
+      "kind": "bolt",
+      "number": 72,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/72",
+      "parent": 34,
+      "parentKey": "R24",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R24-4",
+      "kind": "bolt",
+      "number": 73,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/73",
+      "parent": 34,
+      "parentKey": "R24",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R24-5",
+      "kind": "bolt",
+      "number": 74,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/74",
+      "parent": 34,
+      "parentKey": "R24",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R25-1",
+      "kind": "bolt",
+      "number": 75,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/75",
+      "parent": 35,
+      "parentKey": "R25",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-R25-2",
+      "kind": "bolt",
+      "number": 76,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/76",
+      "parent": 35,
+      "parentKey": "R25",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-SDK01-1",
+      "kind": "bolt",
+      "number": 77,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/77",
+      "parent": 36,
+      "parentKey": "SDK01",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-SDK02-1",
+      "kind": "bolt",
+      "number": 78,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/78",
+      "parent": 37,
+      "parentKey": "SDK02",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-SDK03-1",
+      "kind": "bolt",
+      "number": 79,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/79",
+      "parent": 38,
+      "parentKey": "SDK03",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-SDK04-1",
+      "kind": "bolt",
+      "number": 80,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/80",
+      "parent": 39,
+      "parentKey": "SDK04",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "B-SDK06-1",
+      "kind": "bolt",
+      "number": 81,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/81",
+      "parent": 40,
+      "parentKey": "SDK06",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "C2",
+      "kind": "campaign",
+      "number": 82,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/82",
+      "parent": null,
+      "parentKey": null,
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "F1",
+      "kind": "phase",
+      "number": 83,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/83",
+      "parent": 82,
+      "parentKey": "C2",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "X01",
+      "kind": "uow",
+      "number": 84,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/84",
+      "parent": 83,
+      "parentKey": "F1",
+      "requirement": "X01",
+      "existingPR": null
+    },
+    {
+      "key": "X02",
+      "kind": "uow",
+      "number": 85,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/85",
+      "parent": 83,
+      "parentKey": "F1",
+      "requirement": "X02",
+      "existingPR": null
+    },
+    {
+      "key": "X03",
+      "kind": "uow",
+      "number": 86,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/86",
+      "parent": 83,
+      "parentKey": "F1",
+      "requirement": "X03",
+      "existingPR": null
+    },
+    {
+      "key": "X04",
+      "kind": "uow",
+      "number": 87,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/87",
+      "parent": 83,
+      "parentKey": "F1",
+      "requirement": "X04",
+      "existingPR": null
+    },
+    {
+      "key": "X05",
+      "kind": "uow",
+      "number": 88,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/88",
+      "parent": 83,
+      "parentKey": "F1",
+      "requirement": "X05",
+      "existingPR": null
+    },
+    {
+      "key": "F2",
+      "kind": "phase",
+      "number": 89,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/89",
+      "parent": 82,
+      "parentKey": "C2",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "X06",
+      "kind": "uow",
+      "number": 90,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/90",
+      "parent": 89,
+      "parentKey": "F2",
+      "requirement": "X06",
+      "existingPR": null
+    },
+    {
+      "key": "X07",
+      "kind": "uow",
+      "number": 91,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/91",
+      "parent": 89,
+      "parentKey": "F2",
+      "requirement": "X07",
+      "existingPR": null
+    },
+    {
+      "key": "X08",
+      "kind": "uow",
+      "number": 92,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/92",
+      "parent": 89,
+      "parentKey": "F2",
+      "requirement": "X08",
+      "existingPR": null
+    },
+    {
+      "key": "X09",
+      "kind": "uow",
+      "number": 93,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/93",
+      "parent": 89,
+      "parentKey": "F2",
+      "requirement": "X09",
+      "existingPR": null
+    },
+    {
+      "key": "X10",
+      "kind": "uow",
+      "number": 94,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/94",
+      "parent": 89,
+      "parentKey": "F2",
+      "requirement": "X10",
+      "existingPR": null
+    },
+    {
+      "key": "F3",
+      "kind": "phase",
+      "number": 95,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/95",
+      "parent": 82,
+      "parentKey": "C2",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "X11",
+      "kind": "uow",
+      "number": 96,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/96",
+      "parent": 95,
+      "parentKey": "F3",
+      "requirement": "X11",
+      "existingPR": null
+    },
+    {
+      "key": "X12",
+      "kind": "uow",
+      "number": 97,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/97",
+      "parent": 95,
+      "parentKey": "F3",
+      "requirement": "X12",
+      "existingPR": null
+    },
+    {
+      "key": "X13",
+      "kind": "uow",
+      "number": 98,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/98",
+      "parent": 95,
+      "parentKey": "F3",
+      "requirement": "X13",
+      "existingPR": null
+    },
+    {
+      "key": "X14",
+      "kind": "uow",
+      "number": 99,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/99",
+      "parent": 95,
+      "parentKey": "F3",
+      "requirement": "X14",
+      "existingPR": null
+    },
+    {
+      "key": "F4",
+      "kind": "phase",
+      "number": 100,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/100",
+      "parent": 82,
+      "parentKey": "C2",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "X15",
+      "kind": "uow",
+      "number": 101,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/101",
+      "parent": 100,
+      "parentKey": "F4",
+      "requirement": "X15",
+      "existingPR": null
+    },
+    {
+      "key": "X16",
+      "kind": "uow",
+      "number": 102,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/102",
+      "parent": 100,
+      "parentKey": "F4",
+      "requirement": "X16",
+      "existingPR": null
+    },
+    {
+      "key": "X17",
+      "kind": "uow",
+      "number": 103,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/103",
+      "parent": 100,
+      "parentKey": "F4",
+      "requirement": "X17",
+      "existingPR": null
+    },
+    {
+      "key": "X18",
+      "kind": "uow",
+      "number": 104,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/104",
+      "parent": 100,
+      "parentKey": "F4",
+      "requirement": "X18",
+      "existingPR": null
+    },
+    {
+      "key": "X19",
+      "kind": "uow",
+      "number": 105,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/105",
+      "parent": 100,
+      "parentKey": "F4",
+      "requirement": "X19",
+      "existingPR": null
+    },
+    {
+      "key": "F5",
+      "kind": "phase",
+      "number": 106,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/106",
+      "parent": 82,
+      "parentKey": "C2",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "X20",
+      "kind": "uow",
+      "number": 107,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/107",
+      "parent": 106,
+      "parentKey": "F5",
+      "requirement": "X20",
+      "existingPR": null
+    },
+    {
+      "key": "X21",
+      "kind": "uow",
+      "number": 108,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/108",
+      "parent": 106,
+      "parentKey": "F5",
+      "requirement": "X21",
+      "existingPR": null
+    },
+    {
+      "key": "X22",
+      "kind": "uow",
+      "number": 109,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/109",
+      "parent": 106,
+      "parentKey": "F5",
+      "requirement": "X22",
+      "existingPR": null
+    },
+    {
+      "key": "X23",
+      "kind": "uow",
+      "number": 110,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/110",
+      "parent": 106,
+      "parentKey": "F5",
+      "requirement": "X23",
+      "existingPR": null
+    },
+    {
+      "key": "F6",
+      "kind": "phase",
+      "number": 111,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/111",
+      "parent": 82,
+      "parentKey": "C2",
+      "requirement": null,
+      "existingPR": null
+    },
+    {
+      "key": "X24",
+      "kind": "uow",
+      "number": 112,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/112",
+      "parent": 111,
+      "parentKey": "F6",
+      "requirement": "X24",
+      "existingPR": null
+    },
+    {
+      "key": "X25",
+      "kind": "uow",
+      "number": 113,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/113",
+      "parent": 111,
+      "parentKey": "F6",
+      "requirement": "X25",
+      "existingPR": null
+    },
+    {
+      "key": "X26",
+      "kind": "uow",
+      "number": 114,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/114",
+      "parent": 111,
+      "parentKey": "F6",
+      "requirement": "X26",
+      "existingPR": null
+    },
+    {
+      "key": "X27",
+      "kind": "uow",
+      "number": 115,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/115",
+      "parent": 111,
+      "parentKey": "F6",
+      "requirement": "X27",
+      "existingPR": null
+    },
+    {
+      "key": "X28",
+      "kind": "uow",
+      "number": 116,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/116",
+      "parent": 111,
+      "parentKey": "F6",
+      "requirement": "X28",
+      "existingPR": null
+    },
+    {
+      "key": "X29",
+      "kind": "uow",
+      "number": 117,
+      "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues/117",
+      "parent": 111,
+      "parentKey": "F6",
+      "requirement": "X29",
+      "existingPR": null
+    }
+  ]
+}

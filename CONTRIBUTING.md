@@ -1,5 +1,7 @@
 # Contributing
 
+Follow the repository's [Loops AIDLC process](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/docs/AIDLC.md): one scoped Bolt issue per ready PR, every PR based on main, at most three Codex review requests, exact-head verification and evidence-based merge/closure. The roadmap is tracked with native GitHub sub-issues. Changes to the plugin use this process; historical direct-push alpha commits remain preserved.
+
 Use Node 24.16.0 or supported Node 26 and the exact OpenClaw peer version in package.json. Run `npm ci`, then `npm run check`. `node scripts/verify-package.mjs` verifies the extracted archive against the actual feature SDK with fake model transport. It does not replace live acceptance.
 
 Keep `.dev-profile` private. Never commit credentials, personal history, model files or host state. Use dedicated synthetic chats for live evidence. Do not modify a personal assistant or EmbodySense project as part of this plugin.
