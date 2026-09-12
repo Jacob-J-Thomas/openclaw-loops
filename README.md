@@ -29,7 +29,7 @@ Then build and install the plugin, and start the development Gateway:
 bash scripts/ollama.sh pull qwen3.5:4b
 npm run check
 node scripts/verify-package.mjs
-bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.15.tgz" --force --accept-capabilities
+bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.16.tgz" --force --accept-capabilities
 bash scripts/dev.sh gateway run
 ```
 

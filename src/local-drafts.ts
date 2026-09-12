@@ -18,6 +18,19 @@ editableSchema.properties.revision=DefinitionSchema.properties.revision;
 type BrowserStore=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
 export type LocalDraft={definition:Definition;base:Definition|null;updatedAt:string};
 const prefix=(scope:string)=>`loops-editor:v2:${scope}:`;
+export function sameDefinition(left:Definition|null,right:Definition|null){
+  const serialize=(value:Definition|null)=>JSON.stringify(value,(_key,item:unknown)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
+  return left===right||serialize(left)===serialize(right);
+}
+export function definitionHasChanges(definition:Definition|null,base:Definition|null){return definition!==null&&!sameDefinition(definition,base);}
+export type LocalDraftReceipt={scope:string;id:string;serialized:string};
+// An undo to the saved definition clears only the draft this editor last wrote.
+// A different snapshot, including one written by another view, remains recoverable.
+export function syncLocalDraft(store:BrowserStore,scope:string,definition:Definition,base:Definition|null,previous:LocalDraftReceipt|null):LocalDraftReceipt|null{
+  if(definitionHasChanges(definition,base))return {scope,id:definition.id,serialized:JSON.stringify(saveLocalDraft(store,scope,definition,base))};
+  if(previous?.scope===scope&&previous.id===definition.id&&store.getItem(prefix(scope)+definition.id)===previous.serialized)store.removeItem(prefix(scope)+definition.id);
+  return null;
+}
 export function saveLocalDraft(store:BrowserStore,scope:string,definition:Definition,base:Definition|null){
   const draft:LocalDraft={definition,base,updatedAt:new Date().toISOString()};
   store.setItem(prefix(scope)+definition.id,JSON.stringify(draft));return draft;

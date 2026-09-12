@@ -1,8 +1,27 @@
 # Local verification
 
+## Alpha.16 editor Undo and draft recovery
+
+Both isolated Gateways run **1.0.0-alpha.16** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest match archive SHA-256 `df5b31c0569e999252542060847f53be42ba14767f59d839aa7c1a7ba0f5f4ee`. This documentation update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha16/`.
+
+The preceding browser check reproduced an authoring defect: Reset followed by Undo restored the two saved Advanced overrides but left the editor marked dirty, Run disabled, and an obsolete local recovery draft. The editor now derives unsaved changes from the current definition and its saved base, ignoring JSON object-key ordering while preserving explicit zero. Undo to the base removes only the recovery snapshot last written by that editor; an existing or newer snapshot from another view stays recoverable. New definitions still have unsaved changes. This is optimistic browser draft preservation, not an atomic multi-tab collaboration protocol.
+
+Three regressions cover structural equality, Reset/Undo/Redo draft synchronization, and preservation of other drafts. The full **171 source tests** pass on macOS arm64 and Linux arm64 with Node **24.16.0/26.1.0**. Types, lint, build and **31 extracted-package SDK tests** pass; all five compiled/metadata files match across platforms. The macOS Node 24 receipt is an explicitly labeled transcription of the completed `npm run check` output; the other test receipts are native Vitest JSON. Both Linux containers had no network or host mounts, exited 0 without OOM, and passed the actual 16 MB tmpfs-full failure/recovery check. The task VM is stopped.
+
+The native UI verified **Reset → Undo → Redo → Undo**. Reset/Redo unset the controls, created the local draft and disabled Run. Undo restored temperature `0` and output tokens `128`, disabled Save draft, removed the temporary local draft and re-enabled Run. The subsequent UI invocation `b58e0e8c-f7bc-417c-8463-126ae186d610` completed through real Codex inference with `UI inference verified.` at the unchanged saved revision 1. Reload completed without an unsaved-navigation dialog. The test tab recorded zero console errors; reload emitted six host-asset preload warnings. Screenshots and snapshots are under `output/playwright/alpha16-*`. The earlier test-only obsolete snapshot was explicitly discarded; no published definition or unrelated browser draft was edited.
+
+Fresh independent command/tool smoke tests used the same saved enabled revision 1:
+
+| Profile | User command | Agent tool | Outcome |
+|---|---|---|---|
+| Codex, Sol selected only in the synthetic conversation | `c8164674-ac47-4507-ad94-bf8a7791bf44` | `511f8425-f73c-451c-aa7f-e71b80692763` | Completed; exact fresh input and agent-reported new run ID verified. |
+| Separate Ollama server, `qwen3.5:4b` | `ed07d6d8-b070-4238-b909-7f9d0479afbc` | `39fe9c9d-2b02-411d-bc1f-fe244f1a0aba` | Completed; exact fresh input and agent-reported new run ID verified. |
+
+The stopped-state backup is `.dev-profile/backups/before-alpha16-1789237646635`. Every application-table row stayed identical through upgrade: **13 definitions / 165 runs** for Codex and **8 definitions / 58 runs** for Ollama. After acceptance, all original rows remain identical, both configurations remain deeply equal, and the only added run records are the five synthetic invocations above. The backend and worker are byte-identical to alpha.15, whose broader 65-command lifecycle journeys remain separately recorded. This is a verified local alpha; public release, host authority integration and the remaining release/expansion requirements are incomplete.
+
 ## Alpha.15 indexed history and memory
 
-Both isolated Gateways run **1.0.0-alpha.15** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest match archive SHA-256 `747c13f808151d59864a4a27cf1653764cfffd14517a16bd703ea16a22ee9d12`. This documentation update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha15/`.
+At this checkpoint, both isolated Gateways ran **1.0.0-alpha.15** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest matched archive SHA-256 `747c13f808151d59864a4a27cf1653764cfffd14517a16bd703ea16a22ee9d12`. This documentation update followed packaging and is separate from executable identity. Evidence is under `evidence/release-alpha15/`.
 
 The engine now retains only unfinished execution and cleanup records. Historical and parked runs load individually through authorized SQLite queries; history pages use the owner/time index. Authoring transactions merge the working set without rewriting or deleting omitted cold history. Explicit retention reads compact identity/recovery metadata and transactionally removes its selected rows while preserving immutable admission tombstones. Legacy revisions missing from old mutable definitions are recovered without loading complete historical outputs. Database schema remains 2 and saved record formats are unchanged.
 
@@ -24,6 +43,8 @@ Separate **65-command lifecycle journeys on each Gateway** exercise enabled auth
 Fresh native UI inspection paged through **103 existing synthetic runs** and loaded the oldest retained run `a2959d93-f8f5-4daf-9dce-a963ab848c5e`, including its complete result and both steps. Switching to the new acceptance conversation reset history to its two runs; the inspector displayed agent run `ee31718a-e180-438c-90e0-3d28a75022d9` and its actual result. The saved synthetic inference node still showed temperature `0` and output tokens `128` under Advanced, with advisory/unsupported explanations and no unsaved edits. The fresh tab reported zero console errors/warnings. Screenshots and accessibility snapshots are under `output/playwright/alpha15-*`. This proves the exercised browser paths; it does not establish the remaining screen-reader, browser/device or deployment-role matrix.
 
 ClawHub 0.23.3 static validation of the exact extracted installed archive passed with zero findings and target OpenClaw **2026.9.3** available. An earlier relative local-path attempt returned a missing target and was retained separately; it is not host-compatibility evidence. Static validation does not prove registry acceptance, publisher identity or publication.
+
+A source-aligned publication candidate at `0ac84bb3523ab25e2ca280db929b9bf3ecc4984f`, archive SHA-256 `bc8816eeb229e0ef815819f5eeadd4c82306062d729b50b4aebefa5e546c7233`, passed 31 extracted-package tests and the ClawHub code-plugin publication dry run with explicit source commit/ref/path. All five compiled/metadata files match the installed alpha.15 package; seven documentation files differ. The dry run neither authenticated nor uploaded, and the referenced public source does not yet exist. It does not prove namespace ownership or registry acceptance.
 
 SDK01 native Ollama sampling now has a separately reviewed local commit and canonical API comparison, described in [UPSTREAM_REQUIREMENTS.md](UPSTREAM_REQUIREMENTS.md). It remains uninstalled and unpublished. Public source/CI/registry acceptance, host authority/account/delivery integration and the rest of the release/expansion plan remain open.
 

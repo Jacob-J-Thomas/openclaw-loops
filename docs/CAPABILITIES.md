@@ -4,7 +4,7 @@ The development alpha uses **OpenClaw 2026.9.3** and **Node 24.16.0**. It is an 
 
 | Surface | Current behavior |
 |---|---|
-| Native UI | React Flow graph, node/edge inspector, agent/session selection, examples, JSON import/export, search, undo/redo, duplication, auto layout and binding picker. |
+| Native UI | React Flow graph, node/edge inspector, agent/session selection, examples, JSON import/export, search, undo/redo, duplication, auto layout and binding picker. Undo to the saved definition clears unsaved state and the editor's own recovery snapshot. |
 | Authoring | Enabled creation by default; explicit disabled drafts; draft saving separate from publication; immutable versions, publish, restore, archive/delete/recover operations. |
 | Execution | One engine for command, tools and UI; sequential execution with a configurable queue; pinned definition/model/reasoning; manual waits and authenticated admin review. |
 | Data | v2 zero-input and nested JSON contracts, safe traversal, typed equality, explicit budgets, full persisted outputs and paged output/history tools. |
