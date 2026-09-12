@@ -2,6 +2,8 @@
 
 This is a development alpha. The supported host contract is OpenClaw 2026.9.3; local source and package evidence covers macOS and a Linux arm64 VM with Node 24.16.0 and 26.1.0. Compiled package files match across those platforms. The public repository runs [hosted CI](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/workflows/verify.yml) for macOS/Linux and both Node versions. Check its exact commit and [delivery status](DELIVERY_STATUS.md); a workflow's existence is not passing evidence or deployment acceptance.
 
+[Hosted run 34717699050](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/runs/34717699050) verifies source and packaged SDK tests on macOS arm64 and Linux x64 for both Node versions, including real Linux filesystem-full recovery. All four package hashes match. This adds hosted build/test evidence; real Codex/Ollama calls and complete deployment-role acceptance remain separate checks.
+
 ## Individual
 
 Install the packaged plugin with OpenClaw's normal plugin installer, enable it in the profile, and open its native Loops page. Authoring and execution tools use the active host conversation. A new loop is enabled by default unless its author explicitly requests a draft. Generation controls inherit by omission. Do not add a per-plugin model allowlist unless the operator wants one. Existing host policy remains authoritative.
