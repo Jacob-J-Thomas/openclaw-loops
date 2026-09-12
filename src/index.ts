@@ -23,7 +23,15 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
   let documents:DocumentStore|undefined;
   const documentStore=()=>documents??=new DocumentStore(join(api.runtime.state.resolveStateDir(),'loops-poc','documents'),Math.max(budgets.definitionBytes,budgets.inputBytes)*2);
   const service=()=>{const engine=engines.get(stateFile);if(!engine)throw new Error('Loops service has not started in this Gateway.');return engine;};
-  api.registerService({id:'loops-poc-store',start(){if(!engines.has(stateFile))engines.set(stateFile,new Engine(new SqliteStorage(join(api.runtime.state.resolveStateDir(),'loops-poc','loops.sqlite'),stateFile),bridge.host,{budgets,concurrency:config.maxConcurrentRuns??1,onChange:()=>events.emit('changed',{})}));},async stop(){await engines.get(stateFile)?.close();engines.delete(stateFile);}});
+  api.registerService({id:'loops-poc-store',start(){
+    if(engines.has(stateFile))return;
+    const storage=new SqliteStorage(join(api.runtime.state.resolveStateDir(),'loops-poc','loops.sqlite'),stateFile);
+    try{engines.set(stateFile,new Engine(storage,bridge.host,{budgets,concurrency:config.maxConcurrentRuns??1,onChange:()=>events.emit('changed',{})}));}
+    catch(error){return storage.close().then(()=>{throw error;},cleanupError=>{throw new AggregateError([error,cleanupError],'Loops startup failed and storage cleanup reported a failure.');});}
+  },async stop(){
+    const engine=engines.get(stateFile);
+    try{await engine?.close();}finally{if(engines.get(stateFile)===engine)engines.delete(stateFile);}
+  }});
   api.registerCommand({name:'loops',description:'Discover and execute saved bounded loops.',acceptsArgs:true,requireAuth:true,requiredScopes:['operator.write'],
     agentPromptGuidance:['Loops tools provide full loop lifecycle control on user request. Use loops_library and loops_read for all saved definitions, including drafts. loops_create creates enabled loops by default; set enabled:false only when a draft is wanted. loops_edit preserves activation by default and accepts enabled:true/false to publish or save a draft. loops_enable enables or disables any valid saved revision without a human-only activation step; loops_revoke also stops future host actions in parked runs. Use loops_delete for requested deletion. Read the current revision before changing existing loops and reload on a conflict. To invoke a requested loop, use loops_list/loops_describe then actually call loops_run with the required inputs. If the requested loop is disabled, read and enable it as part of the request to run it, unless the user asks to keep it disabled. Report the actual result or pending/failed state; use loops_status for long-running results. A graph containing an explicit Human review node still pauses for that human decision. If tools are deferred, search for the specific loops_* tool using host discovery. Never claim loops are unavailable just because loops_list is empty. Never simulate calls or edit the plugin store directly.'],
     async handler(command){try{const actor=bridge.actor({source:'command',command,api}),parsed=parseCommand(command,budgets.inputBytes),e=service();

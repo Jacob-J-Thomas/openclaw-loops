@@ -1,6 +1,7 @@
 import {MessageChannel,receiveMessageOnPort,Worker,type MessagePort} from 'node:worker_threads';
-import {copyFileSync,existsSync,mkdirSync,readFileSync,rmSync,writeFileSync,chmodSync} from 'node:fs';
+import {copyFileSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync,chmodSync} from 'node:fs';
 import {dirname} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 import type {Storage,State} from './engine.js';
 import {parseDefinition} from './graph.js';
 import {defaultBudgets} from './budgets.js';
@@ -38,27 +39,61 @@ export function validateState(value:unknown):State{
 }
 
 export class SqliteStorage implements Storage{
-  private worker:Worker;
-  private port:MessagePort;
+  private worker?:Worker;
+  private port?:MessagePort;
   private closed=false;
   private broken=false;
   private lock:string;
+  private lease?:DatabaseSync;
+  private ownsPidLock=false;
+  private disposal?:Promise<void>;
+  private shutdown?:Promise<void>;
   constructor(readonly file:string,legacyFile?:string){
     mkdirSync(dirname(file),{recursive:true,mode:0o700});
     this.lock=`${file}.lock`;
-    if(existsSync(this.lock)){
-      let pid:number;
-      try{pid=Number(readFileSync(`${this.lock}/pid`,'utf8'));}catch{throw new Error('Loops store lock is incomplete. Inspect the owning process before removing it.');}
-      if(!Number.isInteger(pid)||pid<1)throw new Error('Loops store lock has an invalid owner.');
-      try{process.kill(pid,0);throw new Error(`Loops store is already open by process ${pid}.`);}catch(error){if(!(error instanceof Error&&'code' in error&&error.code==='ESRCH'))throw error;}
-      rmSync(this.lock,{recursive:true});
-    }
-    mkdirSync(this.lock,{mode:0o700});writeFileSync(`${this.lock}/pid`,String(process.pid),{mode:0o600,flush:true});
-    const {port1,port2}=new MessageChannel();this.port=port1;
-    this.worker=new Worker(new URL('./storage-worker.mjs',import.meta.url),{workerData:{file,port:port2},transferList:[port2]});
-    this.worker.unref();this.port.unref();
-    this.worker.on('error',()=>{this.broken=true;});
     try{
+      // The stable, empty lease file holds an OS-backed SQLite transaction for
+      // this owner's lifetime. Never unlink it: PID checks alone allow two stale
+      // lock reclaimers to remove each other's newly acquired directory.
+      const lease=new DatabaseSync(`${file}.owner.sqlite`);
+      try{
+        chmodSync(`${file}.owner.sqlite`,0o600);
+        lease.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;');
+      }catch(error){
+        lease.close();
+        if(error instanceof Error&&'errcode' in error&&error.errcode===5)throw new Error('Loops store is already open by another storage owner.',{cause:error});
+        throw error;
+      }
+      this.lease=lease;
+      // Retain the PID marker to reject a still-running older plugin. Upgrade
+      // and rollback must stop the previous Gateway before starting its peer.
+      if(existsSync(this.lock)){
+        let protocol:string|undefined;
+        try{protocol=readFileSync(`${this.lock}/protocol`,'utf8');}catch(error){if(!(error instanceof Error&&'code' in error&&error.code==='ENOENT'))throw error;}
+        // For this protocol the acquired lease proves its old owner has stopped,
+        // even if that owner's PID has since been reused by an unrelated process.
+        if(protocol!=='sqlite-owner-v1'){
+          let pid:number;
+          try{pid=Number(readFileSync(`${this.lock}/pid`,'utf8'));}catch{throw new Error('Loops store lock is incomplete. Inspect the owning process before removing it.');}
+          if(!Number.isInteger(pid)||pid<1)throw new Error('Loops store lock has an invalid owner.');
+          try{process.kill(pid,0);throw new Error(`Loops store is already open by process ${pid}.`);}catch(error){if(!(error instanceof Error&&'code' in error&&error.code==='ESRCH'))throw error;}
+        }
+        rmSync(this.lock,{recursive:true});
+      }
+      // Publish a complete marker atomically so a crash cannot leave an empty
+      // directory that prevents the next owner from recovering a dead process.
+      const staging=mkdtempSync(`${this.lock}.starting-`);
+      try{
+        writeFileSync(`${staging}/pid`,String(process.pid),{mode:0o600,flush:true});
+        writeFileSync(`${staging}/protocol`,'sqlite-owner-v1',{mode:0o600,flush:true});
+        renameSync(staging,this.lock);this.ownsPidLock=true;
+      }finally{rmSync(staging,{recursive:true,force:true});}
+      const {port1,port2}=new MessageChannel();this.port=port1;
+      try{this.worker=new Worker(new URL('./storage-worker.mjs',import.meta.url),{workerData:{file,port:port2},transferList:[port2]});}
+      catch(error){port2.close();throw error;}
+      this.worker.unref();this.port.unref();
+      this.worker.on('error',()=>{this.broken=true;});
+      this.worker.on('exit',()=>{this.broken=true;});
       if(!this.read()&&legacyFile&&existsSync(legacyFile)){
         const legacy=validateState(JSON.parse(readFileSync(legacyFile,'utf8')));
         const backup=`${legacyFile}.before-sqlite-${Date.now()}.bak`;
@@ -67,10 +102,10 @@ export class SqliteStorage implements Storage{
         if(JSON.stringify(this.read())!==JSON.stringify(legacy))throw new Error('Legacy migration verification failed; original JSON and backup are preserved.');
       }
       chmodSync(file,0o600);
-    }catch(error){this.dispose();throw error;}
+    }catch(error){void this.dispose().catch(()=>{});throw error;}
   }
   private call<T>(operation:string,payload?:unknown):T{
-    if(this.closed||this.broken)throw new Error('Loops storage worker is unavailable. Restart the plugin after checking its store.');
+    if(this.closed||this.broken||!this.worker||!this.port)throw new Error('Loops storage worker is unavailable. Restart the plugin after checking its store.');
     const signal=new SharedArrayBuffer(4);
     this.worker.postMessage({operation,payload,signal});
     // Existing synchronous authoring operations must not acknowledge uncommitted
@@ -88,6 +123,20 @@ export class SqliteStorage implements Storage{
   write(state:State){this.call('write',state);}
   backup(destination:string){return this.call<string>('backup',destination);}
   integrity(){return this.call<unknown>('integrity');}
-  close(){if(this.closed)return;try{if(!this.broken)this.call('close');}finally{this.dispose();}}
-  private dispose(){this.closed=true;this.port.close();void this.worker.terminate();rmSync(this.lock,{recursive:true,force:true});}
+  close():Promise<void>{
+    if(!this.shutdown)this.shutdown=(async()=>{try{if(!this.closed&&!this.broken)this.call('close');}finally{await this.dispose();}})();
+    return this.shutdown;
+  }
+  private dispose():Promise<void>{
+    if(this.disposal)return this.disposal;
+    this.closed=true;this.port?.close();
+    this.disposal=(async()=>{
+      // A timeout or failed close does not prove the worker stopped writing.
+      // Keep ownership until physical termination, including constructor errors.
+      if(this.worker)await this.worker.terminate();
+      try{if(this.ownsPidLock)rmSync(this.lock,{recursive:true,force:true});}
+      finally{this.lease?.close();this.lease=undefined;}
+    })();
+    return this.disposal;
+  }
 }

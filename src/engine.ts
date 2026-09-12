@@ -16,7 +16,7 @@ export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'run
 export type Run={id:string;requestKey:string;requestFingerprint:string;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
-export interface Storage{read():State|undefined;write(state:State):void;close?():void}
+export interface Storage{read():State|undefined;write(state:State):void;close?():void|Promise<void>}
 export class FileStorage implements Storage{
   constructor(private file:string){}
   read(){return existsSync(this.file)?JSON.parse(readFileSync(this.file,'utf8')) as State:undefined;}
@@ -53,12 +53,21 @@ export class Engine{
       record.publishedRevision??=record.enabledRevision;
     }
     for(const run of Object.values(this.state.runs)){const record=this.state.loops[run.definition.id];if(record&&!run.testMode)record.revisions![run.definition.revision]??=structuredClone(run.definition);}
-    for(const r of Object.values(this.state.runs))if(r.state==='running'||r.state==='queued'){
-      const uncertain=r.state!=='queued'&&(r.trace.some(t=>t.state==='running')||r.executions>0&&r.trace.length===0);
-      r.state='interrupted';r.error=uncertain?'Gateway stopped during an attempt. Inspect its outcome before explicitly retrying.':'Gateway stopped at a committed checkpoint. Resume with checkpoint recovery.';
-      if(uncertain)r.uncertainty='An in-flight host call may have completed; its outcome is unknown.';else delete r.uncertainty;
-      delete r.cleanupPending;r.updatedAt=now();
-      for(const t of r.trace)if(t.state==='running'){t.state='interrupted';t.endedAt=now();}
+    for(const r of Object.values(this.state.runs)){
+      const settling=r.cleanupPending===true;
+      if(settling){
+        // This flag describes promises owned by the old process, not a durable
+        // host receipt. A restarted worker cannot keep waiting on those promises.
+        delete r.cleanupPending;r.updatedAt=now();
+        r.uncertainty??='Gateway stopped before physical cleanup was confirmed. The external outcome is unknown; inspect it before explicit recovery.';
+      }
+      if(r.state==='running'||r.state==='queued'){
+        const uncertain=settling||r.state!=='queued'&&(r.trace.some(t=>t.state==='running')||r.executions>0&&r.trace.length===0);
+        r.state='interrupted';r.error=uncertain?'Gateway stopped during an attempt. Inspect its outcome before explicitly retrying.':'Gateway stopped at a committed checkpoint. Resume with checkpoint recovery.';
+        if(uncertain)r.uncertainty='An in-flight host call may have completed; its outcome is unknown.';else delete r.uncertainty;
+        r.updatedAt=now();
+        for(const t of r.trace)if(t.state==='running'){t.state='interrupted';t.endedAt=now();}
+      }
     }
     this.persist();
   }
@@ -214,7 +223,7 @@ export class Engine{
       if(!this.storageFailure)this.persist();
     }finally{
       await Promise.allSettled([...this.active.values()].map(x=>x.promise));
-      this.storage.close?.();
+      await this.storage.close?.();
     }
   }
   private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw new Error(`Missing ${port} edge from ${id}.`);return next;}

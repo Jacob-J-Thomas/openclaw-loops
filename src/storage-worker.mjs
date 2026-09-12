@@ -41,7 +41,10 @@ const read=()=>{
   const retired=database.prepare('SELECT request_key,record FROM retired_admissions').all();
   return {version:JSON.parse(version.value),loops:Object.fromEntries(database.prepare('SELECT id,record FROM loops').all().map(row=>[row.id,JSON.parse(row.record)])),runs:Object.fromEntries(database.prepare('SELECT id,record FROM runs').all().map(row=>[row.id,JSON.parse(row.record)])),...retired.length?{retiredAdmissions:Object.fromEntries(retired.map(row=>[row.request_key,JSON.parse(row.record)]))}:{}};
 };
-let cached=startupError?undefined:read();
+let cached;
+try{if(!startupError)cached=read();}
+catch(error){startupError=error instanceof Error?error.message:String(error);}
+if(startupError){try{database?.close();}catch{/* Preserve the original startup failure. */}}
 function write(next){
   database.exec('BEGIN IMMEDIATE');
   try{
@@ -93,7 +96,18 @@ function write(next){
       database.prepare('DELETE FROM runs WHERE id=?').run(id);
     }
     database.exec('COMMIT');cached=next;
-  }catch(error){database.exec('ROLLBACK');throw error;}
+  }catch(error){
+    try{if(database.isTransaction)database.exec('ROLLBACK');}
+    catch(rollbackError){
+      // Never let readback present an uncommitted transaction as verified state.
+      // SQLite can also roll back automatically (for example on SQLITE_FULL),
+      // in which case a second ROLLBACK would hide the actual write failure.
+      startupError=`Storage rollback could not be verified after ${error instanceof Error?error.message:String(error)}: ${rollbackError instanceof Error?rollbackError.message:String(rollbackError)}`;
+      try{database.close();}catch{/* Worker termination is the final cleanup. */}
+      throw new Error(startupError,{cause:rollbackError});
+    }
+    throw error;
+  }
 }
 parentPort.on('message',async message=>{
   let result;

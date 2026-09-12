@@ -1,6 +1,6 @@
 # Deployment and lifecycle
 
-This is an unreleased alpha. The supported host contract is OpenClaw 2026.9.3; local evidence currently covers macOS with Node 24.16.0. The workflow tests macOS/Linux and Node 24.16.0/26.1.0 when run in GitHub. A workflow file alone is not compatibility evidence.
+This is an unreleased alpha. The supported host contract is OpenClaw 2026.9.3; local source evidence covers macOS with Node 24.16.0 and 26.1.0. The workflow tests macOS/Linux and both Node versions when run in GitHub. A workflow file alone is not compatibility evidence.
 
 ## Individual
 
@@ -34,6 +34,16 @@ The isolated development profile uses Ollama `qwen3.5:4b`, Q4_K_M, 32,768 contex
 Do not copy a live SQLite main file without its transactional state. Do not delete the original JSON/backup as part of upgrade acceptance.
 
 History retention and its explicit UI/agent cleanup policy are documented in [HISTORY.md](HISTORY.md). Cleanup is disabled until requested; no upgrade deletes old history automatically.
+
+## Storage ownership and crash recovery
+
+Alpha.10 holds a SQLite transaction on the separate `loops.sqlite.owner.sqlite` lease file before recovering a stale PID marker. The lease contains no loop/run state and remains held until the storage worker physically stops. Its file is deliberately retained after shutdown: never unlink or replace a live lease file to resolve contention. All application state remains in `loops.sqlite`. Use local filesystems; shared/network-filesystem ownership is not established by the local tests.
+
+The complete PID marker is published atomically. The lease makes modern stale-marker recovery independent of PID reuse, while a live legacy PID marker still rejects startup. Stop the old Gateway before upgrades or rollback; simultaneous mixed-version ownership is unsupported. An incomplete legacy marker requires checking the old owning process before manual recovery. Temporary `.lock.starting-*` directories left by a crash before publication can be removed while the Gateway is stopped; they contain only ownership metadata.
+
+Restart preserves committed outputs, waits, human decisions and admission identities. Incomplete attempts remain inspectable and require explicit recovery. A stale `cleanupPending` flag from the stopped process is cleared while its uncertain external outcome remains recorded; clearing that flag does not claim an external provider call was cancelled successfully. No unknown call is automatically replayed.
+
+Tests kill disposable real storage/engine processes at ownership, transaction and execution boundaries. The full-database fixture uses SQLite's page-count limit to produce `SQLITE_FULL`; it does not fill the device filesystem. Actual filesystem exhaustion, OS power loss and remote provider cancellation remain separate acceptance work.
 
 ## Rollback
 

@@ -2,6 +2,9 @@ import {afterEach,describe,it,expect,vi} from 'vitest';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {Worker} from 'node:worker_threads';
+import {SqliteStorage} from '../src/storage.js';
 import type {OpenClawPluginApi,OpenClawPluginToolContext,PluginCommandContext,PluginSessionActionRegistration,OpenClawPluginService,OpenClawPluginCommandDefinition} from 'openclaw/plugin-sdk/plugin-entry';
 import sourcePlugin from '../src/index.js';
 const plugin:typeof sourcePlugin=process.env.LOOPS_TEST_PLUGIN?(await import(/* @vite-ignore */ process.env.LOOPS_TEST_PLUGIN)).default:sourcePlugin;
@@ -28,9 +31,30 @@ function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenCl
   const tools=registered.flatMap(t=>{const value=typeof t==='function'?t(toolContext):t;return Array.isArray(value)?value:value?[value]:[];});
   const commandContext={agentId:'main',sessionKey:key,sessionId,senderId:'host-sender',channel:'webchat',isAuthorizedSender:true,gatewayClientScopes:['operator.admin','operator.write'],config} as unknown as PluginCommandContext;
   const action=(id:string,payload:Record<string,unknown>,scopes=['operator.admin','operator.write','operator.read'])=>actions.get(id)!.handler({pluginId:'loops-poc',actionId:id,agentId:'main',sessionKey:key,payload:payload as never,client:{connId:'human',scopes}});
-  return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId};
+  return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('restarts after a failed storage close instead of retaining a stopped executor',async()=>{
+    const s=setup(),service=s.services.find(service=>service.id==='loops-poc-store')!,ctx={} as Parameters<OpenClawPluginService['start']>[0];
+    const post=Worker.prototype.postMessage;
+    const spy=vi.spyOn(Worker.prototype,'postMessage').mockImplementation(function(this:Worker,message,transfers){return post.call(this,message.operation==='close'?{...message,operation:'injected-close-failure'}:message,transfers);});
+    try{await expect(service.stop?.(ctx)).rejects.toThrow('Unknown storage operation.');}finally{spy.mockRestore();}
+    await service.start(ctx);
+    expect(await s.action('load',{id:'summarize-text'})).toMatchObject({result:{definition:{id:'summarize-text',revision:1}}});
+  });
+  it('releases storage after engine startup fails so the repaired store can start',async()=>{
+    const s=setup({start:false}),service=s.services.find(service=>service.id==='loops-poc-store')!,ctx={} as Parameters<OpenClawPluginService['start']>[0];
+    const filename=join(s.root,'loops-poc','loops.sqlite'),store=new SqliteStorage(filename),d={...structuredClone(examples[0]),revision:1};
+    store.write({version:1,loops:{[d.id]:{definition:d,enabledRevision:null,grants:[]}},runs:{}});await store.close();
+    const fault=new DatabaseSync(filename);
+    try{
+      fault.exec("CREATE TRIGGER reject_startup BEFORE INSERT ON metadata BEGIN SELECT RAISE(ABORT,'Injected startup commit failure'); END;");
+      await expect(Promise.resolve().then(()=>service.start(ctx))).rejects.toThrow('Injected startup commit failure');
+      fault.exec('DROP TRIGGER reject_startup');
+    }finally{fault.close();}
+    await service.start(ctx);shutdowns.push(async()=>{await service.stop?.(ctx);});
+    expect(await s.action('load',{id:d.id})).toMatchObject({result:{definition:{id:d.id,revision:1}}});
+  });
   it('surfaces known safe conflicts through the wire result and the shared UI client',async()=>{
     const s=setup();await s.action('edit',{id:'summarize-text',expectedRevision:1,changes:{name:'Concurrent saved version'}});
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;

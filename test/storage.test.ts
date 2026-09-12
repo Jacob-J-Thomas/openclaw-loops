@@ -1,13 +1,14 @@
-import {afterEach,describe,it,expect} from 'vitest';
-import {mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
+import {afterEach,describe,it,expect,vi} from 'vitest';
+import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
+import {Worker} from 'node:worker_threads';
 import {SqliteStorage} from '../src/storage.js';
 import {examples} from '../src/examples.js';
 import {Engine,type Actor,type State} from '../src/engine.js';
-const cleanups:Array<()=>void>=[];
-afterEach(()=>{for(const cleanup of cleanups.splice(0).reverse())cleanup();});
+const cleanups:Array<()=>void|Promise<void>>=[];
+afterEach(async()=>{for(const cleanup of cleanups.splice(0).reverse())await cleanup();});
 function setup(){const directory=mkdtempSync(join(tmpdir(),'loops-sqlite-'));cleanups.push(()=>rmSync(directory,{recursive:true,force:true}));const filename=join(directory,'loops.sqlite');return {directory,filename};}
 const initial=():State=>({version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}});
 describe('plugin-owned SQLite worker',()=>{
@@ -28,12 +29,12 @@ describe('plugin-owned SQLite worker',()=>{
     const recovered=await engine.retry(actor,returned.id,'retry-node','explicit-recovery');expect(recovered).toMatchObject({state:'completed',result:'Completed value',parentRunId:returned.id});
     await engine.close();
   });
-  it('migrates JSON transactionally, retains original and backup, then reopens the database',()=>{
+  it('migrates JSON transactionally, retains original and backup, then reopens the database',async()=>{
     const {directory,filename}=setup(),legacy=join(directory,'state.json'),state=initial();writeFileSync(legacy,JSON.stringify(state));
     const store=new SqliteStorage(filename,legacy);cleanups.push(()=>store.close());
     expect(store.read()).toEqual(state);expect(JSON.parse(readFileSync(legacy,'utf8'))).toEqual(state);
     expect(readdirSync(directory).some(name=>name.startsWith('state.json.before-sqlite-'))).toBe(true);
-    expect(store.integrity()).toEqual([{integrity_check:'ok'}]);store.close();
+    expect(store.integrity()).toEqual([{integrity_check:'ok'}]);await store.close();
     const reopened=new SqliteStorage(filename,legacy);cleanups.push(()=>reopened.close());expect(reopened.read()).toEqual(state);
   });
   it('rejects a competing process/store and immutable revision overwrite without a partial commit',()=>{
@@ -47,12 +48,48 @@ describe('plugin-owned SQLite worker',()=>{
     const snapshot=join(directory,'backup.sqlite');store.backup(snapshot);const restored=new SqliteStorage(snapshot);cleanups.push(()=>restored.close());
     expect(restored.read()).toEqual(store.read());expect(restored.integrity()).toEqual([{integrity_check:'ok'}]);
   });
-  it('refuses invalid legacy data without replacing it',()=>{
+  it('refuses invalid legacy data without replacing it and releases ownership after worker cleanup',async()=>{
     const {directory,filename}=setup(),legacy=join(directory,'state.json');writeFileSync(legacy,'{"version":99}');
     expect(()=>new SqliteStorage(filename,legacy)).toThrow(/unsupported/);expect(readFileSync(legacy,'utf8')).toBe('{"version":99}');
+    await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
+    writeFileSync(legacy,JSON.stringify(initial()));
+    const store=new SqliteStorage(filename,legacy);cleanups.push(()=>store.close());expect(store.read()).toEqual(initial());
   });
-  it('reports a corrupt SQLite file promptly without replacing it',()=>{
+  it('reports a corrupt SQLite file promptly without replacing it',async()=>{
     const {filename}=setup();writeFileSync(filename,'not a sqlite database');const start=Date.now();
     expect(()=>new SqliteStorage(filename)).toThrow(/not a database/);expect(Date.now()-start).toBeLessThan(5000);expect(readFileSync(filename,'utf8')).toBe('not a sqlite database');
+    await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
+  });
+  it('reports invalid saved JSON promptly instead of waiting for a dead worker',async()=>{
+    const {filename}=setup(),store=new SqliteStorage(filename);store.write(initial());await store.close();
+    const fault=new DatabaseSync(filename);
+    fault.prepare("UPDATE metadata SET value=? WHERE key='version'").run('invalid stored JSON');fault.close();
+    const start=Date.now();expect(()=>new SqliteStorage(filename)).toThrow(/JSON/);
+    expect(Date.now()-start).toBeLessThan(5000);
+    await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
+    const preserved=new DatabaseSync(filename,{readOnly:true});
+    try{expect(preserved.prepare("SELECT value FROM metadata WHERE key='version'").get()?.value).toBe('invalid stored JSON');}
+    finally{preserved.close();}
+  });
+  it('keeps the lease after a failed close until the storage worker physically terminates',async()=>{
+    const {filename}=setup(),store=new SqliteStorage(filename);store.write(initial());
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+    const terminate=Worker.prototype.terminate,post=Worker.prototype.postMessage;
+    const terminateSpy=vi.spyOn(Worker.prototype,'terminate').mockImplementation(function(this:Worker){return gate.then(()=>terminate.call(this));});
+    const postSpy=vi.spyOn(Worker.prototype,'postMessage').mockImplementation(function(this:Worker,message,transfers){
+      // Reject close inside the real worker, leaving its SQLite connection open.
+      return post.call(this,message.operation==='close'?{...message,operation:'injected-close-failure'}:message,transfers);
+    });
+    const closing=store.close();let settled=false;void closing.then(()=>{settled=true;},()=>{settled=true;});
+    try{
+      expect(terminateSpy).toHaveBeenCalledOnce();expect(settled).toBe(false);
+      expect(()=>new SqliteStorage(filename)).toThrow(/already open/);
+      expect(existsSync(filename+'.lock')).toBe(true);
+    }finally{
+      postSpy.mockRestore();release();
+      await expect(closing).rejects.toThrow('Unknown storage operation.');terminateSpy.mockRestore();
+    }
+    expect(settled).toBe(true);
+    const reopened=new SqliteStorage(filename);cleanups.push(()=>reopened.close());expect(reopened.read()).toEqual(initial());
   });
 });

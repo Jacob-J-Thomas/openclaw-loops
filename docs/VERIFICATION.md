@@ -1,8 +1,27 @@
 # Local verification
 
+## Alpha.10 storage ownership and crash verification
+
+Both isolated Gateways run **1.0.0-alpha.10** on OpenClaw **2026.9.3**. Tarball SHA-256: `a36ff7778f4472c74c25f401e864907c312269e2a8bb39c5e9d6691e1b0068ec`. Every installed executable and the manifest match the archive. The source passed **141 tests** under both Node **24.16.0** and **26.1.0**, plus typecheck, lint and build. The extracted package passed **23 tests through the actual feature SDK**, including service startup/stop failure recovery. Evidence: `evidence/release-alpha10/`. This documentation update follows packaging and is separate from the installed executable identity.
+
+A process fixture reproduced two simultaneous owners reclaiming one stale PID lock in alpha.9. The same interleaving now admits exactly one owner. Alpha.10 holds an exclusive transaction on a stable, empty SQLite lease file until the data worker physically terminates, publishes its PID marker atomically and recovers dead modern markers even after PID reuse. A live legacy marker still prevents startup. Tests also cover failed close, constructor failure, corrupt stored JSON and restart after SIGKILL. Upgrade/rollback must stop the previous Gateway; mixed-version concurrent startup and network filesystems are unsupported.
+
+Twelve engine crash checkpoints exercise admission, pre-inference, in-flight inference, host completion before persistence, committed inference, completion, manual wait/resumption, review/approval, queueing and cancellation while cleanup is pending. Recovery retains committed outputs and explicit uncertainty, does not automatically replay unknown effects, and removes obsolete process-local cleanup state. Separate SQLite subprocess tests prove actual `SQLITE_FULL` using `max_page_count`, preserve the original error after automatic rollback, refuse readback after an unverifiable rollback and distinguish process death before COMMIT from death after COMMIT but before acknowledgement. These are deterministic host fixtures and real SQLite/process faults; they do not prove provider cancellation, filesystem exhaustion, power-loss behavior or the complete deployment/soak matrix.
+
+A stopped-state backup is retained at `.dev-profile/backups/before-alpha10-1789190695576`. Hashes for all application tables remained identical through the upgrade: Codex had **10 definitions and 124 runs**; Ollama had **6 definitions and 24 runs**. Both stores passed integrity checks at schema 2. The new smoke tests subsequently added two runs per profile. No model-server or personal-profile configuration was changed.
+
+Fresh installed acceptance used dedicated synthetic conversations and existing enabled revision 1 definitions:
+
+| Profile | User command | Agent tool | Outcome |
+|---|---|---|---|
+| Codex, Sol selected for the synthetic conversation | `545ca1b1-8751-40cb-9633-329e0935452b` | `815f3b32-1478-4b40-b0fc-4a4e386b7b90` | Both completed; fresh-input and agent-reported run-ID assertions passed. |
+| Separate Ollama server, `qwen3.5:4b` | `dc0ad3b9-4940-4f59-8603-09f4f6836dbd` | `a16aeff5-aa80-470d-ae42-6e71af2098ee` | Both completed; fresh-input and agent-reported run-ID assertions passed. |
+
+The native UI shows the completed Codex agent run and its saved revision. Advanced controls remain visible with inherited defaults and accurate advisory/unsupported labels. The UI executable is unchanged from alpha.9. The proposed upstream sampling-parameter contract remains a local candidate; it is neither released nor installed in these Gateways.
+
 ## Alpha.9 theme and Advanced-settings verification
 
-Both isolated Gateways now run **1.0.0-alpha.9**, tarball SHA-256 `9430a9c85cff87eb1e60aa3443fe9bf0bbc96ca0c947343f17e7ccc2d7581052`. Their backend, worker and native UI hashes match the artifact. Backend and worker bytes are unchanged from alpha.7. The theme changes passed the full **115-test** source check and build as alpha.8; the final placeholder-only follow-up passed a fresh build and **21 extracted-package SDK tests** as alpha.9. Evidence: `evidence/release-alpha8/` and `evidence/release-alpha9/`.
+At this checkpoint, both isolated Gateways ran **1.0.0-alpha.9**, tarball SHA-256 `9430a9c85cff87eb1e60aa3443fe9bf0bbc96ca0c947343f17e7ccc2d7581052`. Their backend, worker and native UI hashes matched the artifact. Backend and worker bytes were unchanged from alpha.7. The theme changes passed the full **115-test** source check and build as alpha.8; the final placeholder-only follow-up passed a fresh build and **21 extracted-package SDK tests** as alpha.9. Evidence: `evidence/release-alpha8/` and `evidence/release-alpha9/`.
 
 Browser testing reproduced the original defect: OpenClaw was set to Light while Loops remained dark. The native page now inherits the host's resolved color scheme without reading private host state or maintaining another preference. Both explicit Light and Dark modes were verified, including canvas controls, the inference inspector and Advanced capability explanations. The original System selection and normal viewport were restored afterward.
 
