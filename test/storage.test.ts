@@ -27,7 +27,8 @@ describe('plugin-owned SQLite worker',()=>{
       completed=await engine.test(actor,definition,{text:'New execution'},'fresh');
       expect(completed.state).toBe('completed');expect(writes).not.toHaveBeenCalled();
       expect(requests.length).toBeGreaterThan(1);
-      expect(requests.every(request=>request.operation==='write-run')).toBe(true);
+      expect(requests.some(request=>request.operation==='write-run')).toBe(true);
+      expect(requests.every(request=>['read-retired','find-admission','write-run'].includes(request.operation))).toBe(true);
       expect(requests.every(request=>!JSON.stringify(request.payload).includes(previous.id))).toBe(true);
     }finally{messages.mockRestore();writes.mockRestore();}
     const saved=store.read()!;

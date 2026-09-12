@@ -19,7 +19,7 @@ export const RetentionResultSchema=Type.Object({
 },strict);
 export type RetentionResult=Static<typeof RetentionResultSchema>;
 
-export function retentionCandidates(runs:Run[],policy:RetentionPolicy,physical:ReadonlySet<string>,referenced:ReadonlySet<string>,at=Date.now()){
+export function retentionCandidates(runs:Array<Pick<Run,'id'|'state'|'createdAt'|'updatedAt'|'cleanupPending'>>,policy:RetentionPolicy,physical:ReadonlySet<string>,referenced:ReadonlySet<string>,at=Date.now()){
   if(!Value.Check(RetentionPolicySchema,policy)||policy.olderThanDays===undefined&&policy.keepLatest===undefined)throw requestError('History cleanup requires olderThanDays or keepLatest. No history has been deleted.');
   const cutoff=policy.olderThanDays===undefined?Infinity:at-policy.olderThanDays*86400000;
   const ordered=[...runs].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id));

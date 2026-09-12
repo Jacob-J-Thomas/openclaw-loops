@@ -1,6 +1,8 @@
 # History and explicit cleanup
 
-History is retained by default. The native run inspector pages through 100 runs at a time; `loops_history` supports pages of up to 1,000. No limit on history length implicitly deletes a run. Storage currently loads the full retained state; database-backed lazy pagination remains a release requirement.
+History is retained by default. The native run inspector pages through 100 runs at a time; `loops_history` supports pages of up to 1,000. No limit on history length implicitly deletes a run. Alpha.15 reads history pages through the SQLite owner/time index. Completed and parked runs stay on disk until an authorized inspection, output request or continuation needs that individual run. Startup loads unfinished execution/cleanup records, definitions and revisions; it does not retain complete historical outputs in the engine or worker.
+
+The compatibility `loops_runs` operation still returns all compact summaries for the conversation. Explicit cleanup scans compact metadata across retained history to protect recovery ancestry. Individual full-run inspection materializes that run, and worker commits still have a synchronous acknowledgement barrier. These are bounded improvements to history loading, not a claim of unlimited storage or constant-time operations.
 
 Use **History cleanup** in the run inspector, or `loops_retention`, when deletion is wanted. Configure an age threshold, a minimum number of newest runs to keep, or both. When both are supplied, a run must be older than the age threshold and outside the retained newest group before it becomes eligible. Age is measured from the last saved run update; the newest group is ordered by creation time and ID. Blank controls impose no additional age/count condition. At least one control must be supplied.
 

@@ -29,7 +29,7 @@ Then build and install the plugin, and start the development Gateway:
 bash scripts/ollama.sh pull qwen3.5:4b
 npm run check
 node scripts/verify-package.mjs
-bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.14.tgz" --force --accept-capabilities
+bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.15.tgz" --force --accept-capabilities
 bash scripts/dev.sh gateway run
 ```
 
@@ -103,7 +103,7 @@ V2 loops can omit the active timeout to use the host's timeout. An explicit loop
 
 ## Durability and limits
 
-Definitions, immutable revisions, admissions, attempt evidence and complete outputs use plugin-owned SQLite with locking, transactions, integrity checks and backup support. Legacy JSON is validated and backed up before import; the original file remains. Running definitions are pinned. A draft can change independently of publication.
+Definitions, immutable revisions, admissions, attempt evidence and complete outputs use plugin-owned SQLite with locking, transactions, integrity checks and backup support. History pages use an owner-scoped database index; completed and parked runs load individually when requested instead of staying in memory. Legacy JSON is validated and backed up before import; the original file remains. Running definitions are pinned. A draft can change independently of publication.
 
 There is no 20-loop or 50-run retention cap. History and full output have paged retrieval; records are not silently evicted. The current store still loads complete state and uses synchronous commit barriers, so large-scale acceptance remains open. Queue concurrency is configurable. Cancelled host work retains its physical execution slot until cleanup settles. Checkpoint retry is distinct from deliberately repeating an uncertain attempt.
 

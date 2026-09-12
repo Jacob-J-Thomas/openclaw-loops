@@ -17,7 +17,23 @@ export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'run
 export type Run={id:string;requestKey:string;requestFingerprint:string;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
-export interface Storage{read():State|undefined;write(state:State):void;writeRun?(run:Run):void;close?():void|Promise<void>}
+export type RunSummary=Pick<Run,'id'|'state'|'createdAt'|'updatedAt'|'executions'>&{slug:string;revision:number};
+export type RunMetadata=Pick<Run,'id'|'owner'|'requestKey'|'requestFingerprint'|'state'|'createdAt'|'updatedAt'|'parentRunId'|'cleanupPending'>;
+// Indexed stores keep historical outputs on disk. The working state is an
+// explicitly partial run set; merging it must never delete omitted history.
+export interface IndexedRunStorage{
+  readWorkingState():State|undefined;
+  writeWorkingState(state:State):void;
+  writeRun(run:Run):void;
+  readRun(id:string,ownerKey:string):Run|undefined;
+  findAdmission(key:string):{id:string;fingerprint:string}|undefined;
+  readRetiredAdmission(key:string):RetiredAdmission|undefined;
+  runMetadata():RunMetadata[];
+  history(ownerKey:string,cursor:number,limit:number):{items:RunSummary[];nextCursor:number|null;total:number};
+  runSummaries(ownerKey:string):RunSummary[];
+  hasOpenRuns(loopId:string):boolean;
+}
+export interface Storage{read():State|undefined;write(state:State):void;writeRun?(run:Run):void;readonly indexed?:IndexedRunStorage;close?():void|Promise<void>}
 export class FileStorage implements Storage{
   constructor(private file:string){}
   read(){return existsSync(this.file)?JSON.parse(readFileSync(this.file,'utf8')) as State:undefined;}
@@ -47,7 +63,7 @@ export class Engine{
   private active=new Map<string,{controller:AbortController;promise:Promise<Run>}>();
   constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>}={}){
     this.budgets=resolveBudgets(options.budgets);
-    this.state=storage.read()??{version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}};
+    this.state=(storage.indexed?storage.indexed.readWorkingState():storage.read())??{version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}};
     if(this.state.version!==1)throw new Error('Unsupported state store version.');
     for(const record of Object.values(this.state.loops)){
       record.revisions??={[record.definition.revision]:structuredClone(record.definition)};
@@ -74,14 +90,19 @@ export class Engine{
   }
   private persist(run?:Run){
     if(this.storageFailure)throw this.storageFailure;
-    try{if(run&&this.storage.writeRun)this.storage.writeRun(run);else this.storage.write(this.state);}catch(error){
+    try{
+      if(run&&this.storage.indexed)this.storage.indexed.writeRun(run);
+      else if(run&&this.storage.writeRun)this.storage.writeRun(run);
+      else if(this.storage.indexed)this.storage.indexed.writeWorkingState(this.state);
+      else this.storage.write(this.state);
+    }catch(error){
       try{
-        const committed=this.storage.read();
+        const committed=this.storage.indexed?this.storage.indexed.readWorkingState():this.storage.read();
         if(committed){
           // Pumps hold Run references across host calls. Replacing only the
           // state map leaves them updating orphaned objects after rollback.
           for(const [id,run] of Object.entries(this.state.runs)){
-            const previous=committed.runs[id];if(!previous)continue;
+            const previous=committed.runs[id]??this.storage.indexed?.readRun(id,ownerKey(run.owner));if(!previous)continue;
             for(const key of Object.keys(run))if(!Object.hasOwn(previous,key))Reflect.deleteProperty(run,key);
             Object.assign(run,previous);committed.runs[id]=run;
           }
@@ -93,11 +114,18 @@ export class Engine{
       }finally{for(const active of this.active.values())active.controller.abort(new Error('Storage commit failed; execution stopped.'));}
       throw this.storageFailure??error;
     }
+    if(this.storage.indexed){
+      if(run)this.state.runs[run.id]=run;
+      // A pump or physical cleanup can still hold a completed Run reference.
+      // Release it only once no live execution owns it; parked runs reload on use.
+      for(const [id,saved] of Object.entries(this.state.runs))if(!this.active.has(id)&&!this.physical.has(id)&&!this.queued.has(id)&&!['running','queued'].includes(saved.state))delete this.state.runs[id];
+      delete this.state.retiredAdmissions;
+    }
     try{this.options.onChange?.();}catch{/* A disconnected subscriber cannot roll back a committed write. */}
   }
   private ensureHuman(actor:Actor){actor.check();if(!actor.human||actor.source==='tool')throw requestError('This operation requires an authenticated human in the Loops UI or an authorized human command.');}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}
-  private own(actor:Actor,id:string){actor.check();const run=this.state.runs[id];if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');return run;}
+  private own(actor:Actor,id:string){actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');return run;}
   private allowed(actor:Actor,d:Definition,record:LoopRecord|undefined){actor.check();if(!record||record.revoked)throw requestError('Loop permission revoked.');for(const c of d.capabilities){if(!record.grants.includes(c))throw requestError(`Loop permission revoked: ${c}`);this.host.check(actor,c);}}
   private allowedRun(actor:Actor,run:Run){if(run.testMode){this.ensureAuthor(actor);for(const capability of run.definition.capabilities)this.host.check(actor,capability);}else this.allowed(actor,run.definition,this.state.loops[run.definition.id]);}
   library(actor:Actor){actor.check();return Object.values(this.state.loops).filter(r=>!r.deletedAt&&!r.archived).map(r=>({id:r.definition.id,slug:r.definition.slug,name:r.definition.name,description:r.definition.description,revision:r.definition.revision,enabledRevision:r.enabledRevision,publishedRevision:r.publishedRevision??null,hasDraft:r.definition.revision!==r.publishedRevision,capabilities:r.definition.capabilities}));}
@@ -120,7 +148,7 @@ export class Engine{
   delete(actor:Actor,id:string,expectedRevision:number){
     this.ensureAuthor(actor);const previous=this.state.loops[id];if(!previous||previous.deletedAt)throw requestError('Loop not found.');
     if(previous.definition.revision!==expectedRevision)throw requestError('Delete conflict: reload the current revision before deleting.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');
-    if(Object.values(this.state.runs).some(r=>r.definition.id===id&&(!terminal(r)||this.active.has(r.id)||this.physical.has(r.id))))throw requestError('Cannot delete a loop with active or parked runs. Complete or cancel those runs first.');
+    if(this.storage.indexed?.hasOpenRuns(id)||Object.values(this.state.runs).some(r=>r.definition.id===id&&(!terminal(r)||this.active.has(r.id)||this.physical.has(r.id))))throw requestError('Cannot delete a loop with active or parked runs. Complete or cancel those runs first.');
     const deleted={id,slug:previous.definition.slug,revision:previous.definition.revision,deleted:true};
     previous.deletedAt=now();previous.enabledRevision=null;this.persist();return deleted;
   }
@@ -158,28 +186,29 @@ export class Engine{
   deleted(actor:Actor){this.ensureAuthor(actor);return Object.values(this.state.loops).filter(r=>r.deletedAt||r.archived).map(r=>({id:r.definition.id,slug:r.definition.slug,revision:r.definition.revision,...r.deletedAt?{deletedAt:r.deletedAt}:{},archived:r.archived??false}));}
   recover(actor:Actor,id:string,expectedRevision:number){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r)throw requestError('Loop not found.');if(r.definition.revision!==expectedRevision)throw requestError('Recovery conflict: reload the current revision.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');if(Object.values(this.state.loops).some(other=>other!==r&&!other.deletedAt&&other.definition.slug===r.definition.slug))throw requestError('Slug is already in use; restore to a new loop instead.');delete r.deletedAt;r.archived=false;r.enabledRevision=null;this.persist();return structuredClone(r);}
   output(actor:Actor,id:string,nodeId?:string,offset=0,limit=8000){const run=this.own(actor,id);const value=nodeId===undefined?run.result:run.outputs[nodeId];if(value===undefined)throw requestError('Output not found.');return {runId:id,nodeId:nodeId??null,...textPage(display(value),offset,limit),format:typeof value==='string'?'text':'json'};}
-  history(actor:Actor,cursor=0,limit=100){if(!Number.isInteger(cursor)||cursor<0||!Number.isInteger(limit)||limit<1||limit>1000)throw requestError('History page requires a nonnegative cursor and limit 1–1000.');const rows=this.runs(actor);return {items:rows.slice(cursor,cursor+limit),nextCursor:cursor+limit<rows.length?cursor+limit:null,total:rows.length};}
+  history(actor:Actor,cursor=0,limit=100){actor.check();if(!Number.isInteger(cursor)||cursor<0||!Number.isInteger(limit)||limit<1||limit>1000)throw requestError('History page requires a nonnegative cursor and limit 1–1000.');if(this.storage.indexed)return this.storage.indexed.history(ownerKey(actor),cursor,limit);const rows=this.runs(actor);return {items:rows.slice(cursor,cursor+limit),nextCursor:cursor+limit<rows.length?cursor+limit:null,total:rows.length};}
   retention(actor:Actor,policy:RetentionPolicy,applyPlanId?:string):RetentionResult{
     this.ensureAuthor(actor);
-    const all=Object.values(this.state.runs),owner=ownerKey(actor);
+    const all=this.storage.indexed?.runMetadata()??Object.values(this.state.runs),owner=ownerKey(actor);
     const plan=retentionCandidates(all.filter(run=>ownerKey(run.owner)===owner),policy,new Set([...this.active.keys(),...this.physical.keys()]),new Set(all.flatMap(run=>run.parentRunId?[run.parentRunId]:[])));
     const planId=hash(canonical({owner,policy,candidates:plan.candidates}));
     if(applyPlanId!==undefined){
       if(applyPlanId!==planId)throw requestError('History cleanup changed since preview. Preview again before applying. No history has been deleted.','LOOPS_RETENTION_CONFLICT');
       if(plan.candidates.length){
         const retiredAt=now();this.state.retiredAdmissions??={};
-        for(const {id} of plan.candidates){const run=this.state.runs[id];this.state.retiredAdmissions[run.requestKey]={runId:id,fingerprint:run.requestFingerprint,owner:run.owner,retiredAt};delete this.state.runs[id];}
+        const byId=new Map(all.map(run=>[run.id,run]));
+        for(const {id} of plan.candidates){const run=byId.get(id)!;this.state.retiredAdmissions[run.requestKey]={runId:id,fingerprint:run.requestFingerprint,owner:run.owner,retiredAt};delete this.state.runs[id];}
         this.persist();
       }
     }
     return {planId,policy:structuredClone(policy),...plan,applied:applyPlanId!==undefined};
   }
   private rejectRetiredAdmission(key:string,fingerprint:string){
-    const retired=this.state.retiredAdmissions?.[key];if(!retired)return;
+    const retired=this.state.retiredAdmissions?.[key]??this.storage.indexed?.readRetiredAdmission(key);if(!retired)return;
     if(retired.fingerprint!==fingerprint)throw requestError('Request ID conflict: this admission belongs to deliberately removed history.');
     throw new LoopError({code:'LOOPS_HISTORY_REMOVED',message:`Run ${retired.runId} was deliberately removed from history. This request ID will not execute again.`,phase:'admission',retryable:false,recovery:'Use a new request ID only for an intentional new execution.'});
   }
-  runs(actor:Actor){actor.check();return Object.values(this.state.runs).filter(r=>ownerKey(r.owner)===ownerKey(actor)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(r=>({id:r.id,slug:r.definition.slug,revision:r.definition.revision,state:r.state,createdAt:r.createdAt,updatedAt:r.updatedAt,executions:r.executions}));}
+  runs(actor:Actor){actor.check();if(this.storage.indexed)return this.storage.indexed.runSummaries(ownerKey(actor));return Object.values(this.state.runs).filter(r=>ownerKey(r.owner)===ownerKey(actor)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id)).map(r=>({id:r.id,slug:r.definition.slug,revision:r.definition.revision,state:r.state,createdAt:r.createdAt,updatedAt:r.updatedAt,executions:r.executions}));}
   status(actor:Actor,id:string){const run=structuredClone(this.own(actor,id));if(terminal(run)&&(this.active.has(id)||this.physical.has(id)))run.cleanupPending=true;return run;}
   async run(actor:Actor,slug:string,input:unknown,requestId:string):Promise<Run>{
     return this.admit(actor,slug,input,requestId);
@@ -189,8 +218,8 @@ export class Engine{
     actor.check();if(!requestId||requestId.length>200)throw requestError('A stable request ID of at most 200 characters is required.');
     const requestKey=hash(ownerKey(actor)+':'+requestId);const fingerprint=hash(canonical({slug,input,...draft?{draft}:{}}));
     this.rejectRetiredAdmission(requestKey,fingerprint);
-    const prior=Object.values(this.state.runs).find(r=>r.requestKey===requestKey);
-    if(prior){if(prior.requestFingerprint!==fingerprint)throw requestError('Request ID conflict: input changed.');return this.status(actor,prior.id);}
+    const prior=this.admission(requestKey);
+    if(prior){if(prior.fingerprint!==fingerprint)throw requestError('Request ID conflict: input changed.');return this.status(actor,prior.id);}
     const definition=draft??this.describe(actor,slug);const issues=this.validate(actor,definition).issues;if(issues.length)throw requestError(issues.map(i=>i.message).join(' '));
     const checkedInput=validateInput(definition,input,this.budgets);
     const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
@@ -202,13 +231,18 @@ export class Engine{
     if(this.active.has(id)||this.physical.has(id))throw requestError('Wait for physical execution cleanup before recovery.');
     this.allowedRun(actor,previous);
     if(!requestId||requestId.length>200)throw requestError('Recovery requires an admission request ID of at most 200 characters.');
-    const key=hash(ownerKey(actor)+':'+requestId),fingerprint=hash(canonical({parentRunId:id,mode}));this.rejectRetiredAdmission(key,fingerprint);const prior=Object.values(this.state.runs).find(r=>r.requestKey===key);
-    if(prior){if(prior.requestFingerprint!==fingerprint)throw requestError('Request ID conflict.');return this.status(actor,prior.id);}
+    const key=hash(ownerKey(actor)+':'+requestId),fingerprint=hash(canonical({parentRunId:id,mode}));this.rejectRetiredAdmission(key,fingerprint);const prior=this.admission(key);
+    if(prior){if(prior.fingerprint!==fingerprint)throw requestError('Request ID conflict.');return this.status(actor,prior.id);}
     if(mode==='checkpoint'&&(previous.uncertainty||previous.trace.some(t=>['running','interrupted','cancelled','failed'].includes(t.state))))throw requestError('The current attempt is not a committed checkpoint. Inspect its outcome, then explicitly retry the node or restart.');
     const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
     delete run.error;delete run.errorDetail;delete run.uncertainty;delete run.pending;delete run.result;delete run.cleanupPending;
     if(mode==='restart'){run.outputs={};run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;}else delete run.outputs[run.cursor];
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
+  }
+  private admission(key:string){
+    if(this.storage.indexed)return this.storage.indexed.findAdmission(key);
+    const run=Object.values(this.state.runs).find(r=>r.requestKey===key);
+    return run?{id:run.id,fingerprint:run.requestFingerprint}:undefined;
   }
   async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;r.cursor=this.next(r,r.cursor,'next');this.persist(r);return this.dispatch(actor,r);}
   async review(actor:Actor,id:string,decision:'approve'|'reject'){

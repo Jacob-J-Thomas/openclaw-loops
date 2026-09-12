@@ -35,7 +35,7 @@ const receipt=Type.Unsafe<RunReceipt>(Type.Object({
   uncertainty:Type.Optional(text),review:Type.Optional(review),cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),
   steps:Type.Array(Type.Object({nodeId:text,state:attemptState,iteration:Type.Optional(integer)},strict)),inspection:text,
 },strict));
-const completeRun=Type.Unsafe<Run>(Type.Object({
+const runData=Type.Object({
   id:text,requestKey:text,requestFingerprint:text,owner,source:enums(['command','tool','session-action']),requester:Type.Optional(text),
   executionSettings:Type.Optional(Type.Object({model:Type.Optional(text),reasoning:Type.Optional(text),authProfileId:Type.Optional(text)},strict)),
   cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),
@@ -43,7 +43,9 @@ const completeRun=Type.Unsafe<Run>(Type.Object({
   trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text)},strict)),
   executions:integer,activeMs:Type.Number({minimum:0}),createdAt:text,updatedAt:text,result:Type.Optional(Type.Unknown()),error:Type.Optional(text),
   errorDetail:Type.Optional(error),pending:Type.Optional(text),uncertainty:Type.Optional(text),review:Type.Optional(review),
-},strict));
+},strict);
+const completeRun=Type.Unsafe<Run>(runData);
+export const runMetadataSchema=Type.Array(Type.Pick(runData,['id','owner','requestKey','requestFingerprint','state','createdAt','updatedAt','parentRunId','cleanupPending'],strict));
 export const outputs={
   receipt,record,completeRun,retention:RetentionResultSchema,
   saved:Type.Unsafe<ReturnType<Engine['save']>>(Type.Object({record:loopRecord,issues},strict)),

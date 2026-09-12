@@ -23,6 +23,8 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS revisions(loop_id TEXT NOT NULL, revision INTEGER NOT NULL, definition TEXT NOT NULL, PRIMARY KEY(loop_id,revision));
   CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, owner_key TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, record TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS runs_owner_created ON runs(owner_key,created_at DESC,id);
+  CREATE INDEX IF NOT EXISTS runs_owner_created_desc ON runs(owner_key,created_at DESC,id DESC);
+  CREATE INDEX IF NOT EXISTS runs_working ON runs(id) WHERE state IN ('running','queued') OR json_extract(record,'$.cleanupPending')=1;
   CREATE TABLE IF NOT EXISTS admissions(request_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, run_id TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS retired_admissions(request_key TEXT PRIMARY KEY, record TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS attempts(run_id TEXT NOT NULL, sequence INTEGER NOT NULL, node_id TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(run_id,sequence));
@@ -41,8 +43,42 @@ const read=()=>{
   const retired=database.prepare('SELECT request_key,record FROM retired_admissions').all();
   return {version:JSON.parse(version.value),loops:Object.fromEntries(database.prepare('SELECT id,record FROM loops').all().map(row=>[row.id,JSON.parse(row.record)])),runs:Object.fromEntries(database.prepare('SELECT id,record FROM runs').all().map(row=>[row.id,JSON.parse(row.record)])),...retired.length?{retiredAdmissions:Object.fromEntries(retired.map(row=>[row.request_key,JSON.parse(row.record)]))}:{}};
 };
+const workingState=()=>{
+  const version=database.prepare("SELECT value FROM metadata WHERE key='version'").get();
+  if(!version)return undefined;
+  const loops=Object.fromEntries(database.prepare('SELECT id,record FROM loops').all().map(row=>[row.id,JSON.parse(row.record)]));
+  // Imported POC history may contain an older pinned revision that the mutable
+  // definition record lost. Preserve it without materializing historical outputs.
+  for(const row of database.prepare(`SELECT DISTINCT json_extract(record,'$.definition') AS definition FROM runs
+    WHERE json_extract(record,'$.testMode') IS NOT 1 AND NOT EXISTS
+    (SELECT 1 FROM revisions WHERE loop_id=json_extract(runs.record,'$.definition.id') AND revision=json_extract(runs.record,'$.definition.revision'))`).all()){
+    const definition=JSON.parse(row.definition),record=loops[definition.id];
+    if(record){record.revisions??={[record.definition.revision]:record.definition};record.revisions[definition.revision]??=definition;}
+  }
+  return {version:JSON.parse(version.value),loops,runs:Object.fromEntries(database.prepare("SELECT id,record FROM runs WHERE state IN ('running','queued') OR json_extract(record,'$.cleanupPending')=1").all().map(row=>[row.id,JSON.parse(row.record)]))};
+};
+const summaryColumns="id,state,created_at AS createdAt,json_extract(record,'$.updatedAt') AS updatedAt,json_extract(record,'$.executions') AS executions,json_extract(record,'$.definition.slug') AS slug,json_extract(record,'$.definition.revision') AS revision";
+const summaries=(owner,cursor,limit)=>database.prepare(`SELECT ${summaryColumns} FROM runs WHERE owner_key=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).all(owner,limit,cursor);
+const history=({owner,cursor,limit})=>{
+  const {total}=database.prepare('SELECT count(*) AS total FROM runs WHERE owner_key=?').get(owner);
+  return {items:summaries(owner,cursor,limit),nextCursor:cursor+limit<total?cursor+limit:null,total};
+};
+const runMetadata=()=>database.prepare(`SELECT id,state,created_at AS createdAt,owner_key AS ownerKey,json_extract(record,'$.id') AS recordId,
+  json_extract(record,'$.state') AS recordState,json_extract(record,'$.createdAt') AS recordCreatedAt,
+  json_type(record,'$.cleanupPending') AS cleanupType,json_type(record,'$.parentRunId') AS parentType,
+  admissions.run_id AS admissionId,admissions.fingerprint AS admissionFingerprint,
+  json_extract(record,'$.owner') AS owner,json_extract(record,'$.requestKey') AS requestKey,
+  json_extract(record,'$.requestFingerprint') AS requestFingerprint,json_extract(record,'$.updatedAt') AS updatedAt,
+  json_extract(record,'$.parentRunId') AS parentRunId,json_extract(record,'$.cleanupPending') AS cleanupPending FROM runs
+  LEFT JOIN admissions ON admissions.request_key=json_extract(record,'$.requestKey')`).all().map(row=>{
+    const {ownerKey,recordId,recordState,recordCreatedAt,cleanupType,parentType,admissionId,admissionFingerprint,...record}=row,owner=JSON.parse(record.owner);
+    if(recordId!==record.id||recordState!==record.state||recordCreatedAt!==record.createdAt||!owner||JSON.stringify([owner.agentId,owner.sessionKey,owner.sessionId])!==ownerKey||admissionId!==record.id||admissionFingerprint!==record.requestFingerprint)throw new Error('Invalid saved history metadata: its identity index is inconsistent.');
+    if(cleanupType!==null&&!['true','false'].includes(cleanupType)||parentType!==null&&parentType!=='text')throw new Error('Invalid saved history metadata: recovery and cleanup fields have invalid types.');
+    return {...record,owner,...record.parentRunId===null?{parentRunId:undefined}:{},cleanupPending:record.cleanupPending===1};
+  });
 if(startupError){try{database?.close();}catch{/* Preserve the original startup failure. */}}
-function write(next,runOnly=false){
+function write(next,mode='full'){
+  const runOnly=mode==='run',working=mode==='working';
   database.exec('BEGIN IMMEDIATE');
   try{
     // The database is the committed baseline. Do not retain another copy of all
@@ -95,10 +131,15 @@ function write(next,runOnly=false){
       if(previous&&previous.record!==JSON.stringify(retired))throw new Error('Retired admission is immutable.');
       if(!previous)database.prepare('INSERT INTO retired_admissions VALUES (?,?)').run(key,JSON.stringify(retired));
     }
-    for(const {request_key:key} of database.prepare('SELECT request_key FROM retired_admissions').all())if(!Object.hasOwn(next.retiredAdmissions??{},key))throw new Error('Retired admission identity cannot be removed.');
-    for(const {id,request_key:key} of database.prepare("SELECT id,json_extract(record,'$.requestKey') AS request_key FROM runs").all())if(!Object.hasOwn(next.runs,id)){
+    if(!working)for(const {request_key:key} of database.prepare('SELECT request_key FROM retired_admissions').all())if(!Object.hasOwn(next.retiredAdmissions??{},key))throw new Error('Retired admission identity cannot be removed.');
+    const removed=working?Object.entries(next.retiredAdmissions??{}).map(([key,retired])=>({id:retired.runId,request_key:key})):
+      database.prepare("SELECT id,json_extract(record,'$.requestKey') AS request_key FROM runs").all().filter(({id})=>!Object.hasOwn(next.runs,id));
+    for(const {id,request_key:key} of removed){
       // Explicit retention is the only caller allowed to remove a run.
       if(!Object.hasOwn(next.retiredAdmissions??{},key))throw new Error('History removal requires a retained admission identity.');
+      const current=database.prepare("SELECT json_extract(record,'$.requestKey') AS request_key FROM runs WHERE id=?").get(id);
+      if(current&&current.request_key!==key)throw new Error('History removal admission identity conflict.');
+      if(Object.hasOwn(next.runs,id))throw new Error('History removal cannot retain the same working run.');
       for(const table of ['attempts','outputs','events'])database.prepare(`DELETE FROM ${table} WHERE run_id=?`).run(id);
       database.prepare('DELETE FROM runs WHERE id=?').run(id);
     }
@@ -123,8 +164,23 @@ parentPort.on('message',async message=>{
     if(startupError)throw startupError;
     switch(message.operation){
       case 'read':result=read();break;
+      case 'read-working':result=workingState();break;
+      case 'read-run':{
+        const row=database.prepare('SELECT record FROM runs WHERE id=? AND owner_key=?').get(message.payload.id,message.payload.owner);
+        result=row?JSON.parse(row.record):undefined;break;
+      }
+      case 'find-admission':result=database.prepare('SELECT run_id AS id,fingerprint FROM admissions WHERE request_key=?').get(message.payload);break;
+      case 'read-retired':{
+        const row=database.prepare('SELECT record FROM retired_admissions WHERE request_key=?').get(message.payload);
+        result=row?JSON.parse(row.record):undefined;break;
+      }
+      case 'run-metadata':result=runMetadata();break;
+      case 'history':result=history(message.payload);break;
+      case 'run-summaries':result=summaries(message.payload,0,-1);break;
+      case 'has-open-runs':result=!!database.prepare("SELECT 1 FROM runs WHERE json_extract(record,'$.definition.id')=? AND (state NOT IN ('completed','failed','cancelled','interrupted') OR json_extract(record,'$.cleanupPending')=1) LIMIT 1").get(message.payload);break;
       case 'write':write(message.payload);break;
-      case 'write-run':write(message.payload,true);break;
+      case 'write-working':write(message.payload,'working');break;
+      case 'write-run':write(message.payload,'run');break;
       case 'backup':await backup(database,message.payload);result=message.payload;break;
       case 'integrity':result=database.prepare('PRAGMA integrity_check').all();break;
       case 'close':database.exec('PRAGMA wal_checkpoint(TRUNCATE)');database.close();break;

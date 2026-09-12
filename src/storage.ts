@@ -2,14 +2,14 @@ import {MessageChannel,receiveMessageOnPort,Worker,type MessagePort} from 'node:
 import {copyFileSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync,chmodSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import type {Storage,State,Run} from './engine.js';
+import type {Storage,State,Run,IndexedRunStorage,RunMetadata,RunSummary} from './engine.js';
 import {parseDefinition} from './graph.js';
 import {defaultBudgets} from './budgets.js';
 // Policy changes must never make already-saved version 2 evidence unreadable.
 const persistedBudgets={...defaultBudgets,definitionBytes:Number.MAX_SAFE_INTEGER};
 import {Value} from 'typebox/value';
-import {outputs} from './output-schemas.js';
-import {RetiredAdmissionSchema} from './retention.js';
+import {outputs,runMetadataSchema} from './output-schemas.js';
+import {RetiredAdmissionSchema,type RetiredAdmission} from './retention.js';
 import {LoopError,storageError} from './errors.js';
 
 export function validateState(value:unknown):State{
@@ -39,7 +39,8 @@ export function validateState(value:unknown):State{
   return state;
 }
 
-export class SqliteStorage implements Storage{
+export class SqliteStorage implements Storage,IndexedRunStorage{
+  readonly indexed:IndexedRunStorage=this;
   private worker?:Worker;
   private port?:MessagePort;
   private closed=false;
@@ -95,7 +96,7 @@ export class SqliteStorage implements Storage{
       this.worker.unref();this.port.unref();
       this.worker.on('error',()=>{this.broken=true;});
       this.worker.on('exit',()=>{this.broken=true;});
-      if(!this.read()&&legacyFile&&existsSync(legacyFile)){
+      if(!this.readWorkingState()&&legacyFile&&existsSync(legacyFile)){
         const legacy=validateState(JSON.parse(readFileSync(legacyFile,'utf8')));
         const backup=`${legacyFile}.before-sqlite-${Date.now()}.bak`;
         copyFileSync(legacyFile,backup);chmodSync(backup,0o600);
@@ -121,7 +122,20 @@ export class SqliteStorage implements Storage{
     return response.value;
   }
   read(){const result=this.call<State|undefined>('read');return result?validateState(result):undefined;}
+  readWorkingState(){const result=this.call<State|undefined>('read-working');return result?validateState(result):undefined;}
+  readRun(id:string,ownerKey:string){
+    const result=this.call<Run|undefined>('read-run',{id,owner:ownerKey});
+    if(result){validateState({version:1,loops:{},runs:{[id]:result}});if(JSON.stringify([result.owner.agentId,result.owner.sessionKey,result.owner.sessionId])!==ownerKey)throw new Error('Stored run ownership index is inconsistent.');}
+    return result;
+  }
+  findAdmission(key:string){const result=this.call<{id:string;fingerprint:string}|undefined>('find-admission',key);if(result&&(typeof result.id!=='string'||typeof result.fingerprint!=='string'))throw new Error('Invalid saved admission identity.');return result;}
+  readRetiredAdmission(key:string){const result=this.call<RetiredAdmission|undefined>('read-retired',key);if(result&&!Value.Check(RetiredAdmissionSchema,result))throw new Error('Invalid retired admission identity.');return result;}
+  runMetadata(){const result=this.call<RunMetadata[]>('run-metadata');if(!Value.Check(runMetadataSchema,result))throw new Error('Invalid saved history metadata.');return result;}
+  history(ownerKey:string,cursor:number,limit:number){const result=this.call<{items:RunSummary[];nextCursor:number|null;total:number}>('history',{owner:ownerKey,cursor,limit});if(!Value.Check(outputs.history,result))throw new Error('Invalid saved history page.');return result;}
+  runSummaries(ownerKey:string){const result=this.call<RunSummary[]>('run-summaries',ownerKey);if(!Value.Check(outputs.runs,result))throw new Error('Invalid saved history summary.');return result;}
+  hasOpenRuns(loopId:string){return this.call<boolean>('has-open-runs',loopId);}
   write(state:State){this.call('write',state);}
+  writeWorkingState(state:State){this.call('write-working',state);}
   // Execution checkpoints send only their changed run. Authoring, migration and
   // retention still use one whole-state transaction for their coordinated edits.
   writeRun(run:Run){this.call('write-run',run);}

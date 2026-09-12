@@ -1,8 +1,35 @@
 # Local verification
 
+## Alpha.15 indexed history and memory
+
+Both isolated Gateways run **1.0.0-alpha.15** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest match archive SHA-256 `747c13f808151d59864a4a27cf1653764cfffd14517a16bd703ea16a22ee9d12`. This documentation update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha15/`.
+
+The engine now retains only unfinished execution and cleanup records. Historical and parked runs load individually through authorized SQLite queries; history pages use the owner/time index. Authoring transactions merge the working set without rewriting or deleting omitted cold history. Explicit retention reads compact identity/recovery metadata and transactionally removes its selected rows while preserving immutable admission tombstones. Legacy revisions missing from old mutable definitions are recovered without loading complete historical outputs. Database schema remains 2 and saved record formats are unchanged.
+
+Seven new regressions cover startup/pagination without full-state reads, owner-scoped inspection, exact cold-record preservation through authoring, parked wait/review reload and pinned versions, restart uncertainty, physical cancellation accounting, held-object rollback, and rejection of corrupt cold/retention metadata. The full **168 source tests** pass on macOS arm64 and Linux arm64 with Node **24.16.0/26.1.0**, together with types, lint, build and **31 extracted-package actual SDK tests**. All five compiled/metadata files match across platforms. Both Linux containers had no network or host mounts, exited 0 and had no OOM. Actual 16 MB tmpfs exhaustion returned `LOOPS_STORAGE_FULL` before a host effect, preserved committed state, then recovered with one explicit effect and `integrity_check=ok`. The 2 GB test VM is stopped.
+
+A separate benchmark compared alpha.14 commit `2e7f6dd839a9ad1f45a7bb66962c402d47c2cd2b` with the final alpha.15 source. Separate Node 24 processes opened identical stopped SQLite snapshots containing 1,000 synthetic runs. With explicit garbage collection, main heap after opening was **99,969,776 bytes before / 7,073,928 after**; after 12 deterministic runs, **100,608,592 / 7,538,320 bytes**. Startup was **988 / 324 ms**, and a 50-row history query **8.7 / 3.8 ms**. Both returned the same complete output hash and passed integrity checks. This does not prove faster inference, peak-memory limits or general production capacity. Definitions/revisions and active runs still require memory, full inspection loads one run, retention scans compact metadata and commits remain synchronous. Evidence: `evidence/history-loading/memory-comparison.json`.
+
+The stopped-state backup is `.dev-profile/backups/before-alpha15-1789234595062`. Every application-table row stayed identical through upgrade: **12 definitions / 150 runs** for Codex and **7 definitions / 45 runs** for Ollama. Later acceptance added only synthetic definitions/runs; it did not alter personal profiles or model-server configuration.
+
+Fresh independent invocation smoke tests used the same saved enabled revision 1:
+
+| Profile | User command | Agent tool | Outcome |
+|---|---|---|---|
+| Codex, Sol selected only in the synthetic conversation | `4fe17bf1-1408-45e1-8273-4ecd3f486864` | `ee31718a-e180-438c-90e0-3d28a75022d9` | Completed; exact fresh input and agent-reported new run ID verified. |
+| Separate Ollama server, `qwen3.5:4b` | `145b7932-5dc2-4a10-9ee5-666d6140a588` | `dc9d8352-ad86-4cb9-a1a6-cdec8f03dd2f` | Completed; exact fresh input and agent-reported new run ID verified. |
+
+Separate **65-command lifecycle journeys on each Gateway** exercise enabled authoring, draft/publication/version operations, unpublished tests, cold wait/review continuation, cancellation/recovery ancestry, deletion, retry identity and fully retrieved 50,000-byte Unicode input/output. Their final real inference runs are Codex `dfbf1a49-fc37-42ae-8f01-e52dc0c92df5` and Ollama `e2397c32-e453-4d80-a380-527fdc370dc5`. The initial Codex smoke and command journey used the same evidence directory; those files are retained under `commands/codex/`, and the smoke was rerun into its own directory with a fresh session before final assertions.
+
+Fresh native UI inspection paged through **103 existing synthetic runs** and loaded the oldest retained run `a2959d93-f8f5-4daf-9dce-a963ab848c5e`, including its complete result and both steps. Switching to the new acceptance conversation reset history to its two runs; the inspector displayed agent run `ee31718a-e180-438c-90e0-3d28a75022d9` and its actual result. The saved synthetic inference node still showed temperature `0` and output tokens `128` under Advanced, with advisory/unsupported explanations and no unsaved edits. The fresh tab reported zero console errors/warnings. Screenshots and accessibility snapshots are under `output/playwright/alpha15-*`. This proves the exercised browser paths; it does not establish the remaining screen-reader, browser/device or deployment-role matrix.
+
+ClawHub 0.23.3 static validation of the exact extracted installed archive passed with zero findings and target OpenClaw **2026.9.3** available. An earlier relative local-path attempt returned a missing target and was retained separately; it is not host-compatibility evidence. Static validation does not prove registry acceptance, publisher identity or publication.
+
+SDK01 native Ollama sampling now has a separately reviewed local commit and canonical API comparison, described in [UPSTREAM_REQUIREMENTS.md](UPSTREAM_REQUIREMENTS.md). It remains uninstalled and unpublished. Public source/CI/registry acceptance, host authority/account/delivery integration and the rest of the release/expansion plan remain open.
+
 ## Alpha.14 conversation-command parity
 
-Both isolated Gateways run **1.0.0-alpha.14** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest match archive SHA-256 `87d9960c2a1dab4d2713036c55fc248a4763b8160702a869bf7f460595b72a18`. This evidence update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha14/`.
+At this checkpoint, both isolated Gateways ran **1.0.0-alpha.14** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest matched archive SHA-256 `87d9960c2a1dab4d2713036c55fc248a4763b8160702a869bf7f460595b72a18`. This evidence update followed packaging and is separate from executable identity. Evidence is under `evidence/release-alpha14/`.
 
 All 33 shared operations now accept the conversation form `/loops <operation> <JSON object>`, with schema-derived help, the existing text shortcuts, structured failures, staged input and complete result retrieval. Commands use the same validation and backend handlers as UI actions and agent tools. Authenticated command write authority permits enabled authoring and lifecycle control; Human review retains its explicit human decision requirement. The 31 agent tools remain available.
 
