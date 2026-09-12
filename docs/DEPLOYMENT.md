@@ -1,6 +1,6 @@
 # Deployment and lifecycle
 
-This is an unreleased alpha. The supported host contract is OpenClaw 2026.9.3; local source and package evidence covers macOS and a Linux arm64 VM with Node 24.16.0 and 26.1.0. Compiled package files match across those platforms. The GitHub workflow is configured for macOS/Linux and both Node versions but has not run; native x64 and hosted CI remain unverified.
+This is a development alpha. The supported host contract is OpenClaw 2026.9.3; local source and package evidence covers macOS and a Linux arm64 VM with Node 24.16.0 and 26.1.0. Compiled package files match across those platforms. The public repository runs [hosted CI](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/workflows/verify.yml) for macOS/Linux and both Node versions. Check its exact commit and [delivery status](DELIVERY_STATUS.md); a workflow's existence is not passing evidence or deployment acceptance.
 
 ## Individual
 
@@ -12,7 +12,7 @@ Run history belongs to its originating agent/session/session generation. The lib
 
 Use a trusted OpenClaw Gateway and its established operator scopes. Read-only operators can browse permitted library/session data; operator-write can author and activate; an explicit Human review requires the admin human path. Loop tools grant no privilege beyond the caller's host authority. The plugin does not currently implement separate project ownership or per-loop sharing ACLs. Do not represent Gateway-wide library access as tenant isolation.
 
-Stable user identity, session visibility after reset, and requester-bound jobs are required upstream work for the complete shared-team release. See [UPSTREAM_REQUIREMENTS.md](UPSTREAM_REQUIREMENTS.md).
+Stable user identity, session visibility after reset, and request-bound invocation/delivery are required host contracts for the complete shared-team release. Use the existing runtime and issue-led upstream additions; no custom jobs API is selected. See [UPSTREAM_REQUIREMENTS.md](UPSTREAM_REQUIREMENTS.md).
 
 ## Independent customers
 

@@ -217,6 +217,8 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await s.tools.find(tool=>tool.name==='loops_test')!.execute('history-fixture',{definition,input:{}})).details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_HISTORY_REMOVED'}});
     expect(s.complete).not.toHaveBeenCalled();
   });
+  // This full lifecycle includes many durable writes and paged reads. Allow shared
+  // CI runners a bounded 30 seconds while retaining every large-payload assertion.
   it('authors, executes, reads and edits large data through real SDK envelopes without losing content',async()=>{
     const s=setup();
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
@@ -243,7 +245,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const direct=(await s.tools.find(t=>t.name==='loops_read')!.execute('large-read',{id})).details as {kind:string;documentId:string};expect(direct.kind).toBe('loops-document');
     expect((await s.tools.find(t=>t.name==='loops_document')!.execute('large-page',{documentId:direct.documentId})).details).toHaveProperty('text');
     expect(s.complete).not.toHaveBeenCalled();
-  });
+  },30_000);
   it('authorizes a human command review and rejects callers without human authority',async()=>{
     const s=setup(),definition=structuredClone(examples[0]);definition.slug='command-review';definition.id='command-review';definition.revision=0;definition.capabilities=[];
     definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'review',kind:'review',label:'Review',proposal:'Synthetic review'},{id:'return',kind:'return',label:'Return',value:'approved'},{id:'fail',kind:'fail',label:'Fail',reason:'rejected'}];

@@ -121,4 +121,4 @@ Failed runs expose a stable code, phase, failed node, selected model, retryabili
 
 `npm run check` runs types, lint, deterministic tests and both builds. `node scripts/verify-package.mjs` exercises actual SDK adapters from the extracted tarball. Live command/tool/UI tests use dedicated synthetic conversations and record their evidence separately. GitHub CI is configured for macOS/Linux and Node 24.16.0/26.1.0; an unrun workflow is not passing evidence.
 
-See [contribution guidance](CONTRIBUTING.md), [MIT license](LICENSE), and [third-party notices](docs/THIRD_PARTY_NOTICES.md). Public source and ClawHub release verification remain delivery gates; no 1.0 registry release has been published.
+See [contribution guidance](CONTRIBUTING.md), [MIT license](LICENSE), and [third-party notices](docs/THIRD_PARTY_NOTICES.md). [Public source](https://github.com/Jacob-J-Thomas/openclaw-loops) and its plugin history are available. Follow [CI](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/workflows/verify.yml) and [delivery status](docs/DELIVERY_STATUS.md) for remaining acceptance; no 1.0 registry release has been published.
