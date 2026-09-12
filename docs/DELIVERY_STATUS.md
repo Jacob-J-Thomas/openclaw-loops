@@ -1,6 +1,8 @@
 # Delivery status
 
-Active scope: all requirements in [DELIVERY_PLAN.md](DELIVERY_PLAN.md), including expansion milestones.
+Active scope, revised September 12, 2026: **the standalone 1.0 external plugin**, packages P0–P6 and requirements R01–R25 in [DELIVERY_PLAN.md](DELIVERY_PLAN.md). Expansion families X01–X29 and SDK05 are deferred after 1.0; their explicitly mapped existing-palette subsets remain release requirements.
+
+The owner has authorized public GitHub repository creation and pushing the reviewed plugin history. The earlier publication-approval blocker is resolved. Source publication and CI results will be recorded separately from a ClawHub or 1.0 release. Upstream implementation belongs in separate OpenClaw issue-linked PRs, as recorded in [UPSTREAM_REQUIREMENTS.md](UPSTREAM_REQUIREMENTS.md); it is excluded from the [plugin repository/package](RELEASE_SCOPE.md).
 
 ## Baseline
 
@@ -27,9 +29,9 @@ Active scope: all requirements in [DELIVERY_PLAN.md](DELIVERY_PLAN.md), includin
 | R22 | Partial | Empty invalidation events followed by authorized fetch. Durable requester-bound delivery needs SDK04. |
 | R23 | Partial | Keyboard authoring controls, contrast/theme/responsive CSS, native Advanced zero-value UI proof. Alpha.7 keyboard create/enable/merge and 390 px authoring pass. Alpha.9 now follows host Light/Dark/System selection through inherited color-scheme, with measured text/placeholder contrast and real Advanced controls. Full screen-reader, browser and device acceptance remains. |
 | R24 | Partial | Alpha.16 passes 171 source tests on macOS and a local Linux arm64 VM with Node 24.16.0/26.1.0, plus typecheck/lint/build and 31 extracted-package SDK tests. Compiled files match across platforms. Both installed profiles match the archive; every application table was unchanged across upgrade and original rows remain identical after acceptance. Fresh UI, command and agent-tool inference passes. Alpha.15's 65-command journeys and 103-run cold-history UI evidence remain separately recorded for the unchanged backend/worker. Real filesystem-full recovery passed on both Linux Node versions. Hosted CI, x64, deployment roles, broader resources/soak/upgrade acceptance remain. |
-| R25 | Partial; local validation/dry run passed | MIT license, 27 dependency notices, contributor/deployment guides, pinned CI workflow, installable alpha tarball and upstream gap contracts. Exact alpha.15 artifact static validation against OpenClaw 2026.9.3 passes with zero findings; source-aligned alpha.13 and alpha.15 candidates passed code-plugin publication dry runs with ClawHub 0.23.3. No authentication/upload occurred; publisher identity, public source/CI, publication and fresh registry installation remain. Public GitHub source creation/push was rejected by automatic approval review; specific payload approval is pending. |
-| X01–X29 | Pending | All expansion milestones remain in the active goal. |
+| R25 | Partial; source publication authorized | MIT, notices, contributor/deployment guides, pinned CI and installable alpha. Source-aligned alpha.16 passed ClawHub 0.23.3 static validation against OpenClaw 2026.9.3 with zero findings and a publication dry run; no registry authentication/upload occurred. Publish the reviewed plugin-only source/history and verify hosted CI. Verified publisher upload, public-registry installation and complete 1.0 acceptance remain. |
+| X01–X29 / SDK05 | Deferred after 1.0 | Preserved as a later roadmap. They do not block completion of the active 1.0 goal; the existing-palette overlaps are explicitly mapped in the plan. |
 
-Live details and their limitations: [VERIFICATION.md](VERIFICATION.md). Public host dependencies: [UPSTREAM_REQUIREMENTS.md](UPSTREAM_REQUIREMENTS.md). These are documented requirements, not submitted or accepted upstream changes.
+Live details and their limitations: [VERIFICATION.md](VERIFICATION.md). Public host dependencies: [UPSTREAM_REQUIREMENTS.md](UPSTREAM_REQUIREMENTS.md). The dependency register now distinguishes already-released contracts, other contributors' open PRs, partial issue matches and residual contracts. No upstream contribution was submitted by this scope revision.
 
-Release status: **not ready, not published, goal incomplete**. Update rows only with actual evidence; distinguish implementation from live verification.
+1.0 release status: **not ready, not published, goal incomplete**. Source publication is a separate P0 milestone. Update rows only with actual evidence; distinguish implementation from live verification.

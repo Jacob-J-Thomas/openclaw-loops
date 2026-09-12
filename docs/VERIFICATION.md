@@ -1,5 +1,7 @@
 # Local verification
 
+Current scope is the [standalone 1.0 delivery plan](DELIVERY_PLAN.md), revised September 12, 2026. Expansion families are deferred. Public GitHub source/history publication is now authorized; references to pending authorization in older entries describe their historical checkpoint and no longer apply. The [current status](DELIVERY_STATUS.md) records publication and release gates separately.
+
 ## Alpha.16 editor Undo and draft recovery
 
 Both isolated Gateways run **1.0.0-alpha.16** on OpenClaw **2026.9.3**. Installed backend, worker, native UI and manifest match archive SHA-256 `df5b31c0569e999252542060847f53be42ba14767f59d839aa7c1a7ba0f5f4ee`. This documentation update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha16/`.

@@ -2,7 +2,9 @@
 
 An external OpenClaw plugin with a native graph editor and one executor shared by the UI, `/loops`, and 31 agent tools. Agents can read, create, edit, publish, enable, disable, invoke, inspect and delete loops. Valid agent-created loops are enabled by default; drafts are optional. OpenClaw's model and permission policies remain authoritative.
 
-**This is an unreleased alpha, not a finished 1.0.** The existing palette includes Input, Inference, model metadata, Condition, bounded Repeat, Wait, Human review, Return and Fail. The [delivery plan](docs/DELIVERY_PLAN.md) also covers context, scripts, full agents, subagents, broader control flow, triggers, evaluations and operations. Those expansion families remain unimplemented. [Delivery status](docs/DELIVERY_STATUS.md) and [verification](docs/VERIFICATION.md) distinguish source tests, live acceptance and remaining gates.
+**This is a development alpha, not a finished 1.0.** The active [delivery goal](docs/DELIVERY_PLAN.md) is a standalone 1.0 external plugin with Input, Inference, configured-model metadata Action, Condition, bounded Repeat, Wait, Human review, Return and Fail. Context, scripts, full agents, subagents, broader control flow, triggers, evaluations and advanced operations are deferred until after 1.0. [Delivery status](docs/DELIVERY_STATUS.md) and [verification](docs/VERIFICATION.md) distinguish source tests, live acceptance and remaining gates.
+
+This repository contains the plugin and its development/test tooling. All host integration uses OpenClaw APIs. Required runtime/SDK changes are pursued through [existing OpenClaw issues and separate upstream PRs](docs/UPSTREAM_REQUIREMENTS.md); no host fork, provider client or upstream patch is bundled here. See the [repository boundary](docs/RELEASE_SCOPE.md).
 
 The plugin uses the public **OpenClaw 2026.9.3** SDK. Local acceptance uses **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b**. See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [upstream SDK requirements](docs/UPSTREAM_REQUIREMENTS.md).
 

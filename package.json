@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "Inspectable, bounded loops for OpenClaw chat and native UI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jacob-J-Thomas/openclaw-loops.git"
+  },
+  "homepage": "https://github.com/Jacob-J-Thomas/openclaw-loops#readme",
+  "bugs": {
+    "url": "https://github.com/Jacob-J-Thomas/openclaw-loops/issues"
+  },
   "files": [
     "dist",
     "openclaw.plugin.json",
@@ -14,6 +22,7 @@
     "docs/VERIFICATION.md",
     "docs/DELIVERY_PLAN.md",
     "docs/DELIVERY_STATUS.md",
+    "docs/RELEASE_SCOPE.md",
     "LICENSE",
     "CONTRIBUTING.md",
     "docs/UPSTREAM_REQUIREMENTS.md",
