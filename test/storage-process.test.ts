@@ -121,7 +121,7 @@ describe('real SQLite transaction faults',()=>{
       await exit;expect(child.exitCode,stderr).toBe(0);
       const result=JSON.parse(stdout);
       if(scenario==='full'){
-        expect(result.error).toMatch(/database or disk is full/);expect(result.afterFailure).toEqual(initial);expect(result.afterRecovery).toEqual(updated);
+        expect(result.detail).toMatchObject({code:'LOOPS_STORAGE_FULL',phase:'storage',retryable:false,recovery:expect.stringMatching(/Free space/)});expect(result.afterFailure).toEqual(initial);expect(result.afterRecovery).toEqual(updated);
       }else{
         expect(result.error).toMatch(/rollback could not be verified/);expect(result.readError).toMatch(/rollback could not be verified/);expect(result.afterRecovery).toEqual(initial);
       }

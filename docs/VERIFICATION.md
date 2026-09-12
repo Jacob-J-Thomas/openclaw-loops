@@ -1,8 +1,31 @@
 # Local verification
 
+## Alpha.12 actionable failure diagnostics
+
+Both isolated Gateways run **1.0.0-alpha.12** on OpenClaw **2026.9.3**. Final tarball SHA-256: `1598eb51c95434c32fc18417871cb78dfe42ef3fa36d5d46b892ddd37cf161bc`. Installed backend, worker, native UI and manifest match that archive. Evidence is under `evidence/release-alpha12/`; this documentation update follows packaging and is separate from executable identity.
+
+The source passes **153 tests** on macOS arm64 Node **24.16.0/26.1.0** and local Debian Linux arm64 with the same versions. Typecheck, lint, build and **25 extracted-package tests through the actual feature SDK** pass. All compiled files, manifest and package metadata match across platforms. Both Linux containers used no network or host mounts, exited 0 and had no OOM. The 2 GB validation VM is stopped; the pre-existing default VM and Docker context are unchanged. The Mac UI-only follow-up reused the unchanged backend/worker test evidence and passed fresh type/lint/build/package checks plus native browser verification.
+
+Actual SQLite failures now produce typed storage codes. The Linux tests filled a dedicated 16 MB tmpfs to `ENOSPC`: admission rejected with `LOOPS_STORAGE_FULL`, no host effect occurred, and committed data stayed exact. After freeing space and reopening, a fresh explicit request completed with one host call and `integrity_check=ok`. Worker/process regressions also preserve the original rollback and crash-recovery contracts.
+
+Wrapped provider failures are classified into safe diagnostics, retaining the failed node and its selected model while discarding raw host URL, credential and request-body text from results and persisted run history. The actual feature SDK tests verify those properties across tool, command and UI operations. Deliberate graph failure messages remain available. Unknown host errors stay generic; these checks do not establish complete provider/account coverage.
+
+A live unpublished test selected an intentionally nonexistent model. Run `3d3fc148-fdd8-4780-aa23-a3a289cd9665` failed with `HOST_UNAVAILABLE`, phase `inference`, node `infer`, the selected synthetic model and recovery guidance. Browser inspection first reproduced missing diagnostic details, then verified the repaired error panel at the normal narrow viewport. The final UI shows code, phase, node/model, retryability and recovery; Advanced controls remain available with the released SDK's advisory/unsupported explanations. Before/after screenshots are under `ui/`.
+
+Fresh invocation evidence:
+
+| Profile | User command | Agent tool | Outcome |
+|---|---|---|---|
+| Codex, Sol selected only for its synthetic conversation | `286e93d0-d36e-4af3-a939-d2c4d418494c` | `012530ba-f5ec-4f59-87b9-256361417699` | Completed the same enabled revision 1; exact input and newly reported run-ID assertions passed. |
+| Separate Ollama server, `qwen3.5:4b` | `cb547722-c09e-4419-be11-e9b30841cff3` | `0a4eb37d-663a-4f0a-a9f5-ef6d4dd565b9` | Completed the same enabled revision 1; exact input and newly reported run-ID assertions passed. |
+
+The initial alpha.12 upgrade preserved every table with Codex at 10 definitions/128 runs and Ollama at 6 definitions/28 runs. The UI follow-up also preserved every table, including the three new Codex verification runs: 10 definitions/131 runs and 6 definitions/28 runs. Its stopped-state backup is `.dev-profile/backups/before-alpha12-1789197049417`; the initial artifact and receipts are retained in `before-ui-repair/`. Backend and worker hashes were unchanged by that UI follow-up. Ollama smoke tests subsequently added two runs. Personal profiles, model-server settings and saved loop definitions were unchanged.
+
+SDK01 sampling and native reasoning repairs are separately reviewed local upstream commits, described in [UPSTREAM_REQUIREMENTS.md](UPSTREAM_REQUIREMENTS.md). Neither is installed, submitted or released. Hosted CI, registry publication, deployment-role/native provider evidence and the remaining release/expansion requirements remain open.
+
 ## Alpha.11 checkpoint performance and platform verification
 
-Both isolated Gateways run **1.0.0-alpha.11** on OpenClaw **2026.9.3**. Tarball SHA-256: `fa9fc49a46d1e77dd74aa1598c160b95d9de086c271ff47a0e719e9411dc8d6c`. The installed backend, worker, native UI and manifest match the archive. This documentation update follows packaging and is separate from executable identity. Evidence: `evidence/release-alpha11/`.
+At this checkpoint, both isolated Gateways ran **1.0.0-alpha.11** on OpenClaw **2026.9.3**. Tarball SHA-256: `fa9fc49a46d1e77dd74aa1598c160b95d9de086c271ff47a0e719e9411dc8d6c`. The installed backend, worker, native UI and manifest matched the archive. This documentation update followed packaging and is separate from executable identity. Evidence: `evidence/release-alpha11/`.
 
 The source passes **143 tests** on each of macOS arm64 Node **24.16.0/26.1.0** and a local Debian Linux arm64 VM with the same Node versions. Typecheck, lint, build and **23 extracted-package tests through the actual feature SDK** also pass. Every compiled package file, package metadata and the manifest match across macOS and both Linux builds. Linux test containers had networking disabled, no host mounts, no OOM and exit code 0. The temporary 2 GB validation VM is stopped; the existing default VM and Docker context are unchanged. This does not establish native x64, hosted CI, team-role or complete deployment acceptance.
 

@@ -6,24 +6,24 @@ import { display } from './graph.js';
 import { randomUUID } from 'node:crypto';
 import {resolveSessionModelRef} from 'openclaw/plugin-sdk/model-session-runtime';
 import {completionParameters,validateAdvanced,type InferenceSettings,type InferenceCapabilities} from './inference-settings.js';
-import {LoopError} from './errors.js';
+import {LoopError,requestError} from './errors.js';
 import {defaultBudgets} from './budgets.js';
 
 export function createBridge(api:OpenClawPluginApi){
   const current=()=>api.runtime.config.current() as typeof api.config;
   const checkActor=(agentId:string,sessionKey:string,sessionId:string)=>{
-    const cfg=current();if(cfg.plugins?.enabled===false||cfg.plugins?.entries?.['loops-poc']?.enabled===false)throw new Error('Loops plugin is disabled.');
+    const cfg=current();if(cfg.plugins?.enabled===false||cfg.plugins?.entries?.['loops-poc']?.enabled===false)throw requestError('Loops plugin is disabled.','LOOPS_DISABLED');
     const entry=api.runtime.agent.session.getSessionEntry({agentId,sessionKey,readConsistency:'latest'});
-    if(!entry||entry.sessionId!==sessionId)throw new Error('Conversation identity changed or is unavailable.');
+    if(!entry||entry.sessionId!==sessionId)throw requestError('Conversation identity changed or is unavailable.','LOOPS_SESSION_CHANGED','Select a currently authorized conversation before trying again.');
   };
   function actor(context:FeatureInvocationContext):Actor{
     const c=context.source==='command'?context.command:context.source==='tool'?context.tool:context.action;
-    const {agentId,sessionKey}=c;if(!agentId||!sessionKey)throw new Error('A host-resolved agent and chat session are required.');
-    if(context.source==='command'&&!context.command.isAuthorizedSender)throw new Error('Unauthorized command caller.');
-    if(context.source==='session-action'&&!context.action.client?.scopes.some(s=>s==='operator.admin'||s==='operator.write'||s==='operator.read'))throw new Error('Authenticated operator session required.');
+    const {agentId,sessionKey}=c;if(!agentId||!sessionKey)throw requestError('A host-resolved agent and chat session are required.','LOOPS_SESSION_REQUIRED');
+    if(context.source==='command'&&!context.command.isAuthorizedSender)throw requestError('Unauthorized command caller.','HOST_POLICY_DENIED');
+    if(context.source==='session-action'&&!context.action.client?.scopes.some(s=>s==='operator.admin'||s==='operator.write'||s==='operator.read'))throw requestError('Authenticated operator session required.','HOST_POLICY_DENIED');
     const entry=api.runtime.agent.session.getSessionEntry({agentId,sessionKey,readConsistency:'latest'});
     const sessionId=context.source==='session-action'?entry?.sessionId:context.source==='tool'?context.tool.sessionId:context.command.sessionId;
-    if(!sessionId)throw new Error('Host did not provide a conversation ID. Open a chat session first.');
+    if(!sessionId)throw requestError('Host did not provide a conversation ID. Open a chat session first.','LOOPS_SESSION_REQUIRED');
     const resolved=resolveSessionModelRef(current(),entry,agentId);
     const model=context.source==='tool'&&context.tool.activeModel?.modelRef?context.tool.activeModel.modelRef:`${resolved.provider}/${resolved.model}`;
     const requester=context.source==='tool'?context.tool.requesterSenderId:context.source==='command'?context.command.senderId:context.action.client?.connId;
@@ -72,17 +72,17 @@ export function createBridge(api:OpenClawPluginApi){
 }
 export const help='Use /loops list | /loops run <slug> [text or JSON object] [--request-id <id>] | /loops status <run-id> | /loops resume <run-id> | /loops cancel <run-id> | /loops review <run-id> approve|reject. Each command starts a new run; reuse an explicit --request-id only to retry the same admission. Review requires an authenticated human operator.';
 export function parseCommand(context:PluginCommandContext,maxInputBytes=defaultBudgets.inputBytes){
-  const raw=context.args?.trim()??'';if(Buffer.byteLength(raw)>maxInputBytes+1000)throw new Error('Command input is too large for the configured input budget.');
+  const raw=context.args?.trim()??'';if(Buffer.byteLength(raw)>maxInputBytes+1000)throw requestError('Command input is too large for the configured input budget.');
   const match=/^(list|run|status|resume|cancel|review)(?:\s+([^\s]+))?(?:\s+([\s\S]*))?$/.exec(raw);
-  if(!match)throw new Error(help);
+  if(!match)throw requestError(help);
   const [,op,target,rest]=match;
-  if(op==='list'){if(target)throw new Error(help);return {op} as const;}
-  if(!target)throw new Error(help);
-  if(op==='review'){if(rest!=='approve'&&rest!=='reject')throw new Error(help);return {op:'review',runId:target,decision:rest} as const;}
-  if(op!=='run'){if(rest)throw new Error(help);return {op:op as 'status'|'resume'|'cancel',runId:target};}
+  if(op==='list'){if(target)throw requestError(help);return {op} as const;}
+  if(!target)throw requestError(help);
+  if(op==='review'){if(rest!=='approve'&&rest!=='reject')throw requestError(help);return {op:'review',runId:target,decision:rest} as const;}
+  if(op!=='run'){if(rest)throw requestError(help);return {op:op as 'status'|'resume'|'cancel',runId:target};}
   const requestMatch=/(?:^|\s+)--request-id\s+([a-zA-Z0-9_-]{1,100})$/.exec(rest??'');
   const value=(requestMatch?rest!.slice(0,requestMatch.index):rest??'').trim();
-  const input=value.startsWith('{')?JSON.parse(value):value?{text:value}:{};
+  let input:unknown;try{input=value.startsWith('{')?JSON.parse(value):value?{text:value}:{};}catch{throw requestError('Command input must contain valid JSON.');}
   const requestId=requestMatch?.[1]??randomUUID();
   return {op:'run' as const,slug:target,input:input as Record<string,Json>,requestId:`command:${requestId}`};
 }
@@ -91,5 +91,6 @@ export function formatRun(run:Run):string{
   if(run.state==='completed')return `${summary}\n\n${display(run.result??null)}`;
   if(run.state==='review')return `${summary}\nHuman review is pending. Use the Loops UI or /loops review ${run.id} approve|reject. Continue cannot approve it.`;
   if(run.state==='waiting')return `${summary}\n${run.pending??''}\nContinue with /loops resume ${run.id}`;
+  if(run.errorDetail)return `${summary}\n[${run.errorDetail.code}] ${run.errorDetail.message}\n${run.errorDetail.recovery}`;
   return `${summary}\n${run.error??run.uncertainty??`Use /loops status ${run.id} to inspect this run.`}`;
 }

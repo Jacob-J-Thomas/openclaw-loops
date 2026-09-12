@@ -10,6 +10,7 @@ const persistedBudgets={...defaultBudgets,definitionBytes:Number.MAX_SAFE_INTEGE
 import {Value} from 'typebox/value';
 import {outputs} from './output-schemas.js';
 import {RetiredAdmissionSchema} from './retention.js';
+import {LoopError,storageError} from './errors.js';
 
 export function validateState(value:unknown):State{
   if(!value||typeof value!=='object'||!('version' in value)||value.version!==1||!('loops' in value)||!('runs' in value))throw new Error('Invalid or unsupported Loops state. The original store has been preserved.');
@@ -102,21 +103,21 @@ export class SqliteStorage implements Storage{
         if(JSON.stringify(this.read())!==JSON.stringify(legacy))throw new Error('Legacy migration verification failed; original JSON and backup are preserved.');
       }
       chmodSync(file,0o600);
-    }catch(error){void this.dispose().catch(()=>{});throw error;}
+    }catch(error){void this.dispose().catch(()=>{});throw storageError(error);}
   }
   private call<T>(operation:string,payload?:unknown):T{
-    if(this.closed||this.broken||!this.worker||!this.port)throw new Error('Loops storage worker is unavailable. Restart the plugin after checking its store.');
+    if(this.closed||this.broken||!this.worker||!this.port)throw new LoopError({code:'LOOPS_STORAGE_UNAVAILABLE',message:'Loops storage worker is unavailable.',phase:'storage',retryable:false,recovery:'Restart the plugin after checking its store. Inspect recovered attempts before retrying uncertain effects.'});
     const signal=new SharedArrayBuffer(4);
     this.worker.postMessage({operation,payload,signal});
     // Existing synchronous authoring operations must not acknowledge uncommitted
     // changes. SQLite work is serialized in the worker; this bounded wait is the
     // commit barrier. No inference or host operation runs inside this barrier.
     if(Atomics.wait(new Int32Array(signal),0,0,30000)==='timed-out'){
-      this.broken=true;throw new Error('Storage commit timed out. Its outcome is uncertain; restart and inspect before retrying.');
+      this.broken=true;throw new LoopError({code:'LOOPS_STORAGE_TIMEOUT',message:'Storage commit timed out. Its outcome is uncertain.',phase:'storage',retryable:false,recovery:'Restart and inspect committed state before retrying. A missing acknowledgement does not prove the write failed.'});
     }
-    const response=receiveMessageOnPort(this.port)?.message as {ok:boolean;value:T;error?:string}|undefined;
-    if(!response)throw new Error('Storage worker returned no response.');
-    if(!response.ok)throw new Error(response.error??'Storage operation failed.');
+    const response=receiveMessageOnPort(this.port)?.message as {ok:boolean;value:T;error?:string;sqliteCode?:number;code?:string}|undefined;
+    if(!response){this.broken=true;throw new LoopError({code:'LOOPS_STORAGE_UNAVAILABLE',message:'Storage worker returned no response.',phase:'storage',retryable:false,recovery:'Restart and inspect committed state before retrying; the last operation may have completed.'});}
+    if(!response.ok)throw storageError(Object.assign(new Error(response.error??'Storage operation failed.'),{...response.sqliteCode===undefined?{}:{errcode:response.sqliteCode},...response.code===undefined?{}:{code:response.code}}));
     return response.value;
   }
   read(){const result=this.call<State|undefined>('read');return result?validateState(result):undefined;}

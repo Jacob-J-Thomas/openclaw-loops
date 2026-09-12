@@ -68,7 +68,7 @@ describe('explicit history retention',()=>{
     const {engine,storage,filename}=setup();const d=definition(),run=await engine.test(actor,d,{},'cannot-remove');const before=storage.read();
     const fault=new DatabaseSync(filename);cleanups.push(()=>fault.close());
     fault.exec("CREATE TRIGGER reject_history_removal BEFORE DELETE ON runs BEGIN SELECT RAISE(ABORT,'Injected history deletion failure'); END;");
-    const preview=engine.retention(actor,{keepLatest:0});expect(()=>engine.retention(actor,preview.policy,preview.planId)).toThrow(/Injected history deletion failure/);
+    const preview=engine.retention(actor,{keepLatest:0});expect(()=>engine.retention(actor,preview.policy,preview.planId)).toThrow(expect.objectContaining({code:'LOOPS_STORAGE_CONFLICT',cause:expect.objectContaining({message:'Injected history deletion failure'})}));
     expect(storage.read()).toEqual(before);expect(engine.status(actor,run.id).result).toBe('Stored result');
     expect((await engine.test(actor,d,{},'cannot-remove')).id).toBe(run.id);
     fault.exec('DROP TRIGGER reject_history_removal');await engine.close();

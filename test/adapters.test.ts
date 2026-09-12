@@ -49,7 +49,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const fault=new DatabaseSync(filename);
     try{
       fault.exec("CREATE TRIGGER reject_startup BEFORE INSERT ON metadata BEGIN SELECT RAISE(ABORT,'Injected startup commit failure'); END;");
-      await expect(Promise.resolve().then(()=>service.start(ctx))).rejects.toThrow('Injected startup commit failure');
+      await expect(Promise.resolve().then(()=>service.start(ctx))).rejects.toMatchObject({detail:{code:'LOOPS_STORAGE_CONFLICT'},cause:{message:'Injected startup commit failure'}});
       fault.exec('DROP TRIGGER reject_startup');
     }finally{fault.close();}
     await service.start(ctx);shutdowns.push(async()=>{await service.stop?.(ctx);});
@@ -67,6 +67,43 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     await expect(client.invoke('run',{slug:'summarize-text',input:{text:'Synthetic input'}})).rejects.toMatchObject({detail:{message:'requestId is required for UI execution.'}});
     await expect(client.invoke('run',{slug:'summarize-text',input:{},requestId:'missing-input'})).rejects.toMatchObject({detail:{message:'Input text must be text.'}});
     expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('reports actual rejected storage writes to UI, tools and commands without private trigger text or inference',async()=>{
+    const s=setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true});
+    const fault=new DatabaseSync(join(s.root,'loops-poc','loops.sqlite'));
+    const privateText='Synthetic private SQL and credential marker';
+    const before=await s.action('runs',{});
+    try{
+      fault.exec(`CREATE TRIGGER reject_admission BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT,'${privateText}'); END;`);
+      const ui=await s.action('run',{slug:'summarize-text',input:{text:'UI input'},requestId:'storage-ui'});
+      const tool=await s.tools.find(tool=>tool.name==='loops_run')!.execute('storage-tool',{slug:'summarize-text',input:{text:'Tool input'}});
+      const command=await s.commands.get('loops')!.handler({...s.commandContext,args:'run summarize-text Command input'});
+      expect(ui).toMatchObject({result:{kind:'loops-error',error:{code:'LOOPS_STORAGE_CONFLICT',phase:'storage',retryable:false,recovery:expect.stringMatching(/Reload/)}}});
+      expect(tool.details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_STORAGE_CONFLICT'}});
+      expect(command.text).toContain('LOOPS_STORAGE_CONFLICT');expect(command.text).toContain('Reload');
+      expect(JSON.stringify([ui,tool,command])).not.toContain(privateText);
+      expect(await s.action('runs',{})).toEqual(before);expect(s.complete).not.toHaveBeenCalled();
+      fault.exec('DROP TRIGGER reject_admission');
+      const recovery=await s.tools.find(tool=>tool.name==='loops_run')!.execute('storage-recovered',{slug:'summarize-text',input:{text:'Explicit new request'}});
+      expect(recovery.details).toMatchObject({state:'completed'});expect(s.complete).toHaveBeenCalledOnce();
+    }finally{fault.close();}
+  });
+  it('keeps provider credentials out of results and persisted history while identifying the failed node model',async()=>{
+    const s=setup(),nodes=structuredClone(examples[0].nodes),node=nodes[1];
+    if(node.kind!=='inference')throw new Error('Expected fixture inference.');node.model='fake/node-override';
+    await s.action('edit',{id:'summarize-text',expectedRevision:1,changes:{nodes},enabled:true});
+    const secret='SYNTHETIC_PROVIDER_SECRET';
+    const cause=Object.assign(new Error(`Authorization: Bearer ${secret}; requestBody=${secret}`),{status:401});
+    s.complete.mockRejectedValue(Object.assign(new Error(`Runtime failed at https://${secret}@example.test`,{cause}),{code:'LLM_COMPLETION_FAILED'}));
+    const tool=await s.tools.find(tool=>tool.name==='loops_run')!.execute('private-provider-tool',{slug:'summarize-text',input:{text:'Tool input'}});
+    expect(tool.details).toMatchObject({state:'failed',errorDetail:{code:'HOST_AUTHENTICATION_FAILED',phase:'inference',nodeId:'summary',model:'fake/node-override',retryable:false}});
+    const id=(tool.details as {id:string}).id,inspection=await s.action('inspect',{runId:id});
+    const command=await s.commands.get('loops')!.handler({...s.commandContext,args:'run summarize-text Command input'});
+    expect(command.text).toContain('HOST_AUTHENTICATION_FAILED');expect(command.text).toContain('Check or reconnect');
+    expect(JSON.stringify([tool,inspection,command])).not.toContain(secret);
+    const database=new DatabaseSync(join(s.root,'loops-poc','loops.sqlite'),{readOnly:true});
+    try{expect(JSON.stringify(database.prepare('SELECT record FROM runs').all())).not.toContain(secret);expect(database.prepare('SELECT count(*) AS count FROM runs').get()?.count).toBe(2);}finally{database.close();}
+    expect(s.complete).toHaveBeenCalledTimes(2);
   });
   it('exposes matching requested history cleanup to agent tools and authorized UI operations',async()=>{
     const s=setup(),definition={...structuredClone(examples[0]),schemaVersion:2,capabilities:[],inputSchema:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'Synthetic retained result'}],edges:[{id:'a',source:'input',target:'return',port:'next'}]};

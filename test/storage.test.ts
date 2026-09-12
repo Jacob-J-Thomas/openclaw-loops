@@ -63,7 +63,8 @@ describe('plugin-owned SQLite worker',()=>{
     fault.exec("CREATE TRIGGER reject_completion BEFORE INSERT ON runs WHEN json_extract(NEW.record,'$.state')='completed' BEGIN SELECT RAISE(ABORT,'Injected completion commit failure'); END;");
     const definition={...structuredClone(examples[0]),schemaVersion:2 as const,inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'return',kind:'return' as const,label:'Return',value:'Completed value'}],edges:[{id:'edge',source:'input',target:'return',port:'next' as const}]};
     const returned=await engine.test(actor,definition,{},'completion-commit-fault');
-    expect(returned.state).toBe('failed');expect(returned.error).toContain('Injected completion commit failure');
+    expect(returned.state).toBe('failed');expect(returned.errorDetail).toMatchObject({code:'LOOPS_STORAGE_CONFLICT',phase:'storage',retryable:false});
+    expect(JSON.stringify(returned)).not.toContain('Injected completion commit failure');
     expect(engine.status(actor,returned.id)).toEqual(returned);
     expect(store.read()?.runs[returned.id]).toEqual(returned);
     fault.exec('DROP TRIGGER reject_completion');
@@ -98,7 +99,7 @@ describe('plugin-owned SQLite worker',()=>{
   });
   it('reports a corrupt SQLite file promptly without replacing it',async()=>{
     const {filename}=setup();writeFileSync(filename,'not a sqlite database');const start=Date.now();
-    expect(()=>new SqliteStorage(filename)).toThrow(/not a database/);expect(Date.now()-start).toBeLessThan(5000);expect(readFileSync(filename,'utf8')).toBe('not a sqlite database');
+    expect(()=>new SqliteStorage(filename)).toThrow(/corrupt|not a SQLite database/);expect(Date.now()-start).toBeLessThan(5000);expect(readFileSync(filename,'utf8')).toBe('not a sqlite database');
     await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
   });
   it('reports invalid saved JSON promptly instead of waiting for a dead worker',async()=>{

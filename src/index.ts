@@ -7,9 +7,9 @@ import {DocumentStore} from './document-store.js';
 import {parsePluginConfig,pluginConfigSchema,resolveBudgets} from './budgets.js';
 import { Engine } from './engine.js';
 import { SqliteStorage } from './storage.js';
-import { createBridge, formatRun, help, parseCommand } from './openclaw.js';
+import { createBridge, formatRun, parseCommand } from './openclaw.js';
 import {receipt,describe} from './receipts.js';
-import {LoopError,requestError,safeFailure} from './errors.js';
+import {LoopError,requestError,errorDetail,safeFailure} from './errors.js';
 
 // OpenClaw may evaluate the external plugin for more than one registry scope.
 // Keep one plugin-owned executor per state directory in this Gateway process.
@@ -22,7 +22,7 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
   const bridge=createBridge(api);const stateFile=join(api.runtime.state.resolveStateDir(),'loops-poc','state.json');
   let documents:DocumentStore|undefined;
   const documentStore=()=>documents??=new DocumentStore(join(api.runtime.state.resolveStateDir(),'loops-poc','documents'),Math.max(budgets.definitionBytes,budgets.inputBytes)*2);
-  const service=()=>{const engine=engines.get(stateFile);if(!engine)throw new Error('Loops service has not started in this Gateway.');return engine;};
+  const service=()=>{const engine=engines.get(stateFile);if(!engine)throw requestError('Loops service has not started in this Gateway.','LOOPS_SERVICE_UNAVAILABLE','Start or restart the enabled Loops plugin in this Gateway before trying again.');return engine;};
   api.registerService({id:'loops-poc-store',start(){
     if(engines.has(stateFile))return;
     const storage=new SqliteStorage(join(api.runtime.state.resolveStateDir(),'loops-poc','loops.sqlite'),stateFile);
@@ -38,7 +38,7 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
       if(parsed.op==='list')return {text:JSON.stringify(e.list(actor),null,2)};
       const run=parsed.op==='run'?await e.run(actor,parsed.slug,parsed.input,parsed.requestId):parsed.op==='status'?e.status(actor,parsed.runId):parsed.op==='resume'?await e.resume(actor,parsed.runId):parsed.op==='review'?await e.review(actor,parsed.runId,parsed.decision):e.cancel(actor,parsed.runId);
       return {text:formatRun(run)};
-    }catch(error){return {text:`Loops: ${error instanceof Error?error.message:'Command failed.'}\n${help}`};}}
+    }catch(error){const detail=errorDetail(error,{phase:'operation'});return {text:`Loops [${detail.code}]: ${detail.message}\n${detail.recovery}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
     retention:(p,c)=>service().retention(bridge.actor(c),p.policy,p.applyPlanId),

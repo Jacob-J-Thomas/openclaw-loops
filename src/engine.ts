@@ -5,7 +5,7 @@ import { bind, compare, display, isJson, parseDefinition, parseDefinitionContent
 import { examples } from './examples.js';
 import type {OpenClawPluginApi} from 'openclaw/plugin-sdk/plugin-entry';
 import {completionParameters,validateAdvanced,type InferenceSettings,type InferenceCapabilities} from './inference-settings.js';
-import {LoopError,requestError,errorDetail,type LoopErrorData} from './errors.js';
+import {LoopError,requestError,executionError,errorDetail,type LoopErrorData} from './errors.js';
 import {resolveBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {textPage} from './feature-json.js';
 import {retentionCandidates,type RetentionPolicy,type RetentionResult,type RetiredAdmission} from './retention.js';
@@ -226,7 +226,7 @@ export class Engine{
       await this.storage.close?.();
     }
   }
-  private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw new Error(`Missing ${port} edge from ${id}.`);return next;}
+  private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw executionError(`Missing ${port} edge from ${id}.`,'LOOPS_INVALID_GRAPH');return next;}
   private checkpoint(r:Run){r.updatedAt=now();this.persist(r);}
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}
   private drain(){if(this.closing)return;for(const [id,actor] of this.queued){if(this.occupied()>=(this.options.concurrency??1))break;this.queued.delete(id);const run=this.state.runs[id];if(run?.state==='queued')void this.dispatch(actor,run).catch(()=>{});}}
@@ -234,14 +234,14 @@ export class Engine{
 
   private async dispatch(actor:Actor,r:Run):Promise<Run>{
     if(this.active.has(r.id))return structuredClone(r);
-    if(this.closing)throw new Error('Loops service is stopping.');
+    if(this.closing)throw requestError('Loops service is stopping.','LOOPS_SERVICE_UNAVAILABLE');
     if(this.occupied()>=(this.options.concurrency??1)){r.state='queued';this.queued.set(r.id,actor);this.checkpoint(r);return structuredClone(r);}
     r.state='running';this.checkpoint(r);
     actor={...actor,...r.executionSettings};
     const controller=new AbortController();const remaining=r.definition.limits.timeoutMs===undefined?undefined:r.definition.limits.timeoutMs-r.activeMs;
     const signal=actor.signal?AbortSignal.any([controller.signal,actor.signal]):controller.signal;
     if(remaining!==undefined)this.deadlines.set(r.id,Date.now()+remaining);
-    const timeout=remaining===undefined?undefined:setTimeout(()=>controller.abort(new Error('Execution timeout exceeded.')),Math.max(0,remaining));
+    const timeout=remaining===undefined?undefined:setTimeout(()=>controller.abort(executionError('Execution timeout exceeded.','LOOPS_TIMEOUT','Inspect the interrupted attempt before explicitly retrying. A timed-out host request may have completed.')),Math.max(0,remaining));
     const started=Date.now();const promise=this.pump(actor,r,signal).finally(()=>{clearTimeout(timeout);this.deadlines.delete(r.id);r.activeMs+=Date.now()-started;this.active.delete(r.id);if(this.physical.has(r.id))r.cleanupPending=true;this.checkpoint(r);this.drain();});
     this.active.set(r.id,{controller,promise});
     // The service keeps ownership of slow work; callers receive an inspectable
@@ -256,7 +256,7 @@ export class Engine{
     const ctx:BindingContext={input:r.input,nodes:r.outputs};
     try{while(r.state==='running'){
       signal.throwIfAborted();this.allowedRun(actor,r);
-      const n=r.definition.nodes.find(n=>n.id===r.cursor);if(!n)throw new Error('Execution cursor is invalid.');
+      const n=r.definition.nodes.find(n=>n.id===r.cursor);if(!n)throw executionError('Execution cursor is invalid.','LOOPS_INVALID_GRAPH');
       const evidence=this.begin(r,n);let result:Json={};let port='next';
       switch(n.kind){
         case'input':result={fields:Object.keys(r.input)};break;
@@ -277,7 +277,7 @@ export class Engine{
         case'wait':this.finish(r,evidence,bind(n.message,ctx));r.state='waiting';r.pending=evidence.output;evidence.state='waiting';break;
         case'review':this.finish(r,evidence,bind(n.proposal,ctx));r.state='review';r.pending=evidence.output;evidence.state='review';break;
         case'return':r.result=bind(n.value,ctx);result=r.result;r.state='completed';break;
-        case'fail':throw new Error(display(bind(n.reason,ctx)));
+        case'fail':throw executionError(display(bind(n.reason,ctx)),'LOOPS_EXPLICIT_FAILURE');
       }
       signal.throwIfAborted();if(terminal(r)&&r.state!=='completed')break;
       this.allowedRun(actor,r);
@@ -294,28 +294,31 @@ export class Engine{
     }
     return r;
   }
-  private begin(r:Run,n:{id:string;kind:string},iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw new Error('Total node-execution budget exhausted.');r.executions++;const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{}};r.trace.push(e);this.checkpoint(r);return e;}
-  private finish(r:Run,e:NodeEvidence,result:Json){const output=display(result);if(Buffer.byteLength(output)>r.definition.limits.maxOutputBytes)throw new Error(`Output-size limit exceeded at ${e.nodeId}.`);if(r.definition.schemaVersion===1&&r.trace.reduce((size,t)=>size+Buffer.byteLength(t.output??''),0)+Buffer.byteLength(output)>48000)throw new Error('Run evidence output budget exceeded.');e.output=output;e.state='completed';e.endedAt=now();}
+  private begin(r:Run,n:{id:string;kind:string},iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{}};r.trace.push(e);this.checkpoint(r);return e;}
+  private finish(r:Run,e:NodeEvidence,result:Json){const output=display(result);if(Buffer.byteLength(output)>r.definition.limits.maxOutputBytes)throw executionError(`Output-size limit exceeded at ${e.nodeId}.`,'LOOPS_OUTPUT_LIMIT');if(r.definition.schemaVersion===1&&r.trace.reduce((size,t)=>size+Buffer.byteLength(t.output??''),0)+Buffer.byteLength(output)>48000)throw executionError('Run evidence output budget exceeded.','LOOPS_OUTPUT_LIMIT');e.output=output;e.state='completed';e.endedAt=now();}
   private async infer(actor:Actor,r:Run,n:Extract<GraphNode,{kind:'inference'}>,ctx:BindingContext,signal:AbortSignal):Promise<Json>{
+    try{
     this.allowedRun(actor,r);this.host.check(actor,'llm');
-    const prompt=display(bind(n.prompt,ctx));if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw new Error('Rendered prompt exceeds the transport budget.');
-    const issues=validateAdvanced(n.advanced,this.capabilities(actor,n).parameters);if(issues.length)throw new Error(issues.join(' '));
+    const prompt=display(bind(n.prompt,ctx));if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw executionError('Rendered prompt exceeds the transport budget.','LOOPS_PROMPT_LIMIT');
+    const issues=validateAdvanced(n.advanced,this.capabilities(actor,n).parameters);if(issues.length)throw executionError(issues.join(' '),'UNSUPPORTED_INFERENCE_SETTINGS');
     const settings:InferenceSettings={...n.model?{model:n.model}:{},...n.agentId?{agentId:n.agentId}:{},...n.reasoning?{reasoning:n.reasoning}:{},...n.advanced?{advanced:n.advanced}:{}};
     const deadline=this.deadlines.get(r.id);
     const remaining=deadline===undefined?undefined:deadline-Date.now();
-    if(remaining!==undefined&&remaining<=0)throw new Error('Execution timeout exceeded.');
+    if(remaining!==undefined&&remaining<=0)throw executionError('Execution timeout exceeded.','LOOPS_TIMEOUT');
     const completion=this.host.complete(actor,prompt,signal,remaining,settings);
     this.trackPhysical(r.id,completion);
     let stop:()=>void=()=>{};
     const aborted=new Promise<never>((_,reject)=>{const abort=()=>reject(signal.reason??new Error('Aborted'));stop=()=>signal.removeEventListener('abort',abort);if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});});
     const response=await Promise.race([completion,aborted]).finally(stop) as Record<string,Json>;
-    if(typeof response.text!=='string')throw new Error('Host completion returned no text.');
+    if(typeof response.text!=='string')throw executionError('Host completion returned no text.','LOOPS_OUTPUT_INVALID');
     if(n.output==='json'){
-      const value:unknown=JSON.parse(response.text);if(r.definition.schemaVersion===1&&(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>16||Object.values(value).some(v=>v!==null&&!['string','boolean','number'].includes(typeof v))))throw new Error('Structured output must be a flat JSON object with at most 16 scalar fields.');
-      if(!isJson(value))throw new Error('Structured output must contain valid JSON without unsafe keys or excessive nesting.');
+      let value:unknown;try{value=JSON.parse(response.text);}catch{throw executionError('The model output is not valid JSON.','LOOPS_OUTPUT_INVALID');}
+      if(r.definition.schemaVersion===1&&(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>16||Object.values(value).some(v=>v!==null&&!['string','boolean','number'].includes(typeof v))))throw executionError('Structured output must be a flat JSON object with at most 16 scalar fields.','LOOPS_OUTPUT_INVALID');
+      if(!isJson(value))throw executionError('Structured output must contain valid JSON without unsafe keys or excessive nesting.','LOOPS_OUTPUT_INVALID');
       response.value=value;
     }
     return response;
+    }catch(error){throw new LoopError(errorDetail(error,{phase:'inference',nodeId:n.id,model:n.model??actor.model}),{cause:error});}
   }
   capabilities(actor:Actor,settings:InferenceSettings={}){actor.check();const inference=this.host.capabilities?.(actor,settings)??{...(settings.model??actor.model)?{model:settings.model??actor.model}:{},configured:'unknown' as const,authorized:'unknown' as const,available:'unknown' as const,parameters:completionParameters(),notes:[]};return {...inference,budgets:{...this.budgets},concurrency:this.options.concurrency??1};}
   validate(actor:Actor,value:unknown){actor.check();const definition=parseDefinition(value,this.budgets);const issues=validateGraph(definition);for(const node of definition.nodes.flatMap(n=>n.kind==='repeat'?[...n.body]:[n]))if(node.kind==='inference')for(const message of validateAdvanced(node.advanced,this.capabilities(actor,node).parameters))issues.push({nodeId:node.id,message});return {valid:issues.length===0,issues};}

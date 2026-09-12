@@ -34,9 +34,10 @@ try{
   const full=statfsSync(directory);assert.equal(full.bavail,0);
   let rejected;
   try{await engine.test(actor,definition,{text:'Synthetic input '.repeat(1500)},'failed-full-filesystem');}
-  catch(error){rejected={message:error.message,code:error.code};}
+  catch(error){rejected={message:error.message,code:error.code,detail:error.detail};}
   assert(rejected,'Admission unexpectedly succeeded on the full filesystem.');
   assert.match(rejected.message,/full|storage/i);
+  assert.equal(rejected.code,'LOOPS_STORAGE_FULL');assert.equal(rejected.detail?.phase,'storage');
   assert.equal(effects,0,'A host effect ran without a committed admission.');
   assert.deepEqual(store.read(),before,'The failed transaction changed committed application state.');
   unlinkSync(filler);

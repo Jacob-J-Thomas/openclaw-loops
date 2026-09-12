@@ -33,7 +33,7 @@ database.exec(`
 `);
 const integrity=database.prepare('PRAGMA quick_check').get().quick_check;
 if(integrity!=='ok')throw new Error(`Loops database integrity check failed: ${integrity}`);
-}catch(error){startupError=error instanceof Error?error.message:String(error);}
+}catch(error){startupError=error;}
 const port=workerData.port;
 const read=()=>{
   const version=database.prepare("SELECT value FROM metadata WHERE key='version'").get();
@@ -43,7 +43,7 @@ const read=()=>{
 };
 let cached;
 try{if(!startupError)cached=read();}
-catch(error){startupError=error instanceof Error?error.message:String(error);}
+catch(error){startupError=error;}
 if(startupError){try{database?.close();}catch{/* Preserve the original startup failure. */}}
 function write(next,runId){
   const runOnly=runId!==undefined;
@@ -107,9 +107,9 @@ function write(next,runId){
       // Never let readback present an uncommitted transaction as verified state.
       // SQLite can also roll back automatically (for example on SQLITE_FULL),
       // in which case a second ROLLBACK would hide the actual write failure.
-      startupError=`Storage rollback could not be verified after ${error instanceof Error?error.message:String(error)}: ${rollbackError instanceof Error?rollbackError.message:String(rollbackError)}`;
+      startupError=new Error('Storage rollback could not be verified. Restart and inspect the committed store before retrying.',{cause:new AggregateError([error,rollbackError])});
       try{database.close();}catch{/* Worker termination is the final cleanup. */}
-      throw new Error(startupError,{cause:rollbackError});
+      throw startupError;
     }
     throw error;
   }
@@ -117,7 +117,7 @@ function write(next,runId){
 parentPort.on('message',async message=>{
   let result;
   try{
-    if(startupError)throw new Error(startupError);
+    if(startupError)throw startupError;
     switch(message.operation){
       case 'read':result=read();break;
       case 'write':write(message.payload);break;
@@ -132,6 +132,6 @@ parentPort.on('message',async message=>{
       default:throw new Error('Unknown storage operation.');
     }
     port.postMessage({ok:true,value:result});
-  }catch(error){port.postMessage({ok:false,error:error instanceof Error?error.message:String(error)});}
+  }catch(error){port.postMessage({ok:false,error:error instanceof Error?error.message:String(error),...typeof error?.errcode==='number'?{sqliteCode:error.errcode}:{},...typeof error?.code==='string'?{code:error.code}:{}});}
   finally{const signal=new Int32Array(message.signal);Atomics.store(signal,0,1);Atomics.notify(signal,0);}
 });

@@ -29,7 +29,7 @@ Then build and install the plugin, and start the development Gateway:
 bash scripts/ollama.sh pull qwen3.5:4b
 npm run check
 node scripts/verify-package.mjs
-bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.11.tgz" --force --accept-capabilities
+bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.12.tgz" --force --accept-capabilities
 bash scripts/dev.sh gateway run
 ```
 
@@ -101,6 +101,8 @@ Large feature requests use chunked uploads; large results use immutable, convers
 Local editor drafts persist in browser storage per loop, agent and conversation, including unfinished invalid edits. Concurrent edits can be merged; conflicting fields require a deliberate choice. Archived/deleted definitions are recoverable. The library is Gateway-wide, while run control is tied to the host-resolved conversation generation; shared-team and cross-reset authority require further public host contracts. Separate customers must use separate Gateways/state/credentials/workspaces.
 
 [Deployment guidance](docs/DEPLOYMENT.md) covers upgrade, matched backup rollback, disable and uninstall. Uninstalling does not authorize erasing retained definitions or history. The personal assistant and EmbodySense remain outside this plugin's state and execution scope.
+
+Failed runs expose a stable code, phase, failed node, selected model, retryability and a recovery step in the inspector and agent receipts. Commands include the code and recovery guidance. Storage-full, locking, access, corruption and I/O failures have distinct diagnoses. Wrapped provider errors are classified without retaining raw credential, URL or request-body text in shared history. Unrecognized host failures remain generic; classification does not prove that a provider performed no work. Retries remain explicit.
 
 ## Contribute and verify
 

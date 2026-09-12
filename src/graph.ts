@@ -1,4 +1,4 @@
-import {requestError} from './errors.js';
+import {requestError,executionError} from './errors.js';
 import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import {AdvancedSchema,ReasoningSchema} from './inference-settings.js';
@@ -145,7 +145,7 @@ export function validateInput(d:Definition,value:unknown,budgets:Budgets=default
 }
 export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;repeat?:{index:number}};
 export function bind(template:string,ctx:BindingContext):Json{
-  const resolve=(raw:string):Json=>{let value:unknown=ctx;for(const part of raw.trim().split('.')){if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))throw new Error(`Binding unavailable: ${raw}`);value=(value as Record<string,unknown>)[part];}if(value===undefined)throw new Error(`Binding unavailable: ${raw}`);return value as Json;};
+  const resolve=(raw:string):Json=>{let value:unknown=ctx;for(const part of raw.trim().split('.')){if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');value=(value as Record<string,unknown>)[part];}if(value===undefined)throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');return value as Json;};
   const exact=/^\{\{([^{}]+)\}\}$/.exec(template);if(exact)return resolve(exact[1]);
   return template.replace(/\{\{([^{}]+)\}\}/g,(_,p:string)=>{const v=resolve(p);return typeof v==='string'?v:JSON.stringify(v);});
 }

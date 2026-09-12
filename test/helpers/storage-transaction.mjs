@@ -8,11 +8,11 @@ let closed=false;
 try{
   store.write(initial);writeFileSync(process.env.LOOPS_TEST_SQLITE_CONTROL,scenario);
   if(scenario==='full'){
-    let error;
-    try{store.write(updated);}catch(failure){error=failure.message;}
+    let error,detail;
+    try{store.write(updated);}catch(failure){error=failure.message;detail=failure.detail;}
     const afterFailure=store.read();
     writeFileSync(process.env.LOOPS_TEST_SQLITE_CONTROL,'recovered');store.write(updated);
-    console.log(JSON.stringify({error,afterFailure,afterRecovery:store.read(),integrity:store.integrity()}));
+    console.log(JSON.stringify({error,detail,afterFailure,afterRecovery:store.read(),integrity:store.integrity()}));
   }else if(scenario==='rollback-failure'){
     let error,readError;
     try{store.write(updated);}catch(failure){error=failure.message;}
