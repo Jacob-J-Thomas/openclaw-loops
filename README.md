@@ -1,6 +1,6 @@
 # OpenClaw Loops — development alpha
 
-An external OpenClaw plugin with a native graph editor and one executor shared by the UI, `/loops`, and 28 agent tools. Agents can read, create, edit, publish, enable, disable, invoke, inspect and delete loops. Valid agent-created loops are enabled by default; drafts are optional. OpenClaw's model and permission policies remain authoritative.
+An external OpenClaw plugin with a native graph editor and one executor shared by the UI, `/loops`, and 30 agent tools. Agents can read, create, edit, publish, enable, disable, invoke, inspect and delete loops. Valid agent-created loops are enabled by default; drafts are optional. OpenClaw's model and permission policies remain authoritative.
 
 **This is an unreleased alpha, not a finished 1.0.** The existing palette includes Input, Inference, model metadata, Condition, bounded Repeat, Wait, Human review, Return and Fail. The [delivery plan](docs/DELIVERY_PLAN.md) also covers context, scripts, full agents, subagents, broader control flow, triggers, evaluations and operations. Those expansion families remain unimplemented. [Delivery status](docs/DELIVERY_STATUS.md) and [verification](docs/VERIFICATION.md) distinguish source tests, live acceptance and remaining gates.
 
@@ -29,7 +29,7 @@ Then build and install the plugin, and start the development Gateway:
 bash scripts/ollama.sh pull qwen3.5:4b
 npm run check
 node scripts/verify-package.mjs
-bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.4.tgz" --force --accept-capabilities
+bash scripts/dev.sh plugins install "npm-pack:$PWD/openclaw-loops-poc-1.0.0-alpha.5.tgz" --force --accept-capabilities
 bash scripts/dev.sh gateway run
 ```
 
@@ -66,13 +66,14 @@ For source updates, rebuild/package, install that tarball explicitly in each des
 /loops status <run-id>
 /loops resume <run-id>
 /loops cancel <run-id>
+/loops review <run-id> approve|reject
 ```
 
 A normal command invocation receives a fresh identity. Reuse an explicit request ID only for a retry of the same admission; changed inputs with that ID conflict. Tool-call IDs and UI request UUIDs provide equivalent retry identity. This does not promise exactly-once external side effects.
 
 Agents use `loops_library` and `loops_read` for the full library, `loops_create`/`loops_edit` for authoring, and `loops_run` for real execution. `loops_run` accepts either named `input` values or a `text` shortcut; omit both for zero-input loops. An empty enabled list does not mean the library is empty. Agents can publish, enable, disable, archive, recover and delete on request. Only a graph containing an explicit **Human review** pauses for the authenticated human decision path.
 
-The manifest lists all 28 tools. Additional operations cover capability/preflight checks, draft testing, immutable versions, full inspection, paged output/history and explicit recovery. For an older dev profile with explicit tool additions, merge the current inventory before restarting:
+The manifest lists all 30 tools. Additional operations cover capability/preflight checks, draft testing, immutable versions, full inspection, paged output/history and explicit recovery. For an older dev profile with explicit tool additions, merge the current inventory before restarting:
 
 ```sh
 node scripts/enable-agent-tools.mjs .dev-profile/openclaw.json
@@ -95,7 +96,9 @@ Definitions, immutable revisions, admissions, attempt evidence and complete outp
 
 There is no 20-loop or 50-run retention cap. History and full output have paged retrieval; records are not silently evicted. The current store still loads complete state and uses synchronous commit barriers, so large-scale acceptance remains open. Queue concurrency is configurable. Cancelled host work retains its physical execution slot until cleanup settles. Checkpoint retry is distinct from deliberately repeating an uncertain attempt.
 
-Local editor drafts persist in browser storage per loop, agent and conversation. Concurrent edits can be merged; conflicting fields require a deliberate choice. Archived/deleted definitions are recoverable. The library is Gateway-wide, while run control is tied to the host-resolved conversation generation; shared-team and cross-reset authority require further public host contracts. Separate customers must use separate Gateways/state/credentials/workspaces.
+Large feature requests use chunked uploads; large results use immutable, conversation-scoped documents with verified Unicode paging. The UI handles both automatically. Agents use `loops_upload` and `loops_document` when a value exceeds the host message envelope. See [transport and operator budgets](docs/TRANSPORT.md).
+
+Local editor drafts persist in browser storage per loop, agent and conversation, including unfinished invalid edits. Concurrent edits can be merged; conflicting fields require a deliberate choice. Archived/deleted definitions are recoverable. The library is Gateway-wide, while run control is tied to the host-resolved conversation generation; shared-team and cross-reset authority require further public host contracts. Separate customers must use separate Gateways/state/credentials/workspaces.
 
 [Deployment guidance](docs/DEPLOYMENT.md) covers upgrade, matched backup rollback, disable and uninstall. Uninstalling does not authorize erasing retained definitions or history. The personal assistant and EmbodySense remain outside this plugin's state and execution scope.
 

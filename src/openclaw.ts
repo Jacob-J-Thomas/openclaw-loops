@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import {resolveSessionModelRef} from 'openclaw/plugin-sdk/model-session-runtime';
 import {completionParameters,validateAdvanced,type InferenceSettings,type InferenceCapabilities} from './inference-settings.js';
 import {LoopError} from './errors.js';
+import {defaultBudgets} from './budgets.js';
 
 export function createBridge(api:OpenClawPluginApi){
   const current=()=>api.runtime.config.current() as typeof api.config;
@@ -69,14 +70,15 @@ export function createBridge(api:OpenClawPluginApi){
   };
   return {actor,host};
 }
-export const help='Use /loops list | /loops run <slug> [text or JSON object] [--request-id <id>] | /loops status <run-id> | /loops resume <run-id> | /loops cancel <run-id>. Each command starts a new run; reuse an explicit --request-id only to retry the same admission. Review uses the Loops UI.';
-export function parseCommand(context:PluginCommandContext){
-  const raw=context.args?.trim()??'';if(raw.length>18000)throw new Error('Command input is too large.');
-  const match=/^(list|run|status|resume|cancel)(?:\s+([^\s]+))?(?:\s+([\s\S]*))?$/.exec(raw);
+export const help='Use /loops list | /loops run <slug> [text or JSON object] [--request-id <id>] | /loops status <run-id> | /loops resume <run-id> | /loops cancel <run-id> | /loops review <run-id> approve|reject. Each command starts a new run; reuse an explicit --request-id only to retry the same admission. Review requires an authenticated human operator.';
+export function parseCommand(context:PluginCommandContext,maxInputBytes=defaultBudgets.inputBytes){
+  const raw=context.args?.trim()??'';if(Buffer.byteLength(raw)>maxInputBytes+1000)throw new Error('Command input is too large for the configured input budget.');
+  const match=/^(list|run|status|resume|cancel|review)(?:\s+([^\s]+))?(?:\s+([\s\S]*))?$/.exec(raw);
   if(!match)throw new Error(help);
   const [,op,target,rest]=match;
   if(op==='list'){if(target)throw new Error(help);return {op} as const;}
   if(!target)throw new Error(help);
+  if(op==='review'){if(rest!=='approve'&&rest!=='reject')throw new Error(help);return {op:'review',runId:target,decision:rest} as const;}
   if(op!=='run'){if(rest)throw new Error(help);return {op:op as 'status'|'resume'|'cancel',runId:target};}
   const requestMatch=/(?:^|\s+)--request-id\s+([a-zA-Z0-9_-]{1,100})$/.exec(rest??'');
   const value=(requestMatch?rest!.slice(0,requestMatch.index):rest??'').trim();
@@ -87,7 +89,7 @@ export function parseCommand(context:PluginCommandContext){
 export function formatRun(run:Run):string{
   const summary=`${run.definition.name} · revision ${run.definition.revision} · ${run.state}\nRun: ${run.id}`;
   if(run.state==='completed')return `${summary}\n\n${display(run.result??null)}`;
-  if(run.state==='review')return `${summary}\nHuman review is pending in the Loops UI. Continue cannot approve it.`;
+  if(run.state==='review')return `${summary}\nHuman review is pending. Use the Loops UI or /loops review ${run.id} approve|reject. Continue cannot approve it.`;
   if(run.state==='waiting')return `${summary}\n${run.pending??''}\nContinue with /loops resume ${run.id}`;
   return `${summary}\n${run.error??run.uncertainty??`Use /loops status ${run.id} to inspect this run.`}`;
 }

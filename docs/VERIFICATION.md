@@ -1,5 +1,21 @@
 # Local verification
 
+## Alpha.5 acceptance — September 11, 2026
+
+The installed alpha.5 tarball passed **105 source tests**, types, lint and both builds, plus **19 extracted-package tests through the actual OpenClaw feature SDK**. Tarball SHA-256: `89c52da82c3fec26f51c3978e04c1b69edf218d761cfd00d971342c0e7378a89`. Package metadata and test evidence: `evidence/release-alpha5/package*.json`. Both isolated Gateways started successfully from that artifact after an idle-state backup at `.dev-profile/backups/before-alpha5-1789181933`. No personal profile was changed. Subsequent documentation and verification-script edits are separate from this installed artifact.
+
+New implementation: chunked large JSON inputs, immutable conversation-scoped paged results, client-side digest verification, operator-configurable v2 budgets, human `/loops review` commands and recovery of structurally intact but unfinished local drafts. Build generation now derives manifest tool inventory and configuration from the source contracts. Existing host authority remains in force for uploaded inputs and every document read. Snapshots survive restart; cross-conversation and corrupt-document tests fail closed. Physical/scale/retention/host-authority gaps still prevent 1.0 acceptance.
+
+Installed acceptance:
+
+- Codex command `580e3955-8409-4d40-8b26-114a0449474d` completed with Sol. Agent tool run `775d6357-9a93-4b99-8aa4-68ad8a509208` was newly executed and its ID/result reported.
+- Large-data run `0e78a788-c335-42c1-9f8d-ade28c75aaac` accepted 80,000 Unicode code points (including emoji, nulls, quotes and backslashes), retained the exact input/result, and returned a large immutable run snapshot. A large definition then saved/read correctly. The synthetic loop was archived. The live test used 174 bounded Gateway requests, recorded in `evidence/release-alpha5/codex/transport/`.
+- The native UI automatically fetched that large inspector result and displayed Completed, the exact run ID and the Result region. The existing Advanced node still shows temperature `0` and output tokens `128`, plus accurate advisory/unsupported status. Evidence: `evidence/release-alpha5/ui/`.
+- The original feature-matrix revision 4 is unchanged and its completed result is now saved in `evidence/release-alpha3/matrix/run.json`.
+- Ollama's repeated natural-language prompt first reported an old run ID. A fresh conversation produced actual tool run `abb7c58d-7c62-454a-a0fe-32ef9ad2d9d2`, but the model copied the previous user-command input instead of the newly requested input. Both diagnostic attempts are preserved under `evidence/release-alpha5/ollama/`. They are not accepted as exact-input end-to-end agent evidence. The verification script now requires a fresh run containing this test's unique input marker and an agent reply containing that run ID; a clean exact-arguments rerun passed. New tool run `65df1e02-a54a-4fe0-b359-76a4f26b3ee8` retained the specified input marker and was reported by the agent; user-command run `8d1cde28-dee8-4e42-a190-6dbe1fb2adbc` completed against the same saved revision. `verify-release.mjs ollama assert` passed. This verifies invocation and data flow, not factual summarization quality: the 4B output incorrectly interpreted the synthetic marker as an admission requirement. Evaluation/quality checks remain part of the accepted expansion scope.
+
+CI/public source/ClawHub and the remaining deployment/fault/soak/expansion gates remain open. Automatic approval review rejected creating/pushing the public GitHub repository for the prepared source payload; nothing was published and specific approval remains pending.
+
 ## Alpha.4 acceptance — September 11, 2026
 
 The alpha.4 executable package passed **96 deterministic tests**, types, lint and both builds, plus **17 extracted-package SDK adapter tests**. It is installed in both isolated dev Gateways (Codex 19691; Ollama 19491). CI is configured but has not run yet. This is incomplete release work, not 1.0 acceptance.

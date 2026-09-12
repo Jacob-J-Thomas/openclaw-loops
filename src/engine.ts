@@ -6,7 +6,8 @@ import { examples } from './examples.js';
 import type {OpenClawPluginApi} from 'openclaw/plugin-sdk/plugin-entry';
 import {completionParameters,validateAdvanced,type InferenceSettings,type InferenceCapabilities} from './inference-settings.js';
 import {errorDetail,type LoopErrorData} from './errors.js';
-import {defaultBudgets,legacyBudgets} from './budgets.js';
+import {resolveBudgets,legacyBudgets,type Budgets} from './budgets.js';
+import {textPage} from './feature-json.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
@@ -33,12 +34,14 @@ const ownerKey=(a:Owner)=>JSON.stringify([a.agentId,a.sessionKey,a.sessionId]);
 const terminal=(r:Run)=>['completed','failed','cancelled','interrupted'].includes(r.state);
 export class Engine{
   private state:State;
+  readonly budgets:Budgets;
   private queued=new Map<string,Actor>();
   private physical=new Map<string,Set<Promise<unknown>>>();
   private closing=false;
   private deadlines=new Map<string,number>();
   private active=new Map<string,{controller:AbortController;promise:Promise<Run>}>();
-  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void}={}){
+  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>}={}){
+    this.budgets=resolveBudgets(options.budgets);
     this.state=storage.read()??{version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}};
     if(this.state.version!==1)throw new Error('Unsupported state store version.');
     for(const record of Object.values(this.state.loops)){
@@ -56,7 +59,7 @@ export class Engine{
     this.persist();
   }
   private persist(){try{this.storage.write(this.state);}catch(error){const committed=this.storage.read();if(committed)this.state=committed;for(const active of this.active.values())active.controller.abort(new Error('Storage commit failed; execution stopped.'));throw error;}try{this.options.onChange?.();}catch{/* A disconnected subscriber cannot roll back a committed write. */}}
-  private ensureHuman(actor:Actor){actor.check();if(!actor.human||actor.source!=='session-action')throw new Error('This operation requires an authenticated human in the Loops UI.');}
+  private ensureHuman(actor:Actor){actor.check();if(!actor.human||actor.source==='tool')throw new Error('This operation requires an authenticated human in the Loops UI or an authorized human command.');}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!(actor.source==='session-action'&&(actor.human||actor.canManage)))throw new Error('Loop changes require an authorized agent tool or an operator with write access in the Loops UI.');}
   private own(actor:Actor,id:string){actor.check();const run=this.state.runs[id];if(!run||ownerKey(run.owner)!==ownerKey(actor))throw new Error('Run not found in this session.');return run;}
   private allowed(actor:Actor,d:Definition,record:LoopRecord|undefined){actor.check();if(!record||record.revoked)throw new Error('Loop permission revoked.');for(const c of d.capabilities){if(!record.grants.includes(c))throw new Error(`Loop permission revoked: ${c}`);this.host.check(actor,c);}}
@@ -70,12 +73,12 @@ export class Engine{
     this.ensureAuthor(actor);return this.saveRevision(actor,value,expectedRevision,enabled);
   }
   create(actor:Actor,value:unknown,enabled=true){
-    this.ensureAuthor(actor);const content=parseDefinitionContent(value);
+    this.ensureAuthor(actor);const content=parseDefinitionContent(value,this.budgets);
     return this.saveRevision(actor,{...content,schemaVersion:2,id:`loop-${randomUUID()}`,revision:0},0,enabled);
   }
   edit(actor:Actor,id:string,expectedRevision:number,value:unknown,enabled?:boolean){
     this.ensureAuthor(actor);const previous=this.state.loops[id];if(!previous||previous.deletedAt)throw new Error('Loop not found.');
-    const changes=parseDefinitionPatch(value);
+    const changes=parseDefinitionPatch(value,this.budgets);
     return this.saveRevision(actor,{...previous.definition,...changes},expectedRevision,enabled??previous.enabledRevision!==null);
   }
   delete(actor:Actor,id:string,expectedRevision:number){
@@ -86,11 +89,11 @@ export class Engine{
     previous.deletedAt=now();previous.enabledRevision=null;this.persist();return deleted;
   }
   private saveRevision(actor:Actor,value:unknown,expectedRevision:number,enabled:boolean,preservePublication=false){
-    const d=parseDefinition(value);const previous=this.state.loops[d.id];
+    const d=parseDefinition(value,this.budgets);const previous=this.state.loops[d.id];
     if((previous?.definition.revision??0)!==expectedRevision||d.revision!==expectedRevision)throw new Error('Save conflict: reload the current revision before saving.');
     if(previous?.deletedAt)throw new Error('Loop was deleted; recover it explicitly before editing.');
     if(Object.values(this.state.loops).some(r=>!r.deletedAt&&(r.definition.slug===d.slug||this.published(r)?.slug===d.slug)&&r.definition.id!==d.id))throw new Error('Another loop already uses that slug.');
-    d.revision=expectedRevision+1;const issues=validateGraph(d);
+    d.revision=expectedRevision+1;const issues=this.validate(actor,d).issues;
     // Validate and check the caller before committing either definition or grants.
     // A rejected publish leaves the previous revision and activation untouched.
     if(enabled)this.checkActivation(actor,d,issues);
@@ -99,7 +102,8 @@ export class Engine{
       grants:enabled?[...new Set([...(previous?.grants??[]),...d.capabilities])]:previous?.grants??[]};this.persist();
     return {record:structuredClone(this.state.loops[d.id]),issues};
   }
-  private checkActivation(actor:Actor,d:Definition,issues=validateGraph(d)){
+  private checkActivation(actor:Actor,d:Definition,issues=this.validate(actor,d).issues){
+    parseDefinition(d,this.budgets);
     if(issues.length)throw new Error(`Cannot enable this revision: ${issues.map(i=>i.message).join(' ')} Save with enabled: false to keep a draft.`);
     for(const c of d.capabilities)this.host.check(actor,c);
   }
@@ -116,21 +120,21 @@ export class Engine{
   archive(actor:Actor,id:string,expectedRevision:number,archived:boolean){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r||r.deletedAt)throw new Error('Loop not found.');if(r.definition.revision!==expectedRevision)throw new Error('Archive conflict: reload the current revision.');r.archived=archived;if(archived)r.enabledRevision=null;this.persist();return structuredClone(r);}
   deleted(actor:Actor){this.ensureAuthor(actor);return Object.values(this.state.loops).filter(r=>r.deletedAt||r.archived).map(r=>({id:r.definition.id,slug:r.definition.slug,revision:r.definition.revision,...r.deletedAt?{deletedAt:r.deletedAt}:{},archived:r.archived??false}));}
   recover(actor:Actor,id:string,expectedRevision:number){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r)throw new Error('Loop not found.');if(r.definition.revision!==expectedRevision)throw new Error('Recovery conflict: reload the current revision.');if(Object.values(this.state.loops).some(other=>other!==r&&!other.deletedAt&&other.definition.slug===r.definition.slug))throw new Error('Slug is already in use; restore to a new loop instead.');delete r.deletedAt;r.archived=false;r.enabledRevision=null;this.persist();return structuredClone(r);}
-  output(actor:Actor,id:string,nodeId?:string,offset=0,limit=8000){const run=this.own(actor,id);const value=nodeId===undefined?run.result:run.outputs[nodeId];if(value===undefined)throw new Error('Output not found.');if(!Number.isInteger(offset)||offset<0||!Number.isInteger(limit)||limit<1||limit>100000)throw new Error('Output page requires offset >= 0 and limit 1–100000.');const characters=Array.from(display(value));const end=Math.min(characters.length,offset+limit);return {runId:id,nodeId:nodeId??null,text:characters.slice(offset,end).join(''),offset,nextOffset:end<characters.length?end:null,totalCharacters:characters.length,format:typeof value==='string'?'text':'json'};}
+  output(actor:Actor,id:string,nodeId?:string,offset=0,limit=8000){const run=this.own(actor,id);const value=nodeId===undefined?run.result:run.outputs[nodeId];if(value===undefined)throw new Error('Output not found.');return {runId:id,nodeId:nodeId??null,...textPage(display(value),offset,limit),format:typeof value==='string'?'text':'json'};}
   history(actor:Actor,cursor=0,limit=100){if(!Number.isInteger(cursor)||cursor<0||!Number.isInteger(limit)||limit<1||limit>1000)throw new Error('History page requires a nonnegative cursor and limit 1–1000.');const rows=this.runs(actor);return {items:rows.slice(cursor,cursor+limit),nextCursor:cursor+limit<rows.length?cursor+limit:null,total:rows.length};}
   runs(actor:Actor){actor.check();return Object.values(this.state.runs).filter(r=>ownerKey(r.owner)===ownerKey(actor)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(r=>({id:r.id,slug:r.definition.slug,revision:r.definition.revision,state:r.state,createdAt:r.createdAt,updatedAt:r.updatedAt,executions:r.executions}));}
   status(actor:Actor,id:string){const run=structuredClone(this.own(actor,id));if(this.physical.has(id)&&!this.active.has(id))run.cleanupPending=true;return run;}
   async run(actor:Actor,slug:string,input:unknown,requestId:string):Promise<Run>{
     return this.admit(actor,slug,input,requestId);
   }
-  async test(actor:Actor,value:unknown,input:unknown,requestId:string){this.ensureAuthor(actor);const definition=parseDefinition(value);return this.admit(actor,definition.slug,input,requestId,definition);}
+  async test(actor:Actor,value:unknown,input:unknown,requestId:string){this.ensureAuthor(actor);const definition=parseDefinition(value,this.budgets);return this.admit(actor,definition.slug,input,requestId,definition);}
   private async admit(actor:Actor,slug:string,input:unknown,requestId:string,draft?:Definition):Promise<Run>{
     actor.check();if(!requestId||requestId.length>200)throw new Error('A stable request ID of at most 200 characters is required.');
     const requestKey=hash(ownerKey(actor)+':'+requestId);const fingerprint=hash(canonical({slug,input,...draft?{draft}:{}}));
     const prior=Object.values(this.state.runs).find(r=>r.requestKey===requestKey);
     if(prior){if(prior.requestFingerprint!==fingerprint)throw new Error('Request ID conflict: input changed.');return this.status(actor,prior.id);}
     const definition=draft??this.describe(actor,slug);const issues=this.validate(actor,definition).issues;if(issues.length)throw new Error(issues.map(i=>i.message).join(' '));
-    const checkedInput=validateInput(definition,input);
+    const checkedInput=validateInput(definition,input,this.budgets);
     const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
     if(draft)run.testMode=true;
     this.state.runs[run.id]=run;this.persist();return this.dispatch(actor,run);
@@ -228,7 +232,7 @@ export class Engine{
   private finish(r:Run,e:NodeEvidence,result:Json){const output=display(result);if(Buffer.byteLength(output)>r.definition.limits.maxOutputBytes)throw new Error(`Output-size limit exceeded at ${e.nodeId}.`);if(r.definition.schemaVersion===1&&r.trace.reduce((size,t)=>size+Buffer.byteLength(t.output??''),0)+Buffer.byteLength(output)>48000)throw new Error('Run evidence output budget exceeded.');e.output=output;e.state='completed';e.endedAt=now();}
   private async infer(actor:Actor,r:Run,n:Extract<GraphNode,{kind:'inference'}>,ctx:BindingContext,signal:AbortSignal):Promise<Json>{
     this.allowedRun(actor,r);this.host.check(actor,'llm');
-    const prompt=display(bind(n.prompt,ctx));if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:defaultBudgets.promptBytes))throw new Error('Rendered prompt exceeds the transport budget.');
+    const prompt=display(bind(n.prompt,ctx));if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw new Error('Rendered prompt exceeds the transport budget.');
     const issues=validateAdvanced(n.advanced,this.capabilities(actor,n).parameters);if(issues.length)throw new Error(issues.join(' '));
     const settings:InferenceSettings={...n.model?{model:n.model}:{},...n.agentId?{agentId:n.agentId}:{},...n.reasoning?{reasoning:n.reasoning}:{},...n.advanced?{advanced:n.advanced}:{}};
     const deadline=this.deadlines.get(r.id);
@@ -247,6 +251,6 @@ export class Engine{
     }
     return response;
   }
-  capabilities(actor:Actor,settings:InferenceSettings={}):InferenceCapabilities{actor.check();return this.host.capabilities?.(actor,settings)??{...(settings.model??actor.model)?{model:settings.model??actor.model}:{},configured:'unknown',authorized:'unknown',available:'unknown',parameters:completionParameters(),notes:[]};}
-  validate(actor:Actor,value:unknown){actor.check();const definition=parseDefinition(value);const issues=validateGraph(definition);for(const node of definition.nodes.flatMap(n=>n.kind==='repeat'?[...n.body]:[n]))if(node.kind==='inference')for(const message of validateAdvanced(node.advanced,this.capabilities(actor,node).parameters))issues.push({nodeId:node.id,message});return {valid:issues.length===0,issues};}
+  capabilities(actor:Actor,settings:InferenceSettings={}){actor.check();const inference=this.host.capabilities?.(actor,settings)??{...(settings.model??actor.model)?{model:settings.model??actor.model}:{},configured:'unknown' as const,authorized:'unknown' as const,available:'unknown' as const,parameters:completionParameters(),notes:[]};return {...inference,budgets:{...this.budgets},concurrency:this.options.concurrency??1};}
+  validate(actor:Actor,value:unknown){actor.check();const definition=parseDefinition(value,this.budgets);const issues=validateGraph(definition);for(const node of definition.nodes.flatMap(n=>n.kind==='repeat'?[...n.body]:[n]))if(node.kind==='inference')for(const message of validateAdvanced(node.advanced,this.capabilities(actor,node).parameters))issues.push({nodeId:node.id,message});return {valid:issues.length===0,issues};}
 }

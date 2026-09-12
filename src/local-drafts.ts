@@ -1,4 +1,20 @@
-import {parseDefinition,type Definition} from './graph.js';
+import {DefinitionSchema,parseDefinition,type Definition} from './graph.js';
+import {Value} from 'typebox/value';
+import {defaultBudgets} from './budgets.js';
+
+// Local drafts capture an editor in progress: a blank name, disconnected graph,
+// invalid range or empty node list must survive a browser restart. Preserve the
+// renderer's structural types while deferring authoring validity to Save/Test.
+const editableSchema=structuredClone(DefinitionSchema);
+function relax(schema:unknown):void{
+  if(!schema||typeof schema!=='object')return;
+  const value=schema as Record<string,unknown>;
+  for(const key of ['minimum','maximum','minLength','maxLength','pattern','minItems','maxItems','uniqueItems'])delete value[key];
+  for(const child of Object.values(value))relax(child);
+}
+relax(editableSchema);
+editableSchema.properties.id=DefinitionSchema.properties.id;
+editableSchema.properties.revision=DefinitionSchema.properties.revision;
 type BrowserStore=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
 export type LocalDraft={definition:Definition;base:Definition|null;updatedAt:string};
 const prefix=(scope:string)=>`loops-editor:v2:${scope}:`;
@@ -10,7 +26,7 @@ export function listLocalDrafts(store:BrowserStore,scope:string):{drafts:LocalDr
   const drafts:LocalDraft[]=[],errors:string[]=[];
   for(let index=0;index<store.length;index++){
     const key=store.key(index);if(!key?.startsWith(prefix(scope)))continue;
-    try{const value=JSON.parse(store.getItem(key)??'');const definition=parseDefinition(value.definition);const base=value.base?parseDefinition(value.base):null;
+    try{const value=JSON.parse(store.getItem(key)??'');if(!Value.Check(editableSchema,value.definition))throw new Error('Draft structure is unreadable.');const definition=value.definition as Definition;const base=value.base?parseDefinition(value.base,{...defaultBudgets,definitionBytes:Number.MAX_SAFE_INTEGER}):null;
       if(key!==prefix(scope)+definition.id||base&&base.id!==definition.id||typeof value.updatedAt!=='string')throw new Error('Draft metadata is invalid.');
       drafts.push({definition,base,updatedAt:value.updatedAt});
     }catch{errors.push(`A local draft could not be read: ${key.slice(prefix(scope).length)}. Its stored data was preserved.`);}

@@ -27,7 +27,7 @@ The isolated development profile uses Ollama `qwen3.5:4b`, Q4_K_M, 32,768 contex
 ## Upgrade
 
 1. Keep the previous plugin artifact and stop the affected Gateway so no host calls are active.
-2. Back up the entire profile state and configuration as a matched pair, including `loops-poc/loops.sqlite` and any WAL files. A stopped Gateway is required for a raw filesystem copy; the storage adapter's SQLite backup operation is suitable for a live database snapshot.
+2. Back up the entire profile state and configuration as a matched pair, including `loops-poc/loops.sqlite`, any WAL files and `loops-poc/documents` (immutable large responses and staged requests). A stopped Gateway is required for a raw filesystem copy; the storage adapter's SQLite backup operation is suitable for a live database snapshot.
 3. Install the new artifact through OpenClaw. On first SQLite startup, legacy JSON is validated, copied to a timestamped backup and imported transactionally. The original JSON is retained. Integrity and exact readback are checked.
 4. Restart, check plugin startup, compare library identities/revisions and run history counts, then run a synthetic command/tool/UI smoke test. Existing runs keep their pinned definitions. Uncertain interrupted effects require an explicit inspected recovery decision.
 

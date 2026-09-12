@@ -30,14 +30,20 @@ if(mode==='setup'){
     save('user-admission',call('chat.send',{agentId:'main',sessionKey:session.key,message:`/loops run ${slug} The community garden opens on Saturdays. Volunteers share its vegetables with neighbors. --request-id release-user-${randomUUID()}`,idempotencyKey:randomUUID()}));
     console.log('Submitted a real user chat command in the synthetic conversation.');
   }else if(mode==='agent'){
-    const result=cli(['agent','--agent','main','--session-key',session.key,'--message',`Use the Loops tools to actually invoke my saved loop ${slug} on this text: The library added twelve reading seats. Its Saturday workshops are free. Report the real run ID and result. Use tool discovery if needed. Do not simulate the loop or access files.`,'--timeout','180','--json']);save('agent-turn',result);console.log(JSON.stringify({status:result.status,ok:result.ok,error:result.error,payloads:result.result?.payloads??result.payloads}));
+    const requestId='acceptance-'+randomUUID(),startedAt=new Date().toISOString();save('agent-request',{requestId,startedAt});
+    const args={slug,input:{text:`The library added twelve reading seats. Its Saturday workshops are free. Acceptance marker: ${requestId}.`},requestId};
+    const result=cli(['agent','--agent','main','--session-key',session.key,'--message',`Start a NEW execution now. Discover loops_run, then invoke it with exactly these arguments:\n${JSON.stringify(args)}\nReport the NEW run ID and its actual result. Use these supplied inputs. Do not reuse a prior run or simulate execution. Do not access files.`,'--timeout','180','--json']);save('agent-turn',result);console.log(JSON.stringify({status:result.status,ok:result.ok,error:result.error,payloads:result.result?.payloads??result.payloads}));
   }else if(mode==='inspect'){
     const runs=action('runs',{});const details=runs.map(run=>action('inspect',{runId:run.id}));save('runs',details);const history=call('chat.history',{agentId:'main',sessionKey:session.key,limit:100});save('chat-history',history);
     console.log(JSON.stringify(details.map(run=>({id:run.id,state:run.state,source:run.source,revision:run.definition.revision,model:run.executionSettings?.model,result:run.result,error:run.error}))));
   }else if(mode==='assert'){
-    const runs=JSON.parse(readFileSync(`${directory}/runs.json`,'utf8'));
+    const runs=JSON.parse(readFileSync(`${directory}/runs.json`,'utf8')).filter(run=>run.definition.slug===slug);
+    const request=JSON.parse(readFileSync(`${directory}/agent-request.json`,'utf8'));
     assert(runs.some(run=>run.source==='command'&&run.state==='completed'),'Real user command completion missing');
-    assert(runs.some(run=>run.source==='tool'&&run.state==='completed'),'Real agent tool completion missing');
+    const fresh=runs.find(run=>run.source==='tool'&&run.state==='completed'&&run.createdAt>=request.startedAt&&JSON.stringify(run.input).includes(request.requestId));
+    assert(fresh,'Fresh real agent tool completion with this acceptance marker is missing');
+    const turn=JSON.parse(readFileSync(`${directory}/agent-turn.json`,'utf8'));
+    assert(JSON.stringify(turn.result?.payloads??turn.payloads).includes(fresh.id),'Agent did not report the fresh run ID');
     assert(runs.filter(run=>run.source==='command'||run.source==='tool').every(run=>run.definition.slug===slug&&run.definition.revision===1));
     console.log(`${profile}: verified real command and agent-tool invocation of the same saved revision.`);
   }else throw new Error('Use setup, prepare, user, agent, inspect or assert.');

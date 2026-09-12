@@ -3,6 +3,7 @@ import {DefinitionSchema} from './graph.js';
 import type {Engine,LoopRecord,Run} from './engine.js';
 import type {RunReceipt,describe} from './receipts.js';
 import type {InferenceCapabilities} from './inference-settings.js';
+import {BudgetsSchema,type Budgets} from './budgets.js';
 
 // Each operation publishes a concrete wire shape. Dynamic JSON data and host
 // attribution remain open values; identities, states and control fields do not.
@@ -54,8 +55,8 @@ export const outputs={
   list:Type.Unsafe<ReturnType<Engine['list']>>(Type.Array(Type.Object({...summary.properties,description:text,inputSchema:DefinitionSchema.properties.inputSchema},strict))),
   describe:Type.Unsafe<ReturnType<typeof describe>>(Type.Object({...summary.properties,description:text,inputSchema:DefinitionSchema.properties.inputSchema,capabilities:DefinitionSchema.properties.capabilities,limits:DefinitionSchema.properties.limits,steps:Type.Array(Type.Object({id:text,kind:text,label:text},strict))},strict)),
   deletion:Type.Unsafe<ReturnType<Engine['delete']>>(Type.Object({id:text,slug:text,revision:integer,deleted:Type.Boolean()},strict)),
-  capabilities:Type.Unsafe<InferenceCapabilities>(Type.Object({
+  capabilities:Type.Unsafe<InferenceCapabilities & {budgets:Budgets;concurrency:number}>(Type.Object({
     model:Type.Optional(text),runtime:Type.Optional(text),configured:Type.Union([Type.Boolean(),Type.Literal('unknown')]),authorized:Type.Union([Type.Boolean(),Type.Literal('unknown')]),available:Type.Union([Type.Boolean(),Type.Literal('unknown')]),
-    parameters:Type.Array(Type.Object({key:text,label:text,type:enums(['number','integer','string[]']),support:enums(['supported','advisory','unsupported','unknown']),reason:text,minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number()),defaultValue:Type.Optional(Type.Union([Type.Number(),Type.Array(text)]))},strict)),notes:Type.Array(text),
+    parameters:Type.Array(Type.Object({key:text,label:text,type:enums(['number','integer','string[]']),support:enums(['supported','advisory','unsupported','unknown']),reason:text,minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number()),defaultValue:Type.Optional(Type.Union([Type.Number(),Type.Array(text)]))},strict)),notes:Type.Array(text),budgets:BudgetsSchema,concurrency:integer,
   },strict)),
 };

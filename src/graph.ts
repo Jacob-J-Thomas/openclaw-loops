@@ -1,7 +1,7 @@
 import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import {AdvancedSchema,ReasoningSchema} from './inference-settings.js';
-import {defaultBudgets,legacyBudgets} from './budgets.js';
+import {defaultBudgets,legacyBudgets,type Budgets} from './budgets.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 const key = Type.String({pattern:'^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$'});
@@ -48,12 +48,12 @@ export const DefinitionContentSchema=Type.Omit(DefinitionSchema,['schemaVersion'
 export const DefinitionPatchSchema=Type.Partial(DefinitionContentSchema,{...obj,minProperties:1});
 export type DefinitionContent=Static<typeof DefinitionContentSchema>;
 export type DefinitionPatch=Static<typeof DefinitionPatchSchema>;
-export function parseDefinitionContent(value:unknown):DefinitionContent{
-  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>defaultBudgets.definitionBytes||!Value.Check(DefinitionContentSchema,value))throw new Error('New definition fields do not match schemaVersion 1 or 2. Identity and revision are assigned by the server.');
+export function parseDefinitionContent(value:unknown,budgets:Budgets=defaultBudgets):DefinitionContent{
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budgets.definitionBytes||!Value.Check(DefinitionContentSchema,value))throw new Error('New definition fields do not match schemaVersion 1 or 2, or exceed the configured definition budget. Identity and revision are assigned by the server.');
   return structuredClone(value);
 }
-export function parseDefinitionPatch(value:unknown):DefinitionPatch{
-  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>defaultBudgets.definitionBytes||!Value.Check(DefinitionPatchSchema,value))throw new Error('Supply at least one editable definition field within the definition transport budget. Identity and grants are server-owned; pass enabled separately to change activation.');
+export function parseDefinitionPatch(value:unknown,budgets:Budgets=defaultBudgets):DefinitionPatch{
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budgets.definitionBytes||!Value.Check(DefinitionPatchSchema,value))throw new Error('Supply at least one editable definition field within the configured definition budget. Identity and grants are server-owned; pass enabled separately to change activation.');
   return structuredClone(value);
 }
 export type GraphNode = Definition['nodes'][number];
@@ -61,10 +61,10 @@ export type Predicate = Static<typeof PredicateSchema>;
 export type Capability = Definition['capabilities'][number];
 export type Issue = {nodeId?:string;message:string};
 export const ports = (node:GraphNode):string[] => node.kind==='condition'?['true','false']:node.kind==='review'?['approve','reject']:['return','fail'].includes(node.kind)?[]:['next'];
-export function parseDefinition(value:unknown):Definition {
+export function parseDefinition(value:unknown,budgets:Budgets=defaultBudgets):Definition {
   if (!Value.Check(DefinitionSchema,value)) throw new Error('Definition does not match schemaVersion 1 or 2.');
   if(value.schemaVersion===1&&value.limits.timeoutMs===undefined)throw new Error('Version 1 definitions require their original explicit timeout.');
-  const budget=value.schemaVersion===1?legacyBudgets.definitionBytes:defaultBudgets.definitionBytes;
+  const budget=value.schemaVersion===1?legacyBudgets.definitionBytes:budgets.definitionBytes;
   if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw new Error(`Definition exceeds its ${budget}-byte transport budget.`);
   return structuredClone(value);
 }
@@ -134,8 +134,8 @@ export function validateGraph(d:Definition):Issue[] {
   }
   return issues;
 }
-export function validateInput(d:Definition,value:unknown):Record<string,Json>{
-  const budget=d.schemaVersion===1?legacyBudgets.inputBytes:defaultBudgets.inputBytes;
+export function validateInput(d:Definition,value:unknown,budgets:Budgets=defaultBudgets):Record<string,Json>{
+  const budget=d.schemaVersion===1?legacyBudgets.inputBytes:budgets.inputBytes;
   if(!value||typeof value!=='object'||Array.isArray(value)||new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw new Error(`Input must be a JSON object of at most ${budget===16000?'16 KB':`${budget} bytes`}.`);
   const input=value as Record<string,Json>;
   for(const k of Object.keys(input))if(!d.inputSchema.some(f=>f.name===k))throw new Error(`Unexpected input: ${k}`);

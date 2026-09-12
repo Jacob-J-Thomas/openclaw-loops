@@ -3,6 +3,9 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,rmSync,writeFileSync,chmo
 import {dirname} from 'node:path';
 import type {Storage,State} from './engine.js';
 import {parseDefinition} from './graph.js';
+import {defaultBudgets} from './budgets.js';
+// Policy changes must never make already-saved version 2 evidence unreadable.
+const persistedBudgets={...defaultBudgets,definitionBytes:Number.MAX_SAFE_INTEGER};
 import {Value} from 'typebox/value';
 import {outputs} from './output-schemas.js';
 
@@ -12,18 +15,18 @@ export function validateState(value:unknown):State{
   if(!state.loops||typeof state.loops!=='object'||Array.isArray(state.loops)||!state.runs||typeof state.runs!=='object'||Array.isArray(state.runs))throw new Error('Invalid Loops collections.');
   for(const [id,record] of Object.entries(state.loops)){
     if(!Value.Check(outputs.record,record))throw new Error(`Invalid saved loop structure: ${id}`);
-    const definition=parseDefinition(record.definition);
+    const definition=parseDefinition(record.definition,persistedBudgets);
     if(id!==definition.id||!Array.isArray(record.grants)||record.grants.some(cap=>!['llm','model-info'].includes(cap)))throw new Error(`Invalid saved loop: ${id}`);
     if(record.enabledRevision!==null&&(!Number.isInteger(record.enabledRevision)||record.enabledRevision<1))throw new Error(`Invalid publication: ${id}`);
     for(const [revision,version] of Object.entries(record.revisions??{})){
-      parseDefinition(version);
+      parseDefinition(version,persistedBudgets);
       if(version.id!==id||String(version.revision)!==revision)throw new Error(`Invalid immutable revision: ${id}/${revision}`);
     }
     for(const revision of [record.enabledRevision,record.publishedRevision])if(revision!=null&&record.definition.revision!==revision&&!record.revisions?.[revision])throw new Error(`Missing published revision: ${id}/${revision}`);
   }
   for(const [id,run] of Object.entries(state.runs)){
     if(!Value.Check(outputs.completeRun,run))throw new Error(`Invalid saved run structure: ${id}`);
-    parseDefinition(run.definition);
+    parseDefinition(run.definition,persistedBudgets);
     if(id!==run.id||!run.owner?.agentId||!run.owner.sessionKey||!run.owner.sessionId||!Array.isArray(run.trace)||!run.outputs||!run.requestKey||!run.requestFingerprint||!['queued','running','completed','failed','waiting','review','cancelled','interrupted'].includes(run.state))throw new Error(`Invalid saved run: ${id}`);
   }
   return state;

@@ -11,7 +11,7 @@ The development alpha uses **OpenClaw 2026.9.3** and **Node 24.16.0**. It is an 
 | Inference | Public isolated-agent-runtime completion; model/agent/reasoning/Advanced overrides; unset values inherit. Actual provider/model and requested/transmitted settings are recorded. Applied values remain unknown unless observable. |
 | Persistence | Plugin-owned SQLite on a serialized worker; immutable revisions and admission/attempt/output/event records; transactional commits, integrity checks, process lock and verified legacy JSON migration. |
 | Recovery | Durable wait/review; explicit checkpoint/retry-node/restart with ancestry. Unknown effects require an explicit choice and are never automatically replayed. |
-| Agent parity | 28 tools expose discovery, authoring, publication, versions, archive/recovery, execution/test/retry/status/history/full inspection/output. Explicit human review remains a separate authenticated UI operation. |
+| Agent parity | 30 tools expose discovery, authoring, publication, versions, archive/recovery, execution/test/retry/status/history/full inspection/output. Explicit human review uses authenticated UI or human command authority. |
 
 Inference and the read-only configured-model Action are host-backed. The remaining palette is deterministic plugin logic. Repeat still has a fixed Inference/Condition body. Scripts, subagents, schedules, parallel branches and nested loops are accepted expansion milestones, not implemented capabilities yet.
 
@@ -33,9 +33,9 @@ Cancellation/timeout stops downstream dispatch while a host call ignoring cancel
 
 ## Budgets and compatibility
 
-New UI definitions use v2 with default 1,000 node executions and 1 MiB per-node output. Repeat defaults to 3 and can increase within the total budget. Timeout is still explicit in this alpha; complete host-inherited timeout remains pending. Concurrency defaults to one for the 16 GB local-model machine; `plugins.entries.loops-poc.config.maxConcurrentRuns` adjusts it. Additional starts/continuations queue.
+New UI definitions use v2 with default 1,000 node executions and 1 MiB per-node output. Repeat defaults to 3 and can increase within the total budget. Omitted v2 timeouts inherit the host; explicit loop timeouts count elapsed active execution across steps and resumes. Concurrency defaults to one for the 16 GB local-model machine; `plugins.entries.loops-poc.config.maxConcurrentRuns` adjusts it. Additional starts/continuations queue.
 
-There is no 20-loop or 50-run eviction. Explicit retention management is still pending. The service loads records into memory and uses a synchronous commit barrier around its worker; asynchronous/lazy storage and scale/soak validation remain open. Default v2 transport envelopes are 4 MiB definitions and 1 MiB inputs/prompts. Version 1 retains legacy binding/comparison/flat-JSON and transport/evidence behavior.
+There is no 20-loop or 50-run eviction. Explicit retention management is still pending. The service loads records into memory and uses a synchronous commit barrier around its worker; asynchronous/lazy storage and scale/soak validation remain open. Default v2 storage/execution budgets are 4 MiB definitions and 1 MiB inputs/prompts, configurable under plugin `config.budgets`. Host feature messages independently allow 256 KiB, 64K UTF-16 string units, depth 32 and 4,096 JSON values. Chunked uploads and immutable result documents bridge those limits without reducing graph or output budgets. [Transport details](TRANSPORT.md). Version 1 retains legacy binding/comparison/flat-JSON and transport/evidence behavior.
 
 JSON migration retains the original file and a timestamped backup. Rollback requires a matching application/store pair. Native UI has trusted host-origin authority; Shadow DOM isolates styles, not security.
 
