@@ -1,4 +1,6 @@
 name: AIDLC
+# This is a snapshot check. Issue/review changes do not retrigger PR events;
+# scripts/merge-aidlc.mjs is the required current-metadata merge mechanism.
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited, ready_for_review, converted_to_draft]

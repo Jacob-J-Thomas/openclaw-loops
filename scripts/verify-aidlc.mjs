@@ -34,12 +34,35 @@ export function validateContract(snapshot){
   return {ok:errors.length===0,errors,issue:closing.length===1?closing[0].number:null,head:pr.head.sha,base:pr.base.sha,reviewRequests};
 }
 
-export function reviewRequests(prComments,issueComments){
+export const isCodexReview=review=>review.user?.login==='chatgpt-codex-connector[bot]'&&review.state!=='PENDING';
+export function reviewRequests(prComments,issueComments,reviews=[]){
   const ids=prComments.filter(comment=>comment.user?.type!=='Bot'&&/^\s*@codex\s+review\b/im.test(comment.body??'')).map(comment=>String(comment.id));
   // Mirror request IDs on the Bolt so deleting a PR comment cannot reset the
   // visible budget. Never place credentials or raw runtime traces in receipts.
   for(const comment of issueComments)for(const match of (comment.body??'').matchAll(/<!-- loops-review-request:(\d+) -->/g))ids.push(match[1]);
-  return [...new Set(ids)];
+  const requests=new Set(ids),results=new Set(reviews.filter(isCodexReview).map(review=>String(review.id))),pairedRequests=new Set(),pairedResults=new Set();
+  for(const comment of prComments){
+    if(comment.user?.login!=='chatgpt-codex-connector[bot]'||!(comment.body??'').includes('<!-- codex-pull-request-review-summary -->'))continue;
+    const row=comment.body.split('\n').find(line=>line.includes('**Code Review**')&&/\|\s*PR opened\s*\|/.test(line));
+    if(!row)continue;
+    const commit=/`([a-f0-9]{7,40})`/.exec(row)?.[1];
+    const result=reviews.filter(review=>isCodexReview(review)&&commit&&review.commit_id?.startsWith(commit)).sort((a,b)=>a.id-b.id)[0];
+    // Clean automatic reviews can finish with a reaction and no formal review;
+    // running automatic reviews also consume a slot before their result exists.
+    results.add(String(result?.id??comment.id));
+  }
+  for(const comment of issueComments){
+    // Unpaired review records count independently, including automatic reviews.
+    // Only an explicit one-to-one receipt can reconcile a request and response;
+    // timestamps alone cannot distinguish overlapping automatic/manual runs.
+    for(const match of (comment.body??'').matchAll(/<!-- loops-review-result:(\d+):(\d+) -->/g)){
+      const [,requestId,resultId]=match;
+      if(requests.has(requestId)&&results.has(resultId)&&!pairedRequests.has(requestId)&&!pairedResults.has(resultId)){pairedRequests.add(requestId);pairedResults.add(resultId);}
+    }
+    for(const match of (comment.body??'').matchAll(/<!-- loops-review-auto:(\d+) -->/g))results.add(match[1]);
+  }
+  for(const id of results)if(!pairedResults.has(id))requests.add('review:'+id);
+  return [...requests];
 }
 
 export async function github(endpoint,{body,optional=false}={}){
@@ -66,24 +89,25 @@ export async function collectContract(number,request=github){
   if(result.errors?.length||!references||references.pageInfo.hasNextPage)throw new Error('Complete GitHub closing-issue metadata is required.');
   const closing=references.nodes.map(issue=>({number:issue.number,repository:issue.repository.nameWithOwner}));
   const chain=[];let leafChildren=[],issueComments=[];
-  const comments=async issueNumber=>{
+  const pages=async path=>{
     const all=[];
     for(let page=1;page<=100;page++){
-      const values=await request(`${route}/issues/${issueNumber}/comments?per_page=100&page=${page}`);all.push(...values);
+      const values=await request(`${route}/${path}?per_page=100&page=${page}`);all.push(...values);
       if(values.length<100)return all;
     }
-    throw new Error('Comment pagination exceeded its documented 10,000-comment budget.');
+    throw new Error('Metadata pagination exceeded its documented 10,000-record budget.');
   };
   if(closing.length===1&&closing[0].repository===repository){
     let issue=await request(`${route}/issues/${closing[0].number}`);
     leafChildren=await request(`${route}/issues/${issue.number}/sub_issues?per_page=1`);
-    issueComments=await comments(issue.number);
+    issueComments=await pages(`issues/${issue.number}/comments`);
     for(let depth=0;issue&&depth<4;depth++){
       const parent=await request(`${route}/issues/${issue.number}/parent`,{optional:true});
       chain.push({...issue,parentNumber:parent?.number??null});issue=parent;
     }
   }
-  const ids=reviewRequests(await comments(number),issueComments);
+  const reviews=await pages(`pulls/${number}/reviews`);
+  const ids=reviewRequests(await pages(`issues/${number}/comments`),issueComments,reviews);
   const latest=await request(`${route}/pulls/${number}`);
   if(latest.head.sha!==pr.head.sha||latest.base.sha!==pr.base.sha||latest.body!==pr.body||latest.state!==pr.state||latest.draft!==pr.draft)throw new Error('The PR changed during validation. Rerun against its current head/base.');
   return {pr,closing,chain,leafChildren,reviewRequestIds:ids};

@@ -1,5 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {repository,validateContract,reviewRequests,collectContract} from '../scripts/verify-aidlc.mjs';
+import {mergeCandidate,requiredChecks,validateChecks} from '../scripts/merge-aidlc.mjs';
 
 const head='a'.repeat(40),base='b'.repeat(40);
 function fixture(){return {pr:{number:118,state:'open',draft:false,head:{sha:head},base:{sha:base,ref:'main',repo:{full_name:repository}}},closing:[{number:42,repository}],chain:[
@@ -50,6 +51,7 @@ describe('Loops AIDLC contract',()=>{
       if(parent){const index=value.chain.findIndex(i=>i.number===Number(parent[1]));return value.chain[index+1]??null;}
       if(path.endsWith('/issues/118/comments?per_page=100&page=1'))return Array.from({length:100},(_,id)=>({id,user:{type:'Bot'},body:'unrelated'}));
       if(path.includes('/comments?'))return [];
+      if(path.includes('/reviews?'))return [];
       throw new Error('Unexpected request: '+path);
     };
     expect(validateContract(await collectContract(118,request)).ok).toBe(true);expect(seen).toContain(`repos/${repository}/issues/118/comments?per_page=100&page=2`);
@@ -57,5 +59,57 @@ describe('Loops AIDLC contract',()=>{
   });
   it('does not accept missing GraphQL evidence as a zero-issue success',async()=>{
     const value=fixture();await expect(collectContract(118,async path=>path==='graphql'?{errors:[{message:'denied'}]}:value.pr)).rejects.toThrow('Complete GitHub');
+  });
+});
+
+const review=(id,commit_id=head)=>({id,commit_id,state:'COMMENTED',user:{login:'chatgpt-codex-connector[bot]'}});
+const requestComment=id=>({id,user:{type:'User'},body:'@codex review'});
+const automatic={id:7,user:{login:'chatgpt-codex-connector[bot]',type:'Bot'},body:'<!-- codex-pull-request-review-summary -->\n| 📝 **Code Review** | Running | `aaaaaaa` | PR opened |'};
+describe('automatic and requested review accounting',()=>{
+  it('counts a formal automatic review without any manual marker',()=>{expect(reviewRequests([],[],[review(10)])).toEqual(['review:10']);});
+  it('counts running and clean automatic summaries without double counting a formal result',()=>{
+    expect(reviewRequests([automatic],[],[])).toEqual(['review:7']);
+    expect(reviewRequests([automatic],[],[review(10)])).toEqual(['review:10']);
+    expect(reviewRequests([automatic,requestComment(20)],[],[review(10)])).toHaveLength(2);
+  });
+  it('keeps a mirrored clean automatic round after its summary changes',()=>{
+    expect(reviewRequests([requestComment(20)],[{body:'<!-- loops-review-auto:7 -->'}],[])).toHaveLength(2);
+  });
+  it('reconciles one manual result only with explicit one-to-one evidence',()=>{
+    const receipts=[{body:'<!-- loops-review-request:20 -->\n<!-- loops-review-result:20:30 -->\n<!-- loops-review-auto:10 -->'}];
+    expect(reviewRequests([requestComment(20)],receipts,[review(10),review(30)])).toEqual(['20','review:10']);
+    expect(reviewRequests([],receipts,[review(10),review(30)])).toHaveLength(2);
+    expect(reviewRequests([requestComment(20)],[...receipts,{body:'<!-- loops-review-result:20:40 -->'}],[review(10),review(30),review(40)])).toHaveLength(3);
+  });
+  it('does not use a result to hide two requests or accept an absent result',()=>{
+    expect(reviewRequests([requestComment(20),requestComment(21)],[{body:'<!-- loops-review-result:20:30 -->\n<!-- loops-review-result:21:30 -->'}],[review(30)])).toHaveLength(2);
+    expect(reviewRequests([requestComment(20)],[{body:'<!-- loops-review-result:20:99 -->'}],[review(30)])).toHaveLength(2);
+  });
+  it('rejects four observed runs while ignoring other reviewers and pending submissions',()=>{
+    const value=fixture();value.reviewRequestIds=reviewRequests([requestComment(20),requestComment(21),requestComment(22)],[],[review(10)]);
+    expect(validateContract(value).ok).toBe(false);
+    expect(reviewRequests([],[],[{...review(1),state:'PENDING'},{...review(2),user:{login:'someone-else'}}])).toEqual([]);
+  });
+});
+
+const passingChecks=()=>({total_count:requiredChecks.length,check_runs:requiredChecks.map((name,index)=>({id:index+1,name,head_sha:head,status:'completed',conclusion:'success'}))});
+describe('required current-metadata merge mechanism',()=>{
+  it('rechecks the contract after CI inspection and merges only the reviewed head',async()=>{
+    const calls=[],value=fixture();value.reviewRequestIds=['review:1'];
+    const result=await mergeCandidate(118,{head,base},{collect:async()=>{calls.push('contract');return value;},request:async path=>{expect(path).toContain(head);calls.push('checks');return passingChecks();},merge:async(number,sha)=>{calls.push('merge');expect([number,sha]).toEqual([118,head]);return {merged:true,sha:'c'.repeat(40)};}});
+    expect(calls).toEqual(['contract','checks','contract','merge']);expect(result.checks).toHaveLength(5);
+  });
+  it.each(['closed-parent','fourth-review','changed-head','changed-base','no-review','failed-check'])('does not merge after %s',async mode=>{
+    const value=fixture();value.reviewRequestIds=['review:1'];let reads=0,merged=false;
+    const run=()=>mergeCandidate(118,{head,base},{collect:async()=>{
+      if(++reads===2){if(mode==='closed-parent')value.chain[1].state='closed';if(mode==='fourth-review')value.reviewRequestIds=['1','2','3','4'];if(mode==='changed-head')value.pr.head.sha='c'.repeat(40);if(mode==='changed-base')value.pr.base.sha='c'.repeat(40);if(mode==='no-review')value.reviewRequestIds=[];}
+      return value;
+    },request:async()=>{const checks=passingChecks();if(mode==='failed-check')checks.check_runs[0].conclusion='failure';return checks;},merge:async()=>{merged=true;return {merged:true};}});
+    await expect(run()).rejects.toThrow();expect(merged).toBe(false);
+  });
+  it('does not accept an older pass, another head, missing checks or incomplete pagination',()=>{
+    const older=passingChecks();older.check_runs.push({...older.check_runs[0],id:100,status:'queued',conclusion:null});older.total_count++;expect(()=>validateChecks(older,head)).toThrow('not successful');
+    const foreign=passingChecks();foreign.check_runs[0].head_sha='c'.repeat(40);expect(()=>validateChecks(foreign,head)).toThrow();
+    expect(()=>validateChecks({total_count:0,check_runs:[]},head)).toThrow();expect(()=>validateChecks({...passingChecks(),total_count:101},head)).toThrow('Complete');
   });
 });
