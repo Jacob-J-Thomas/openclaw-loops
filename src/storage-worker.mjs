@@ -41,19 +41,19 @@ const read=()=>{
   const retired=database.prepare('SELECT request_key,record FROM retired_admissions').all();
   return {version:JSON.parse(version.value),loops:Object.fromEntries(database.prepare('SELECT id,record FROM loops').all().map(row=>[row.id,JSON.parse(row.record)])),runs:Object.fromEntries(database.prepare('SELECT id,record FROM runs').all().map(row=>[row.id,JSON.parse(row.record)])),...retired.length?{retiredAdmissions:Object.fromEntries(retired.map(row=>[row.request_key,JSON.parse(row.record)]))}:{}};
 };
-let cached;
-try{if(!startupError)cached=read();}
-catch(error){startupError=error;}
 if(startupError){try{database?.close();}catch{/* Preserve the original startup failure. */}}
-function write(next,runId){
-  const runOnly=runId!==undefined;
+function write(next,runOnly=false){
   database.exec('BEGIN IMMEDIATE');
   try{
+    // The database is the committed baseline. Do not retain another copy of all
+    // history in this worker or send old outputs back to JS just to compare them.
+    if(runOnly&&!database.prepare("SELECT 1 FROM metadata WHERE key='version'").get())throw new Error('Initialize the Loops store before writing an execution checkpoint.');
     if(!runOnly){
     database.prepare("INSERT INTO metadata VALUES ('version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(next.version));
     for(const [id,record] of Object.entries(next.loops)){
-      if(JSON.stringify(record)===JSON.stringify(cached?.loops[id]))continue;
-      database.prepare('INSERT INTO loops VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record').run(id,JSON.stringify(record));
+      const json=JSON.stringify(record);
+      if(database.prepare('SELECT 1 FROM loops WHERE id=? AND record=?').get(id,json))continue;
+      database.prepare('INSERT INTO loops VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record').run(id,json);
       const definitions=Object.values(record.revisions??{[record.definition.revision]:record.definition});
       for(const definition of definitions){
         const json=JSON.stringify(definition);
@@ -62,24 +62,27 @@ function write(next,runId){
         if(!previous)database.prepare('INSERT INTO revisions VALUES (?,?,?)').run(id,definition.revision,json);
       }
     }
-    for(const id of Object.keys(cached?.loops??{}))if(!next.loops[id])database.prepare('DELETE FROM loops WHERE id=?').run(id);
+    for(const {id} of database.prepare('SELECT id FROM loops').all())if(!Object.hasOwn(next.loops,id))database.prepare('DELETE FROM loops WHERE id=?').run(id);
     }
-    for(const [id,run] of runOnly?[[runId,next.runs[runId]]]:Object.entries(next.runs)){
-      const previous=cached?.runs[id];
-      if(JSON.stringify(run)===JSON.stringify(previous))continue;
+    for(const [id,run] of runOnly?[[next.id,next]]:Object.entries(next.runs)){
+      const json=JSON.stringify(run);
+      const previous=database.prepare('SELECT state, record=? AS unchanged FROM runs WHERE id=?').get(json,id);
+      if(previous?.unchanged)continue;
       const owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
-      database.prepare('INSERT INTO runs VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET owner_key=excluded.owner_key,state=excluded.state,created_at=excluded.created_at,record=excluded.record').run(id,owner,run.state,run.createdAt,JSON.stringify(run));
+      database.prepare('INSERT INTO runs VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET owner_key=excluded.owner_key,state=excluded.state,created_at=excluded.created_at,record=excluded.record').run(id,owner,run.state,run.createdAt,json);
       const admission=database.prepare('SELECT run_id,fingerprint FROM admissions WHERE request_key=?').get(run.requestKey);
       if(admission&&(admission.run_id!==id||admission.fingerprint!==run.requestFingerprint))throw new Error('Admission identity conflict.');
       if(!admission)database.prepare('INSERT INTO admissions VALUES (?,?,?)').run(run.requestKey,run.requestFingerprint,id);
       for(let sequence=0;sequence<run.trace.length;sequence++){
         const attempt=run.trace[sequence];
-        if(JSON.stringify(attempt)===JSON.stringify(previous?.trace[sequence]))continue;
-        database.prepare('INSERT INTO attempts VALUES (?,?,?,?,?) ON CONFLICT(run_id,sequence) DO UPDATE SET state=excluded.state,evidence=excluded.evidence').run(id,sequence,attempt.nodeId,attempt.state,JSON.stringify(attempt));
+        const evidence=JSON.stringify(attempt);
+        if(database.prepare('SELECT 1 FROM attempts WHERE run_id=? AND sequence=? AND evidence=?').get(id,sequence,evidence))continue;
+        database.prepare('INSERT INTO attempts VALUES (?,?,?,?,?) ON CONFLICT(run_id,sequence) DO UPDATE SET state=excluded.state,evidence=excluded.evidence').run(id,sequence,attempt.nodeId,attempt.state,evidence);
       }
       for(const [node,value] of Object.entries(run.outputs)){
-        if(JSON.stringify(value)===JSON.stringify(previous?.outputs[node]))continue;
-        database.prepare('INSERT INTO outputs VALUES (?,?,?) ON CONFLICT(run_id,node_id) DO UPDATE SET value=excluded.value').run(id,node,JSON.stringify(value));
+        const output=JSON.stringify(value);
+        if(database.prepare('SELECT 1 FROM outputs WHERE run_id=? AND node_id=? AND value=?').get(id,node,output))continue;
+        database.prepare('INSERT INTO outputs VALUES (?,?,?) ON CONFLICT(run_id,node_id) DO UPDATE SET value=excluded.value').run(id,node,output);
       }
       if(!previous||previous.state!==run.state)database.prepare('INSERT INTO events(run_id,state,at) VALUES (?,?,?)').run(id,run.state,run.updatedAt);
     }
@@ -92,15 +95,15 @@ function write(next,runId){
       if(previous&&previous.record!==JSON.stringify(retired))throw new Error('Retired admission is immutable.');
       if(!previous)database.prepare('INSERT INTO retired_admissions VALUES (?,?)').run(key,JSON.stringify(retired));
     }
-    for(const key of Object.keys(cached?.retiredAdmissions??{}))if(!next.retiredAdmissions?.[key])throw new Error('Retired admission identity cannot be removed.');
-    for(const id of Object.keys(cached?.runs??{}))if(!next.runs[id]){
+    for(const {request_key:key} of database.prepare('SELECT request_key FROM retired_admissions').all())if(!Object.hasOwn(next.retiredAdmissions??{},key))throw new Error('Retired admission identity cannot be removed.');
+    for(const {id,request_key:key} of database.prepare("SELECT id,json_extract(record,'$.requestKey') AS request_key FROM runs").all())if(!Object.hasOwn(next.runs,id)){
       // Explicit retention is the only caller allowed to remove a run.
-      if(!next.retiredAdmissions?.[cached.runs[id].requestKey])throw new Error('History removal requires a retained admission identity.');
+      if(!Object.hasOwn(next.retiredAdmissions??{},key))throw new Error('History removal requires a retained admission identity.');
       for(const table of ['attempts','outputs','events'])database.prepare(`DELETE FROM ${table} WHERE run_id=?`).run(id);
       database.prepare('DELETE FROM runs WHERE id=?').run(id);
     }
     }
-    database.exec('COMMIT');cached=next;
+    database.exec('COMMIT');
   }catch(error){
     try{if(database.isTransaction)database.exec('ROLLBACK');}
     catch(rollbackError){
@@ -121,11 +124,7 @@ parentPort.on('message',async message=>{
     switch(message.operation){
       case 'read':result=read();break;
       case 'write':write(message.payload);break;
-      case 'write-run':{
-        if(!cached)throw new Error('Initialize the Loops store before writing an execution checkpoint.');
-        const run=message.payload;
-        write({...cached,runs:{...cached.runs,[run.id]:run}},run.id);break;
-      }
+      case 'write-run':write(message.payload,true);break;
       case 'backup':await backup(database,message.payload);result=message.payload;break;
       case 'integrity':result=database.prepare('PRAGMA integrity_check').all();break;
       case 'close':database.exec('PRAGMA wal_checkpoint(TRUNCATE)');database.close();break;

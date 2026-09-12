@@ -1,8 +1,27 @@
 # Local verification
 
+## Alpha.13 shared node contracts and worker memory
+
+Both isolated Gateways run **1.0.0-alpha.13** on OpenClaw **2026.9.3**. Tarball SHA-256: `f160c6e6c1062204d79a54d56bb1f5511263ae0ac29241db772ceb96328125f3`. Installed backend, worker, UI and manifest match the archive. This evidence update follows packaging and is separate from executable identity. Evidence is under `evidence/release-alpha13/`.
+
+The internal node registry now supplies the schemas, binding inputs, producer outputs, capability declarations, exit ports, execution and editor defaults for all nine current kinds. The complete definition schema matches commit `8feee20` byte for byte (SHA-256 `02990425c54289c384d33e54ddd7cfe8648138122971ca90d72ce2a5eace1020`). Existing version 1/2 definitions retain their contract. A registry-authored combined workflow executes six Repeat iterations, forwards explicit temperature zero, survives a parked restart, rejects agent approval, and reaches both human-approved Return and human-rejected Fail outcomes. Native browser inspection verifies the palette, model-action inspector and Advanced controls without editing saved definitions or local drafts.
+
+SQLite checkpoints now compare against committed rows without retaining a second history copy in the worker. A separate 1,000-run synthetic fixture measured settled worker heap after a V8 heap snapshot at **98,298,752 bytes before** and **5,541,136 bytes after**, with exact output retrieval and integrity checks. The process-level benchmark did not show a reliable peak RSS reduction, and the main engine still loads complete history. Worker memory improvement is not a whole-application capacity guarantee. Private measurement sources and receipts are under `evidence/storage-worker/` and `.dev-profile/measure-worker-memory.mjs`.
+
+**155 source tests** pass on macOS arm64 and local Linux arm64 with Node **24.16.0/26.1.0**. Types, lint, build and **25 extracted-package SDK tests** pass. All five compiled/metadata files match across platforms. Both Linux test containers had no network or host mounts, exited 0 and had no OOM. Real 16 MB tmpfs exhaustion rejected admission before any host effect, preserved committed state, and recovered with one explicit new invocation and `integrity_check=ok`. The 2 GB validation VM was stopped before live inference.
+
+The stopped-state upgrade backup is `.dev-profile/backups/before-alpha13-1789228534863`. Every application table stayed unchanged through installation and restart: Codex 10 definitions/131 runs, Ollama 6 definitions/30 runs. Subsequent synthetic smoke tests added two runs to each profile. Saved definitions, personal profiles, configured model servers and the default Docker context were unchanged.
+
+| Profile | Fresh user command | Fresh agent tool | Outcome |
+|---|---|---|---|
+| Codex, Sol selected only in the synthetic conversation | `ba50a4fa-c8b0-40a1-b350-633e779be46f` | `09a0275a-adef-433b-b6a4-4ef8340ad989` | Same enabled revision 1; exact input and newly reported run-ID assertions passed. |
+| Separate Ollama server, `qwen3.5:4b` | `6f5b75f1-cfeb-46f6-92ef-f4b67e83c37c` | `5f554d9a-e16c-4906-b255-ac926972f4fe` | Same enabled revision 1; exact input and newly reported run-ID assertions passed. |
+
+This is a verified local alpha, not a 1.0 release. Public CI/registry publication, host identity/account integration, broader deployment/resource acceptance and the later expansion milestones remain open.
+
 ## Alpha.12 actionable failure diagnostics
 
-Both isolated Gateways run **1.0.0-alpha.12** on OpenClaw **2026.9.3**. Final tarball SHA-256: `1598eb51c95434c32fc18417871cb78dfe42ef3fa36d5d46b892ddd37cf161bc`. Installed backend, worker, native UI and manifest match that archive. Evidence is under `evidence/release-alpha12/`; this documentation update follows packaging and is separate from executable identity.
+At this checkpoint, both isolated Gateways ran **1.0.0-alpha.12** on OpenClaw **2026.9.3**. Final tarball SHA-256: `1598eb51c95434c32fc18417871cb78dfe42ef3fa36d5d46b892ddd37cf161bc`. Installed backend, worker, native UI and manifest match that archive. Evidence is under `evidence/release-alpha12/`; this documentation update follows packaging and is separate from executable identity.
 
 The source passes **153 tests** on macOS arm64 Node **24.16.0/26.1.0** and local Debian Linux arm64 with the same versions. Typecheck, lint, build and **25 extracted-package tests through the actual feature SDK** pass. All compiled files, manifest and package metadata match across platforms. Both Linux containers used no network or host mounts, exited 0 and had no OOM. The 2 GB validation VM is stopped; the pre-existing default VM and Docker context are unchanged. The Mac UI-only follow-up reused the unchanged backend/worker test evidence and passed fresh type/lint/build/package checks plus native browser verification.
 

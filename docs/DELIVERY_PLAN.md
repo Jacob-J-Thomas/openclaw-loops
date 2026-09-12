@@ -30,7 +30,7 @@ These are findings from the 0.3.0 implementation, not claims that every possible
 | R12 | Restart marks all running work uncertain with no committed-checkpoint continuation. | Attempt journal and checkpoint recovery; never automatically replay unknown effects; explicit retry/restart ancestry. |
 | R13 | Two-run rejection and premature cancellation slot release. | Queue with configurable concurrency; retain physical execution accounting until cleanup; cancellation prevents downstream dispatch. |
 | R14 | 20-loop and 50-run caps can reject work or evict useful history. | Pagination and configurable retention; protect active/parked/referenced/settling records; no implicit data deletion. |
-| R15 | Small flat scalar input/output schemas and a 5-iteration maximum. | Version 2 contracts, zero inputs, nested JSON and safe traversal, configurable repeat/budgets; retain version 1 semantics. |
+| R15 | Small flat scalar input/output schemas and a 5-iteration maximum. | Version 2 contracts, zero inputs, nested JSON and safe traversal, configurable repeat/budgets; retain version 1 semantics. One internal node-contract registry covers validation, inputs, outputs, execution and editor configuration. |
 | R16 | Large outputs are discarded/clipped without agent retrieval. | Persist complete outputs, paged/ref retrieval and previews; documented transport/storage budgets. |
 | R17 | UI-only inspection, review and history; weak output schemas. | Shared typed operations with agent parity for every non-human-only operation; explicit authenticated human decisions only at review nodes. |
 | R18 | No capability/preflight surface. | Distinguish configured, authorized, supported, available and unknown; diagnose before running where possible. |

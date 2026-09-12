@@ -42,7 +42,7 @@ describe('plugin-owned SQLite worker',()=>{
     await engine.close();
     const reopened=new SqliteStorage(filename);cleanups.push(()=>reopened.close());expect(reopened.read()).toEqual(saved);
   });
-  it('rolls back a conflicting run-only admission and retains the previously committed cache',async()=>{
+  it('rolls back a conflicting run-only admission and retains the committed state',async()=>{
     const {filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());
     const actor:Actor={agentId:'main',sessionKey:'agent:main:checkpoint-conflict',sessionId:'conflict-session',source:'tool',human:false,check:()=>{}};
     const engine=new Engine(store,{check:()=>{},modelInfo:async()=>({}),complete:async()=>({text:'Committed output'})});
@@ -52,6 +52,28 @@ describe('plugin-owned SQLite worker',()=>{
     const next=await engine.test(actor,examples[0],{text:'After rejection'},'new-admission');expect(next.state).toBe('completed');
     expect(store.read()?.runs[run.id]).toEqual(run);expect(store.read()?.runs['conflicting-run']).toBeUndefined();
     expect(store.integrity()).toEqual([{integrity_check:'ok'}]);await engine.close();
+  });
+  it('compares against committed rows after reopen without rewriting unchanged history',async()=>{
+    const {filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());
+    const actor:Actor={agentId:'main',sessionKey:'agent:main:checkpoint-reopen',sessionId:'reopen-session',source:'tool',human:false,check:()=>{}};
+    const engine=new Engine(store,{check:()=>{},modelInfo:async()=>({}),complete:async()=>({text:'Committed output'})});
+    const run=await engine.test(actor,examples[0],{text:'Retained'},'retained');await engine.close();
+    const reopened=new SqliteStorage(filename);cleanups.push(()=>reopened.close());const state=reopened.read()!;
+    const database=new DatabaseSync(filename);cleanups.push(()=>database.close());
+    for(const table of ['runs','attempts','outputs','events'])database.exec(`CREATE TRIGGER unchanged_${table} BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT,'Unchanged history was rewritten'); END;`);
+    reopened.write(state);reopened.writeRun(run);
+    // Changing only the run must not reinsert its identical attempts or outputs,
+    // nor append an event when the state has not changed.
+    database.exec('DROP TRIGGER unchanged_runs');
+    const updated={...run,updatedAt:new Date(Date.parse(run.updatedAt)+1000).toISOString()};
+    reopened.writeRun(updated);
+    expect(reopened.read()?.runs[run.id]).toEqual(updated);
+    expect(database.prepare('SELECT count(*) AS count FROM attempts WHERE run_id=?').get(run.id)?.count).toBe(run.trace.length);
+    expect(database.prepare('SELECT count(*) AS count FROM outputs WHERE run_id=?').get(run.id)?.count).toBe(Object.keys(run.outputs).length);
+    const invalid=structuredClone(state);delete invalid.runs[run.id];
+    expect(()=>reopened.write(invalid)).toThrow('History removal requires a retained admission identity.');
+    expect(reopened.read()?.runs[run.id]).toEqual(updated);
+    expect(reopened.integrity()).toEqual([{integrity_check:'ok'}]);
   });
   it('keeps returned and persisted run outcomes consistent after SQLite rejects completion',async()=>{
     const {filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());

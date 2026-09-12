@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from '
 import { dirname } from 'node:path';
 import { bind, compare, display, isJson, parseDefinition, parseDefinitionContent, parseDefinitionPatch, validateGraph, validateInput, type BindingContext, type Capability, type Definition, type GraphNode, type Json } from './graph.js';
 import { examples } from './examples.js';
+import {nodeContract,childNodes,type NodeExecutionContext} from './node-contracts.js';
 import type {OpenClawPluginApi} from 'openclaw/plugin-sdk/plugin-entry';
 import {completionParameters,validateAdvanced,type InferenceSettings,type InferenceCapabilities} from './inference-settings.js';
 import {LoopError,requestError,executionError,errorDetail,type LoopErrorData} from './errors.js';
@@ -257,28 +258,20 @@ export class Engine{
     try{while(r.state==='running'){
       signal.throwIfAborted();this.allowedRun(actor,r);
       const n=r.definition.nodes.find(n=>n.id===r.cursor);if(!n)throw executionError('Execution cursor is invalid.','LOOPS_INVALID_GRAPH');
-      const evidence=this.begin(r,n);let result:Json={};let port='next';
-      switch(n.kind){
-        case'input':result={fields:Object.keys(r.input)};break;
-        case'inference':result=await this.infer(actor,r,n,ctx,signal);break;
-        case'action':this.host.check(actor,n.capability);result=await this.host.modelInfo(actor);break;
-        case'condition':{const passed=compare(n.predicate,ctx,r.definition.schemaVersion);result={value:passed};port=passed?'true':'false';break;}
-        case'repeat':{
-          let succeeded=false,last:Json={},iteration=0;
-          for(iteration=1;iteration<=n.maxIterations;iteration++){
-            signal.throwIfAborted();this.allowedRun(actor,r);ctx.repeat={index:iteration};
-            const inference=n.body[0],condition=n.body[1];const infEvidence=this.begin(r,inference,iteration);
-            last=await this.infer(actor,r,inference,ctx,signal);signal.throwIfAborted();this.finish(r,infEvidence,last);r.outputs[inference.id]=last;
-            const testEvidence=this.begin(r,condition,iteration);succeeded=compare(condition.predicate,ctx,r.definition.schemaVersion);this.finish(r,testEvidence,{value:succeeded});
-            if(succeeded)break;
-          }
-          delete ctx.repeat;result={...(last as Record<string,Json>),succeeded,iterations:Math.min(iteration,n.maxIterations),exhausted:!succeeded};break;
-        }
-        case'wait':this.finish(r,evidence,bind(n.message,ctx));r.state='waiting';r.pending=evidence.output;evidence.state='waiting';break;
-        case'review':this.finish(r,evidence,bind(n.proposal,ctx));r.state='review';r.pending=evidence.output;evidence.state='review';break;
-        case'return':r.result=bind(n.value,ctx);result=r.result;r.state='completed';break;
-        case'fail':throw executionError(display(bind(n.reason,ctx)),'LOOPS_EXPLICIT_FAILURE');
-      }
+      const evidence=this.begin(r,n);
+      const contextFor=(iteration?:number):BindingContext=>iteration===undefined?ctx:{...ctx,repeat:{index:iteration}};
+      const execution:NodeExecutionContext={
+        signal,input:r.input,bind:template=>bind(template,ctx),compare:(predicate,iteration)=>compare(predicate,contextFor(iteration),r.definition.schemaVersion),
+        infer:(node,iteration)=>this.infer(actor,r,node,contextFor(iteration),signal),modelInfo:()=>this.host.modelInfo(actor),
+        requireCapability:capability=>this.host.check(actor,capability),checkAuthority:()=>this.allowedRun(actor,r),
+        begin:(node,iteration)=>{this.begin(r,node,iteration);return r.trace.length-1;},
+        finish:(sequence,output)=>this.finish(r,r.trace[sequence],output),setOutput:(id,output)=>{r.outputs[id]=output;},
+      };
+      const dispatched=nodeContract(n.kind).execute(n,execution);
+      const outcome=dispatched instanceof Promise?await dispatched:dispatched;
+      const result=outcome.output,port=outcome.port??'next';
+      if(outcome.park){this.finish(r,evidence,outcome.park.value);r.state=outcome.park.state;r.pending=evidence.output;evidence.state=outcome.park.state;}
+      if(outcome.returned){r.result=result;r.state='completed';}
       signal.throwIfAborted();if(terminal(r)&&r.state!=='completed')break;
       this.allowedRun(actor,r);
       if(evidence.state==='running')this.finish(r,evidence,result);else evidence.endedAt=now();
@@ -321,5 +314,5 @@ export class Engine{
     }catch(error){throw new LoopError(errorDetail(error,{phase:'inference',nodeId:n.id,model:n.model??actor.model}),{cause:error});}
   }
   capabilities(actor:Actor,settings:InferenceSettings={}){actor.check();const inference=this.host.capabilities?.(actor,settings)??{...(settings.model??actor.model)?{model:settings.model??actor.model}:{},configured:'unknown' as const,authorized:'unknown' as const,available:'unknown' as const,parameters:completionParameters(),notes:[]};return {...inference,budgets:{...this.budgets},concurrency:this.options.concurrency??1};}
-  validate(actor:Actor,value:unknown){actor.check();const definition=parseDefinition(value,this.budgets);const issues=validateGraph(definition);for(const node of definition.nodes.flatMap(n=>n.kind==='repeat'?[...n.body]:[n]))if(node.kind==='inference')for(const message of validateAdvanced(node.advanced,this.capabilities(actor,node).parameters))issues.push({nodeId:node.id,message});return {valid:issues.length===0,issues};}
+  validate(actor:Actor,value:unknown){actor.check();const definition=parseDefinition(value,this.budgets);const issues=validateGraph(definition);for(const node of definition.nodes.flatMap(n=>[n,...childNodes(n)]))if(node.kind==='inference')for(const message of validateAdvanced(node.advanced,this.capabilities(actor,node).parameters))issues.push({nodeId:node.id,message});return {valid:issues.length===0,issues};}
 }

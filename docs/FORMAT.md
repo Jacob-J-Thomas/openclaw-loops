@@ -45,3 +45,7 @@ Within Repeat, `{{repeat.index}}` is one-based. Its Condition may read the immed
 `output: "json"` requires the actual completion to parse as a flat object with at most 16 scalar fields. Invalid data fails before downstream dispatch. The original `text` and validated `value` are both inspectable. Model attribution is supplied by OpenClaw and retained with each inference output.
 
 Limits are server enforced; UI validation helps authoring but cannot grant authority. `layout` stores finite x/y coordinates in the range ±10,000. Layout does not affect execution. See [capabilities](CAPABILITIES.md) for execution, size, retention and concurrency bounds.
+
+## Internal node contracts
+
+The current sequential palette is defined by `src/node-contracts.ts`. Each kind supplies a strict schema, required capabilities, input binding references, output fields, exit ports, execution handler and editor metadata/defaults. The engine retains control of authorization, transaction checkpoints, cancellation, budgets and human-review decisions. Registry handlers receive those bounded operations rather than the host API or storage. This is an internal structure for the existing palette; it does not introduce an external node-loading API or the later script/agent/control-flow families. Alpha.13 preserves the complete definition wire schema and version 1/2 execution semantics.
