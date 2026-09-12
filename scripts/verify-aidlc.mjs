@@ -35,34 +35,33 @@ export function validateContract(snapshot){
 }
 
 export const isCodexReview=review=>review.user?.login==='chatgpt-codex-connector[bot]'&&review.state!=='PENDING';
+export const trustedReceipt=comment=>comment.user?.login?.toLowerCase()===repository.split('/')[0].toLowerCase()||comment.author_association==='COLLABORATOR';
 export function reviewRequests(prComments,issueComments,reviews=[]){
-  const ids=prComments.filter(comment=>comment.user?.type!=='Bot'&&/^\s*@codex\s+review\b/im.test(comment.body??'')).map(comment=>String(comment.id));
-  // Mirror request IDs on the Bolt so deleting a PR comment cannot reset the
-  // visible budget. Never place credentials or raw runtime traces in receipts.
-  for(const comment of issueComments)for(const match of (comment.body??'').matchAll(/<!-- loops-review-request:(\d+) -->/g))ids.push(match[1]);
-  const requests=new Set(ids),results=new Set(reviews.filter(isCodexReview).map(review=>String(review.id))),pairedRequests=new Set(),pairedResults=new Set();
+  const receipts=issueComments.filter(trustedReceipt);
+  const requests=new Set(prComments.filter(comment=>trustedReceipt(comment)&&/^\s*@codex\s+review\b/im.test(comment.body??'')).map(comment=>String(comment.id)));
+  const results=new Set(reviews.filter(isCodexReview).map(review=>String(review.id))),summaries=new Set();
   for(const comment of prComments){
     if(comment.user?.login!=='chatgpt-codex-connector[bot]'||!(comment.body??'').includes('<!-- codex-pull-request-review-summary -->'))continue;
-    const row=comment.body.split('\n').find(line=>line.includes('**Code Review**')&&/\|\s*PR opened\s*\|/.test(line));
-    if(!row)continue;
-    const commit=/`([a-f0-9]{7,40})`/.exec(row)?.[1];
-    const result=reviews.filter(review=>isCodexReview(review)&&commit&&review.commit_id?.startsWith(commit)).sort((a,b)=>a.id-b.id)[0];
-    // Clean automatic reviews can finish with a reaction and no formal review;
-    // running automatic reviews also consume a slot before their result exists.
-    results.add(String(result?.id??comment.id));
+    if(comment.body.split('\n').some(line=>line.includes('**Code Review**')&&/\|\s*PR opened\s*\|/.test(line)))summaries.add(String(comment.id));
   }
-  for(const comment of issueComments){
-    // Unpaired review records count independently, including automatic reviews.
-    // Only an explicit one-to-one receipt can reconcile a request and response;
-    // timestamps alone cannot distinguish overlapping automatic/manual runs.
-    for(const match of (comment.body??'').matchAll(/<!-- loops-review-result:(\d+):(\d+) -->/g)){
-      const [,requestId,resultId]=match;
-      if(requests.has(requestId)&&results.has(resultId)&&!pairedRequests.has(requestId)&&!pairedResults.has(resultId)){pairedRequests.add(requestId);pairedResults.add(resultId);}
-    }
-    for(const match of (comment.body??'').matchAll(/<!-- loops-review-auto:(\d+) -->/g))results.add(match[1]);
+  for(const comment of receipts){
+    for(const match of (comment.body??'').matchAll(/<!-- loops-review-request:(\d+) -->/g))requests.add(match[1]);
+    for(const match of (comment.body??'').matchAll(/<!-- loops-review-auto:(?:(summary|review):)?(\d+) -->/g))(match[1]==='summary'?summaries:results).add(match[2]);
   }
-  for(const id of results)if(!pairedResults.has(id))requests.add('review:'+id);
-  return [...requests];
+  // A summary and formal review are different observations until their exact
+  // causal relationship is recorded. Same-commit or time proximity proves none.
+  const roots=new Set([...requests,...[...summaries].map(id=>'summary:'+id)]),byRoot=new Map(),byResult=new Map();
+  const pair=(root,result)=>{
+    if(!roots.has(root)||!results.has(result))return;
+    if(!byRoot.has(root))byRoot.set(root,new Set());byRoot.get(root).add(result);
+    if(!byResult.has(result))byResult.set(result,new Set());byResult.get(result).add(root);
+  };
+  for(const comment of receipts){
+    for(const match of (comment.body??'').matchAll(/<!-- loops-review-result:(\d+):(\d+) -->/g))pair(match[1],match[2]);
+    for(const match of (comment.body??'').matchAll(/<!-- loops-review-auto-result:(\d+):(\d+) -->/g))pair('summary:'+match[1],match[2]);
+  }
+  for(const [result,owners] of byResult)if(owners.size===1&&byRoot.get([...owners][0]).size===1)results.delete(result);
+  return [...roots,...[...results].map(id=>'review:'+id)];
 }
 
 export async function github(endpoint,{body,optional=false}={}){

@@ -35,8 +35,8 @@ describe('Loops AIDLC contract',()=>{
     ['a fourth review request',s=>{s.reviewRequestIds=['1','2','3','4'];}],
   ])('rejects %s',(_name,mutate)=>{const value=fixture();mutate(value);expect(validateContract(value)).toMatchObject({ok:false,errors:expect.arrayContaining([expect.any(String)])});});
   it('retains mirrored review requests after deletion and does not count bot help or duplicate receipts',()=>{
-    const ids=reviewRequests([{id:12,user:{type:'User'},body:'@codex review\nRound 2/3.'},{id:88,user:{type:'Bot'},body:'@codex review is how to request review.'}],
-      [{body:'<!-- loops-review-request:11 -->'},{body:'<!-- loops-review-request:12 -->'},{body:'<!-- loops-review-request:12 -->'}]);
+    const ids=reviewRequests([{...authored('@codex review\nRound 2/3.'),id:12},{id:88,user:{type:'Bot'},body:'@codex review is how to request review.'}],
+      [authored('<!-- loops-review-request:11 -->'),authored('<!-- loops-review-request:12 -->'),authored('<!-- loops-review-request:12 -->')]);
     expect(ids.sort()).toEqual(['11','12']);const value=fixture();value.reviewRequestIds=ids;expect(validateContract(value).reviewRequests).toBe(2);
   });
   it('uses authoritative closing references and native parents, paginates comments and rejects a moving head',async()=>{
@@ -63,32 +63,47 @@ describe('Loops AIDLC contract',()=>{
 });
 
 const review=(id,commit_id=head)=>({id,commit_id,state:'COMMENTED',user:{login:'chatgpt-codex-connector[bot]'}});
-const requestComment=id=>({id,user:{type:'User'},body:'@codex review'});
+const authored=body=>({body,user:{login:'Jacob-J-Thomas',type:'User'},author_association:'OWNER'});
+const requestComment=id=>({...authored('@codex review'),id});
 const automatic={id:7,user:{login:'chatgpt-codex-connector[bot]',type:'Bot'},body:'<!-- codex-pull-request-review-summary -->\n| 📝 **Code Review** | Running | `aaaaaaa` | PR opened |'};
 describe('automatic and requested review accounting',()=>{
   it('counts a formal automatic review without any manual marker',()=>{expect(reviewRequests([],[],[review(10)])).toEqual(['review:10']);});
-  it('counts running and clean automatic summaries without double counting a formal result',()=>{
-    expect(reviewRequests([automatic],[],[])).toEqual(['review:7']);
-    expect(reviewRequests([automatic],[],[review(10)])).toEqual(['review:10']);
-    expect(reviewRequests([automatic,requestComment(20)],[],[review(10)])).toHaveLength(2);
+  it('counts automatic summaries separately until a formal result is explicitly attributed',()=>{
+    expect(reviewRequests([automatic],[],[])).toEqual(['summary:7']);
+    expect(reviewRequests([automatic],[],[review(10)])).toHaveLength(2);
+    expect(reviewRequests([automatic],[authored('<!-- loops-review-auto-result:7:10 -->')],[review(10)])).toEqual(['summary:7']);
+    expect(reviewRequests([automatic,requestComment(20)],[authored('<!-- loops-review-auto-result:7:10 -->')],[review(10)])).toHaveLength(2);
   });
   it('keeps a mirrored clean automatic round after its summary changes',()=>{
-    expect(reviewRequests([requestComment(20)],[{body:'<!-- loops-review-auto:7 -->'}],[])).toHaveLength(2);
+    expect(reviewRequests([requestComment(20)],[authored('<!-- loops-review-auto:summary:7 -->')],[])).toHaveLength(2);
   });
   it('reconciles one manual result only with explicit one-to-one evidence',()=>{
-    const receipts=[{body:'<!-- loops-review-request:20 -->\n<!-- loops-review-result:20:30 -->\n<!-- loops-review-auto:10 -->'}];
+    const receipts=[authored('<!-- loops-review-request:20 -->\n<!-- loops-review-result:20:30 -->\n<!-- loops-review-auto:review:10 -->')];
     expect(reviewRequests([requestComment(20)],receipts,[review(10),review(30)])).toEqual(['20','review:10']);
     expect(reviewRequests([],receipts,[review(10),review(30)])).toHaveLength(2);
-    expect(reviewRequests([requestComment(20)],[...receipts,{body:'<!-- loops-review-result:20:40 -->'}],[review(10),review(30),review(40)])).toHaveLength(3);
+    expect(reviewRequests([requestComment(20)],[...receipts,authored('<!-- loops-review-result:20:40 -->')],[review(10),review(30),review(40)])).toHaveLength(4);
   });
   it('does not use a result to hide two requests or accept an absent result',()=>{
-    expect(reviewRequests([requestComment(20),requestComment(21)],[{body:'<!-- loops-review-result:20:30 -->\n<!-- loops-review-result:21:30 -->'}],[review(30)])).toHaveLength(2);
-    expect(reviewRequests([requestComment(20)],[{body:'<!-- loops-review-result:20:99 -->'}],[review(30)])).toHaveLength(2);
+    expect(reviewRequests([requestComment(20),requestComment(21)],[authored('<!-- loops-review-result:20:30 -->\n<!-- loops-review-result:21:30 -->')],[review(30)])).toHaveLength(3);
+    expect(reviewRequests([requestComment(20)],[authored('<!-- loops-review-result:20:99 -->')],[review(30)])).toHaveLength(2);
   });
   it('rejects four observed runs while ignoring other reviewers and pending submissions',()=>{
     const value=fixture();value.reviewRequestIds=reviewRequests([requestComment(20),requestComment(21),requestComment(22)],[],[review(10)]);
     expect(validateContract(value).ok).toBe(false);
     expect(reviewRequests([],[],[{...review(1),state:'PENDING'},{...review(2),user:{login:'someone-else'}}])).toEqual([]);
+  });
+  it('does not collapse a clean automatic round into a later manual result on the same commit',()=>{
+    const receipts=[authored('<!-- loops-review-request:20 -->\n<!-- loops-review-result:20:30 -->')];
+    expect(reviewRequests([automatic,requestComment(20)],receipts,[review(30)])).toEqual(['20','summary:7']);
+    const conflict=[...receipts,authored('<!-- loops-review-auto-result:7:30 -->')];
+    expect(reviewRequests([automatic,requestComment(20)],conflict,[review(30)])).toHaveLength(3);
+  });
+  it('ignores unauthenticated markers and requests, including forged pairings',()=>{
+    const stranger={user:{login:'stranger',type:'User'},author_association:'NONE'};
+    const forged=[{...stranger,body:'<!-- loops-review-request:1 --><!-- loops-review-request:2 --><!-- loops-review-request:3 --><!-- loops-review-request:4 -->'}, {...stranger,body:'<!-- loops-review-result:20:30 -->'}];
+    expect(reviewRequests([{...stranger,id:1,body:'@codex review'}],forged,[])).toEqual([]);
+    expect(reviewRequests([requestComment(20)],forged,[review(30)])).toHaveLength(2);
+    expect(reviewRequests([],[{...authored('<!-- loops-review-request:1 -->'),user:{login:'maintainer'},author_association:'COLLABORATOR'}],[])).toEqual(['1']);
   });
 });
 
