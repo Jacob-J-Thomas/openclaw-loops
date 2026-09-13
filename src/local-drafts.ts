@@ -35,6 +35,16 @@ export function saveLocalDraft(store:BrowserStore,scope:string,definition:Defini
   const draft:LocalDraft={definition,base,updatedAt:new Date().toISOString()};
   store.setItem(prefix(scope)+definition.id,JSON.stringify(draft));return draft;
 }
+export function ownedLocalDraftReceipt(receipt:LocalDraftReceipt|null,scope:string,definition:Definition,base:Definition|null){
+  if(!receipt||receipt.scope!==scope||receipt.id!==definition.id)return null;
+  try{const snapshot=JSON.parse(receipt.serialized) as LocalDraft;return sameDefinition(snapshot.definition,definition)&&sameDefinition(snapshot.base,base)?receipt:null;}catch{return null;}
+}
+// A successful save owns only the snapshot that was present when it began.
+// Keep a newer write from another tab (or a later edit in this tab) recoverable.
+export function removeOwnedLocalDraft(store:BrowserStore,receipt:LocalDraftReceipt|null){
+  if(!receipt||store.getItem(prefix(receipt.scope)+receipt.id)!==receipt.serialized)return false;
+  store.removeItem(prefix(receipt.scope)+receipt.id);return true;
+}
 export function listLocalDrafts(store:BrowserStore,scope:string):{drafts:LocalDraft[];errors:string[]}{
   const drafts:LocalDraft[]=[],errors:string[]=[];
   for(let index=0;index<store.length;index++){

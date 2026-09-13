@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {saveLocalDraft,listLocalDrafts,removeLocalDraft,sameDefinition,definitionHasChanges,syncLocalDraft} from '../src/local-drafts.js';
+import {saveLocalDraft,listLocalDrafts,removeLocalDraft,ownedLocalDraftReceipt,removeOwnedLocalDraft,sameDefinition,definitionHasChanges,syncLocalDraft} from '../src/local-drafts.js';
 import {examples} from '../src/examples.js';
 function browserStore(){const values=new Map<string,string>();return {get length(){return values.size;},key:(i:number)=>[...values.keys()][i]??null,getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>{values.set(key,value);},removeItem:(key:string)=>{values.delete(key);}};}
 describe('recoverable browser drafts',()=>{
@@ -42,5 +42,41 @@ describe('recoverable browser drafts',()=>{
     expect(listLocalDrafts(store,'scope').drafts[0].definition.name).toBe(other.name);
     const receipt=syncLocalDraft(store,'scope',mine,saved,null);saveLocalDraft(store,'scope',other,saved);
     syncLocalDraft(store,'scope',saved,saved,receipt);expect(listLocalDrafts(store,'scope').drafts[0].definition.name).toBe(other.name);
+  });
+  it('removes only the snapshot owned when a successful save began',()=>{
+    const store=browserStore(),saved=examples[0],mine={...saved,name:'Saved from this tab'},other={...examples[1],name:'Other loop'},otherScope={...saved,name:'Other scope'};
+    saveLocalDraft(store,'scope',other,null);saveLocalDraft(store,'other-scope',otherScope,null);
+    const receipt=syncLocalDraft(store,'scope',mine,saved,null);expect(receipt).not.toBeNull();
+    expect(removeOwnedLocalDraft(store,ownedLocalDraftReceipt(receipt,'scope',mine,saved))).toBe(true);
+    expect(listLocalDrafts(store,'scope').drafts).toMatchObject([{definition:{id:other.id,name:other.name}}]);
+    expect(listLocalDrafts(store,'other-scope').drafts).toMatchObject([{definition:{id:otherScope.id,name:otherScope.name}}]);
+  });
+  it('keeps a newer replacement written before or during an asynchronous save',()=>{
+    const store=browserStore(),saved=examples[0],mine={...saved,name:'Older save'},before={...saved,name:'Newer before save'},during={...saved,name:'Newer during save'};
+    const receipt=syncLocalDraft(store,'scope',mine,saved,null);expect(receipt).not.toBeNull();
+    saveLocalDraft(store,'scope',before,saved);expect(removeOwnedLocalDraft(store,receipt)).toBe(false);
+    expect(listLocalDrafts(store,'scope').drafts[0]?.definition.name).toBe(before.name);
+    const laterReceipt=syncLocalDraft(store,'scope',mine,saved,null);saveLocalDraft(store,'scope',during,saved);
+    expect(removeOwnedLocalDraft(store,laterReceipt)).toBe(false);
+    expect(listLocalDrafts(store,'scope').drafts[0]?.definition.name).toBe(during.name);
+  });
+  it('keeps a newer receipt through the saved definition clean-up effect',()=>{
+    const store=browserStore(),saved=examples[0],older={...saved,name:'Older save'},newer={...saved,name:'Newer edit'};
+    const savingReceipt=syncLocalDraft(store,'scope',older,saved,null);expect(savingReceipt).not.toBeNull();
+    const newerReceipt=syncLocalDraft(store,'scope',newer,saved,savingReceipt);expect(newerReceipt).not.toBeNull();
+    expect(removeOwnedLocalDraft(store,savingReceipt)).toBe(false);
+    // Save clears its owned receipt before receive(saved), so the clean effect
+    // has no ownership to remove from the newer stored snapshot.
+    expect(syncLocalDraft(store,'scope',saved,saved,null)).toBeNull();
+    expect(listLocalDrafts(store,'scope').drafts[0]?.definition.name).toBe(newer.name);
+  });
+  it('does not admit a receipt for a different scope, loop, or local definition',()=>{
+    const store=browserStore(),saved=examples[0],mine={...saved,name:'My draft'},changed={...saved,name:'Changed before save'};
+    const receipt=syncLocalDraft(store,'scope',mine,saved,null);expect(receipt).not.toBeNull();
+    expect(ownedLocalDraftReceipt(receipt,'other-scope',mine,saved)).toBeNull();
+    expect(ownedLocalDraftReceipt(receipt,'scope',examples[1],saved)).toBeNull();
+    expect(ownedLocalDraftReceipt(receipt,'scope',changed,saved)).toBeNull();
+    expect(removeOwnedLocalDraft(store,ownedLocalDraftReceipt(receipt,'scope',changed,saved))).toBe(false);
+    expect(listLocalDrafts(store,'scope').drafts[0]?.definition.name).toBe(mine.name);
   });
 });
