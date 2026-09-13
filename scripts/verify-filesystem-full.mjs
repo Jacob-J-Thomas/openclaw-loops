@@ -73,8 +73,23 @@ try{
   assert.equal(recovered.state,'completed');assert.equal(effects,1);
   assert.equal(recovered.result,'Explicit recovery completed.');
   const integrity=store.integrity();assert.deepEqual(integrity,[{integrity_check:'ok'}]);
+  const maintenanceActor={...actor,sessionId:'synthetic-maintenance'},links={runs:[],loops:[],documents:[],unknown:false};
+  const firstDocument=reopenedDocuments.snapshot(maintenanceActor,{text:'A'.repeat(1024*1024)},links,false);
+  const secondDocument=reopenedDocuments.snapshot(maintenanceActor,{text:'B'.repeat(1024*1024)},links,false);
+  const maintenancePolicy={keepLatest:0},referenceInventory={runs:new Set(),loops:new Set()};
+  const maintenancePreview=reopenedDocuments.maintenance(maintenanceActor,maintenancePolicy,referenceInventory);
+  assert.deepEqual(new Set(maintenancePreview.candidates.map(file=>file.id)),new Set([firstDocument.documentId,secondDocument.documentId]));
+  const beforeCleanup=statfsSync(directory);
+  const maintenanceResult=reopenedDocuments.maintenance(maintenanceActor,maintenancePolicy,referenceInventory,maintenancePreview.planId);
+  assert.equal(maintenanceResult.applied,true);
+  const afterCleanup=statfsSync(directory),reclaimedBytes=(afterCleanup.bavail-beforeCleanup.bavail)*afterCleanup.bsize;
+  assert(reclaimedBytes>=maintenancePreview.bytes,'Dedicated tmpfs blocks were not actually reclaimed.');
+  const reopenedMaintenance=new DocumentStore(documentDirectory);
+  assert.equal(reopenedMaintenance.maintenance(maintenanceActor,maintenancePolicy,referenceInventory).total,0);
+  assert.equal(reopenedMaintenance.read(actor,existing.documentId).text,JSON.stringify({value:'Previously committed document.'}));
+  const maintenance={filesRemoved:maintenanceResult.candidates.length,logicalBytesRemoved:maintenancePreview.bytes,reclaimedBytes,reopenedEmpty:true,otherConversationPreserved:true};
   const result={node:process.version,platform:process.platform,arch:process.arch,filesystem:'tmpfs',capacityBytes:capacity.blocks*capacity.bsize,fillerBytes,fillError,freeBlocksAtFailure:full.bavail,rejected,committedStateUnchanged:true,effectsBeforeRecovery:0,effectsAfterRecovery:effects,recoveryState:recovered.state,integrity,
-    documents:{failures:transportFailures,committedFilesUnchanged:true,failedTemporaryFilesRemoved:true,existingDocumentReadableWhileFull:true,reopenedUploadCompleted:true,identicalRetryPreserved:true,completeContentVerified:true}};
+    documents:{failures:transportFailures,committedFilesUnchanged:true,failedTemporaryFilesRemoved:true,existingDocumentReadableWhileFull:true,reopenedUploadCompleted:true,identicalRetryPreserved:true,completeContentVerified:true,maintenance}};
   mkdirSync(dirname(destination),{recursive:true});writeFileSync(destination,JSON.stringify(result,null,2)+'\n');
   console.log(JSON.stringify(result));
 }finally{

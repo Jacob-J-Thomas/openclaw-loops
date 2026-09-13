@@ -56,7 +56,7 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/ff7f326b2810c8d90cf809266cd0c24f7daac6ee1e76feeb13fb942dfd05a93d/index.js"
+    "entry": "dist/control-ui/f14b0e838c58fdf5ef1452298d33f901b50b92ebc79cbbb541a96adf5864c42f/index.js"
   },
   "contracts": {
     "tools": [
@@ -69,6 +69,8 @@
       "loops_deleted",
       "loops_describe",
       "loops_document",
+      "loops_document_acquire",
+      "loops_document_release",
       "loops_draft",
       "loops_edit",
       "loops_enable",
@@ -77,6 +79,7 @@
       "loops_library",
       "loops_list",
       "loops_read",
+      "loops_maintenance",
       "loops_output",
       "loops_publish",
       "loops_recover",
@@ -90,6 +93,7 @@
       "loops_save",
       "loops_status",
       "loops_test",
+      "loops_transport_release",
       "loops_upload",
       "loops_validate",
       "loops_versions"

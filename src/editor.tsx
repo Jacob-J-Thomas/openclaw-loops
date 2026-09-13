@@ -8,6 +8,7 @@ import type {Engine,LoopRecord,Run} from './engine.js';
 import type {RunReceipt} from './receipts.js';
 import {InferenceEditor} from './inference-editor.js';
 import {HistoryCleanup} from './history-cleanup.js';
+import {TransportCleanup} from './transport-cleanup.js';
 import {LibraryBrowser} from './library-browser.js';
 import {FailureNotice,displayFailure,type DisplayFailure} from './failure-notice.js';
 import {ValueEditor} from './value-editor.js';
@@ -161,6 +162,7 @@ export function Editor({host}:{host:ControlUiHost}){
       <div className="lp-run-inspection"><div className="lp-section-heading"><h2>Run inspection</h2><div><select aria-label="Select run" value={activeId} onChange={e=>setActiveId(e.target.value)}><option value="">Choose a run…</option>{activeId&&!runs.some(item=>item.id===activeId)&&<option value={activeId}>Selected run · {activeId.slice(0,8)}</option>}{runs.map(r=><option key={r.id} value={r.id}>{r.slug} · r{r.revision} · {r.state} · {r.id.slice(0,8)}</option>)}</select><button onClick={()=>void perform(refresh)}>Refresh</button></div></div>
         <div className="lp-history-pages"><button disabled={historyCursor===0} onClick={()=>setHistoryCursor(Math.max(0,historyCursor-100))}>Newer runs</button><span aria-live="polite">{historyTotal?`${historyCursor+1}–${Math.min(historyCursor+100,historyTotal)} of ${historyTotal}`:'No runs'}</span><button disabled={historyCursor+100>=historyTotal} onClick={()=>setHistoryCursor(historyCursor+100)}>Older runs</button></div>
         <HistoryCleanup key={draftScope} disabled={!sessionKey||busy} invoke={(policy,applyPlanId)=>feature.invoke('retention',{policy,...applyPlanId?{applyPlanId}:{}},options)} onApplied={ids=>{if(ids.includes(activeId)){setActiveId('');setRun(null);}void perform(refresh);}}/>
+        <TransportCleanup key={`transport:${draftScope}`} disabled={!sessionKey||busy} invoke={(policy,applyPlanId)=>feature.invoke('maintenance',{policy,...applyPlanId?{applyPlanId}:{}},options)} release={input=>feature.invoke('transport_release',input,options)}/>
         {run?<><div className="lp-run-meta"><span className={`lp-badge ${run.state}`}>{run.state}</span><code>{run.id}</code><span>r{run.definition.revision}</span><span>{run.executions} node executions</span><span>{run.source}</span></div><div className="lp-run-meta lp-muted"><span>{run.owner.agentId} · {run.owner.sessionId.slice(0,8)}</span><span>{new Date(run.createdAt).toLocaleString()}</span><span>Updated {new Date(run.updatedAt).toLocaleTimeString()}</span></div>
         {run.cleanupPending&&<p role="status">Cancellation is recorded. Waiting for the host call to finish cleanup; its execution slot remains occupied.</p>}
         <FailureNotice failure={run.errorDetail??run.error??''} label="Run failure"/>

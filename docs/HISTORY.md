@@ -25,7 +25,7 @@ Queued, running, waiting and review runs are protected. Cancelled or failed runs
 
 Removal atomically deletes the run, attempt records, outputs and state-transition events. A small immutable admission tombstone keeps its request ID and fingerprint reserved across restart. Reusing that request ID returns `LOOPS_HISTORY_REMOVED`; it never repeats the old execution. Supply a new ID only when a new execution is intentional.
 
-Deletion here is not secure erasure. SQLite can reuse released pages; immutable transport documents, staged uploads, retained backups and original legacy JSON remain separate copies. No automatic compaction, document garbage collection or backup deletion is performed. Those storage-maintenance capabilities remain tracked release work.
+Deletion here is not secure erasure. SQLite can reuse released pages; immutable transport documents, staged uploads, retained backups and original legacy JSON remain separate copies. [Transport file cleanup](TRANSPORT.md#explicit-transport-file-maintenance) provides a separate preview/apply operation for eligible document copies and staging files. Retained runs and revisions protect their referenced documents. No automatic compaction, garbage collection or backup deletion is performed.
 
 ## SQLite upgrade
 
