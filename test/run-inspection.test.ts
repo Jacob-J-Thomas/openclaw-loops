@@ -14,10 +14,25 @@ describe('run inspection',()=>{
     const html=render();expect(html).toContain('Pinned published workflow');expect(html).toContain('Pinned repeat');expect(html).toContain('Pinned body');expect(html).toContain('read-only');expect(html).toContain('data-handleid="next"');
   });
   it.each([0,false,null])('keeps recorded scalar output %j distinct from missing evidence',value=>{
-    const recorded={...run,outputs:{repeat:value}};expect(inspectionOutput(recorded,'repeat')).toEqual({label:'Recorded output',value});const html=render(recorded);expect(html).toContain('Recorded output');expect(html).toContain(String(value));
+    const recorded={...run,parentRunId:undefined,outputs:{repeat:value}};expect(inspectionOutput(recorded,'repeat')).toEqual({label:'Recorded output',value});const html=render(recorded);expect(html).toContain('Recorded output');expect(html).toContain(String(value));
   });
   it('keeps a trace output distinct from missing and unstarted evidence',()=>{
     const withoutOutputs={...run,outputs:{}};expect(inspectionOutput(withoutOutputs,'repeat')).toEqual({label:'Recorded trace output',value:'false'});expect(inspectionOutput(withoutOutputs,'wait')).toEqual({label:'Node was not started'});
+  });
+  it('separates inherited recovery output from a value committed by this child attempt',()=>{
+    const failedChild={...run,outputs:{repeat:0},trace:[{nodeId:'repeat',kind:'repeat',state:'failed' as const,startedAt:'2026-01-01T00:00:03.000Z',error:'interrupted'}]};expect(inspectionOutput(failedChild,'repeat')).toEqual({label:'Inherited from parent run',value:0});
+    const committedChild={...run,outputs:{repeat:false},trace:[{nodeId:'repeat',kind:'repeat',state:'completed' as const,startedAt:'2026-01-01T00:00:03.000Z',output:'false'}]};expect(inspectionOutput(committedChild,'repeat')).toEqual({label:'Recorded in this recovery',value:false});
+  });
+  it('uses actual pending and completed Wait evidence instead of the empty checkpoint output',()=>{
+    const parked={...run,cursor:'wait',state:'waiting' as const,pending:'Actual wait instruction',outputs:{wait:{}},trace:[]};expect(inspectionOutput(parked,'wait')).toEqual({label:'Pending Wait checkpoint',value:'Actual wait instruction'});
+    const continued={...run,cursor:'return',state:'completed' as const,pending:undefined,outputs:{wait:{}},trace:[{nodeId:'wait',kind:'wait',state:'completed' as const,startedAt:'2026-01-01T00:00:03.000Z',output:'Actual wait instruction'}]};expect(inspectionOutput(continued,'wait')).toEqual({label:'Wait checkpoint evidence',value:'Actual wait instruction'});
+  });
+  it('uses the pending Human review proposal instead of its empty contract output',()=>{
+    const reviewDefinition=parseDefinition({...pinned,nodes:[pinned.nodes[0],pinned.nodes[1],{id:'review',kind:'review',label:'Pinned review',proposal:'Approve this actual proposal'},{id:'return',kind:'return',label:'Pinned return',value:'{{nodes.repeat.text}}'}],edges:[{id:'a',source:'input',target:'repeat',port:'next'},{id:'b',source:'repeat',target:'review',port:'next'},{id:'c',source:'review',target:'return',port:'approve'}],layout:{input:{x:0,y:0},repeat:{x:240,y:0},review:{x:480,y:0},return:{x:720,y:0}}});
+    const parked={...run,definition:reviewDefinition,cursor:'review',state:'review' as const,pending:'Actual proposal from execution',outputs:{review:{}},trace:[]};expect(inspectionOutput(parked,'review')).toEqual({label:'Pending Human review proposal',value:'Actual proposal from execution'});
+  });
+  it('directs inherited checkpoint placeholders to the parent without inventing checkpoint text',()=>{
+    expect(inspectionOutput({...run,cursor:'return',outputs:{wait:{}},trace:[]},'wait')).toEqual({label:'See parent run for checkpoint evidence'});
   });
   it('renders parent inspection, export, and keyboard node selection controls',()=>{
     const html=render();expect(html).toContain('Inspect parent run');expect(html).toContain('Export run evidence');expect(html).toContain('Select executed node');expect(html).toContain('parent-run');

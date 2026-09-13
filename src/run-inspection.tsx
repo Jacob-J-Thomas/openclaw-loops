@@ -9,8 +9,18 @@ type OutputState={label:string;value?:Json|string};
 
 function display(value:unknown){return typeof value==='string'?value:JSON.stringify(value,null,2);}
 export function inspectionOutput(run:Run,nodeId:string):OutputState{
-  if(Object.hasOwn(run.outputs,nodeId))return {label:'Recorded output',value:run.outputs[nodeId]};
   const evidence=[...run.trace].reverse().find(item=>item.nodeId===nodeId);
+  const node=run.definition.nodes.find(item=>item.id===nodeId);
+  if(node?.kind==='wait'||node?.kind==='review'){
+    const checkpoint=node.kind==='wait'?'Wait checkpoint':'Human review proposal';
+    if(run.cursor===nodeId&&run.pending!==undefined&&((node.kind==='wait'&&run.state==='waiting')||(node.kind==='review'&&run.state==='review')))return {label:`Pending ${checkpoint}`,value:run.pending};
+    if(evidence&&Object.hasOwn(evidence,'output'))return {label:`${checkpoint} evidence`,value:evidence.output!};
+    if(run.parentRunId&&Object.hasOwn(run.outputs,nodeId))return {label:'See parent run for checkpoint evidence'};
+  }
+  if(Object.hasOwn(run.outputs,nodeId)){
+    if(run.parentRunId&&!(evidence?.state==='completed'&&Object.hasOwn(evidence,'output')))return {label:'Inherited from parent run',value:run.outputs[nodeId]};
+    return {label:run.parentRunId?'Recorded in this recovery':'Recorded output',value:run.outputs[nodeId]};
+  }
   if(evidence&&Object.hasOwn(evidence,'output'))return {label:'Recorded trace output',value:evidence.output!};
   if(evidence)return {label:`${evidence.state} without output`};
   return {label:'Node was not started'};
