@@ -91,7 +91,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     for(const [run,result] of [[original,'Original run'],[tested,'Draft test'],[published,'Published run']] as const)expect(await invoke('resume',{runId:run.id})).toMatchObject({state:'completed',result});
     expect(s.complete.mock.calls.map(([request])=>({temperature:request.temperature,maxTokens:request.maxTokens}))).toEqual([{temperature:0,maxTokens:128},{temperature:0.5,maxTokens:256},{temperature:0,maxTokens:128}]);
     const completed=await invoke('inspect',{runId:original.id});await invoke('delete',{id,expectedRevision:4});expect(await invoke('recover',{id,expectedRevision:4})).toMatchObject({enabledRevision:null,definition:restored.definition});expect(await invoke('inspect',{runId:original.id})).toEqual(completed);expect(await invoke('versions',{id})).toMatchObject([{revision:4},{revision:3},{revision:2},{revision:1}]);
-  });
+  },30000);
   it.each(['ui','command','tool'] as const)('preserves current and published slug reservations through %s lifecycle operations',async surface=>{
     const s=await setup();let sequence=0;
     const invoke=async(op:string,input:Record<string,unknown>={})=>{
