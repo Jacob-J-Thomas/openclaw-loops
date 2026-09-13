@@ -4,6 +4,8 @@ import {commandReply,commandPage,commandReplyLimit,formatCommandResult,parseComm
 import type {PluginCommandContext} from 'openclaw/plugin-sdk/plugin-entry';
 import {textPage} from '../src/feature-json.js';
 import type {DocumentReference} from '../src/wire-contract.js';
+import {fitsToolReply,toolPage} from '../src/tool-replies.js';
+import {jsonResult} from 'openclaw/plugin-sdk/tool-results';
 
 const reference:DocumentReference={kind:'loops-document',documentId:'a'.repeat(64),sha256:'b'.repeat(64),bytes:1,read:'loops_document',description:'Immutable result'};
 describe('conversation reply envelope',()=>{
@@ -45,5 +47,15 @@ describe('conversation reply envelope',()=>{
   });
   it('keeps small, empty, final and beyond-end pages and explicit small limits unchanged',()=>{
     for(const offset of [0,1,3,20])for(const limit of [1,2,16000]){const page={runId:'run',nodeId:null,format:'text',...textPage('🙂ab',offset,limit)};expect(commandPage(page)).toBe(page);}
+  });
+  it.each(['x','🙂','\u0000','"\\\r\n'])('fits direct and deferred SDK tool results without losing content (%#)',sample=>{
+    const text=sample.repeat(17000);let offset=0,full='';
+    while(true){
+      const source={documentId:reference.documentId,sha256:reference.sha256,...textPage(text,offset)},page=toolPage(source,'loops_document'),result=jsonResult(page);
+      expect(fitsToolReply(page,'loops_document')).toBe(true);expect(result.content[0].type).toBe('text');
+      expect(JSON.stringify({tool:{id:'openclaw:loops-poc:loops_document',name:'loops_document',source:'openclaw'},result},null,2).length).toBeLessThanOrEqual(16000);
+      full+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBe(offset+Array.from(page.text).length);expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;
+    }
+    expect(full).toBe(text);
   });
 });

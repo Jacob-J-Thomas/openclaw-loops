@@ -11,6 +11,7 @@ import {commandHelp,parseCommandInvocation,commandReply,commandPage} from './com
 import {receipt,describe} from './receipts.js';
 import {LoopError,requestError,errorDetail,safeFailure} from './errors.js';
 import {outputs} from './output-schemas.js';
+import {fitsToolReply,toolPage} from './tool-replies.js';
 
 // OpenClaw may evaluate the external plugin for more than one registry scope.
 // Keep one plugin-owned executor per state directory in this Gateway process.
@@ -82,10 +83,14 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     if(!Value.Check(operation.input,payload))throw requestError('Uploaded or inline input does not match the operation schema.');
     const result=await (handler as (input:unknown,context:FeatureInvocationContext)=>unknown)(payload,context);
     if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
-    actor.check();return service().invoke('documentWrap',actor,result);
+    actor.check();
+    const tool='tool' in operation?operation.tool.name:undefined;
+    const value=context.source==='tool'&&tool&&name==='output'&&Value.Check(outputs.output,result)?toolPage(result,tool):result;
+    const output=await service().invoke('documentWrap',actor,value);
+    return context.source==='tool'&&tool&&!fitsToolReply(output,tool)?service().invoke('documentSnapshot',actor,output):output;
   })])) as FeatureHandlers<typeof wireContract>;
   const wireHandlers:FeatureHandlers<typeof wireContract>={...wrapped,
-    document:(p,c)=>safely('document',c,actor=>service().invoke('documentRead',actor,p.documentId,p.offset,p.limit)),
+    document:(p,c)=>safely('document',c,async actor=>{const page=await service().invoke('documentRead',actor,p.documentId,p.offset,p.limit);return c.source==='tool'?toolPage(page,'loops_document'):page;}),
     upload:(p,c)=>safely('upload',c,actor=>service().invoke('documentUpload',actor,p)),
   };
   return wireHandlers;

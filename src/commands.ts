@@ -6,7 +6,7 @@ import {outputs} from './output-schemas.js';
 import {parseCommand,formatRun} from './openclaw.js';
 import {requestError} from './errors.js';
 import type {RunReceipt} from './receipts.js';
-import type {textPage} from './feature-json.js';
+import {fitTextPage,type textPage} from './feature-json.js';
 
 // Verified conversation display envelope on OpenClaw 2026.9.3. Measure the
 // complete reply in UTF-16 units, including JSON escaping and instructions.
@@ -80,11 +80,5 @@ export async function commandReply(value:unknown,snapshot:(value:unknown)=>Promi
 // Page reads must make progress directly, rather than snapshotting a page into
 // another document. Preserve offsets in Unicode code points after shrinking.
 export function commandPage<T extends ReturnType<typeof textPage>>(page:T):T{
-  if(formatCommandResult(page).length<=commandReplyLimit)return page;
-  const characters=Array.from(page.text);
-  const take=(count:number):T=>({...page,text:characters.slice(0,count).join(''),nextOffset:count<characters.length?page.offset+count:page.nextOffset});
-  let low=0,high=characters.length;
-  while(low<high){const middle=Math.ceil((low+high)/2);if(formatCommandResult(take(middle)).length<=commandReplyLimit)low=middle;else high=middle-1;}
-  if(low===0)throw requestError('The page metadata exceeds the conversation reply envelope.','LOOPS_COMMAND_REPLY_LIMIT','Retrieve this page through loops_document/loops_output or the editor.');
-  return take(low);
+  return fitTextPage(page,value=>formatCommandResult(value).length<=commandReplyLimit);
 }

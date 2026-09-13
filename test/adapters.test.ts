@@ -50,11 +50,21 @@ async function commandJson(s:Awaited<ReturnType<typeof setup>>,op:string,input:u
   let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset});expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
 }
+async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Record<string,unknown>,callId=`fixture-${name}`){
+  const invoke=async(name:string,input:Record<string,unknown>)=>{
+    const result=await s.tools.find(t=>t.name===`loops_${name}`)!.execute(callId,input);
+    for(const content of result.content)if(content.type==='text')expect(content.text.length).toBeLessThanOrEqual(8000);
+    expect(JSON.stringify({tool:{id:`openclaw:loops-poc:loops_${name}`,name:`loops_${name}`,source:'openclaw'},result},null,2).length).toBeLessThanOrEqual(16000);return result.details;
+  };
+  const value=await invoke(name,input);if(!Value.Check(DocumentReferenceSchema,value))return value as Record<string,unknown>;
+  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset}) as {text:string;offset:number;nextOffset:number|null;sha256:string};expect(page.offset).toBe(offset);expect(page.sha256).toBe(value.sha256);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+}
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   it('shares explicit JSON values and unfinished drafts through agent tools, conversation commands and the editor SDK',async()=>{
     const s=await setup();
     const command=(op:string,input:unknown={})=>commandJson(s,op,input);
-    const tool=async(name:string,input:Record<string,unknown>)=>(await s.tools.find(t=>t.name===`loops_${name}`)!.execute(`json-${name}`,input)).details as Record<string,unknown>;
+    const tool=(name:string,input:Record<string,unknown>)=>toolJson(s,name,input,`json-${name}`);
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
     const client=createLoopsClient(transport),{id:_id,revision:_revision,schemaVersion:_version,...content}=structuredClone(examples[0]);
     content.slug='typed-sdk';content.inputSchema=[];content.capabilities=[];content.limits.maxOutputBytes=100000;
@@ -84,7 +94,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     await expect(client.invoke('test',{definition:{...record.definition,schemaVersion:1},input:{},requestId:'invalid-version'})).rejects.toThrow();
     const versions=await client.invoke('versions',{id});expect(versions.map(v=>v.revision)).toEqual([4,3,2,1]);
     for(const service of s.services)await service.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);
-    const reopened=await setup({root:s.root});const read=(await reopened.tools.find(t=>t.name==='loops_read')!.execute('read-json',{id})).details;
+    const reopened=await setup({root:s.root});const read=await toolJson(reopened,'read',{id},'read-json');
     expect(read).toMatchObject({enabledRevision:3,definition:{revision:4,nodes:draft.nodes}});
     expect(s.complete).not.toHaveBeenCalled();expect(reopened.complete).not.toHaveBeenCalled();
   });
@@ -278,6 +288,14 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const run=JSON.parse((await handler({...s.commandContext,args})).text!);expect(run).toMatchObject({state:'completed',resultTruncated:true});
     expect(await commandJson(s,'inspect',{runId:run.id})).toMatchObject({input:{text},result:text});expect(s.complete).not.toHaveBeenCalled();
   });
+  it('retrieves complete documents and outputs through actual direct and deferred SDK tool envelopes',async()=>{
+    const s=await setup(),{id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='tool-envelope';definition.capabilities=[];
+    const text='🙂\u0000"\\\n'.repeat(9000);definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];definition.edges=[{id:'entry',source:'input',target:'return',port:'next'}];definition.limits.maxOutputBytes=1000000;
+    await toolJson(s,'create',{definition});const run=await toolJson(s,'run',{slug:definition.slug,input:{text},requestId:'tool-complete'});expect(run).toMatchObject({state:'completed',resultTruncated:true});
+    const inspected=await toolJson(s,'inspect',{runId:run.id});expect(inspected).toMatchObject({result:text,input:{text}});
+    let output='',offset=0;while(true){const page=await toolJson(s,'output',{runId:run.id,offset,limit:100000});expect(page.offset).toBe(offset);output+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBe(offset+Array.from(page.text).length);offset=page.nextOffset;}
+    expect(output).toBe(text);expect(s.complete).not.toHaveBeenCalled();
+  },30_000);
   it('snapshots formatted command results and help, preserving pages through edits and restart',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler;
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='command-envelope';definition.capabilities=[];definition.inputSchema=[];
@@ -571,8 +589,8 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await call('loops_enable',{id,revision:2,enabled:false})).details).toMatchObject({enabledRevision:null});
     expect((await call('loops_enable',{id,revision:2,enabled:true})).details).toMatchObject({enabledRevision:2});
     expect((await call('loops_revoke',{id})).details).toMatchObject({enabledRevision:null,grants:[]});
-    expect((await call('loops_edit',{id,expectedRevision:2,changes:{name:'Published again'},enabled:true})).details).toMatchObject({record:{enabledRevision:3}});
-    expect((await call('loops_edit',{id,expectedRevision:3,changes:{name:'Explicit draft'},enabled:false})).details).toMatchObject({record:{enabledRevision:null}});
+    expect(await toolJson(s,'edit',{id,expectedRevision:2,changes:{name:'Published again'},enabled:true})).toMatchObject({record:{enabledRevision:3}});
+    expect(await toolJson(s,'edit',{id,expectedRevision:3,changes:{name:'Explicit draft'},enabled:false})).toMatchObject({record:{enabledRevision:null}});
     expect(s.complete).toHaveBeenCalledOnce();
   });
   it('returns truthful waits and refuses generic review approval',async()=>{const s=await setup();await s.action('enable',{id:'read-pause-continue',revision:1,enabled:true,grants:['llm','model-info']});const result=await s.tools.find(t=>t.name==='loops_run')!.execute('pause',{slug:'read-pause-continue',input:{text:'A'}});expect(result.details).toMatchObject({state:'waiting',definition:{revision:1}});expect(s.complete).not.toHaveBeenCalled();});
