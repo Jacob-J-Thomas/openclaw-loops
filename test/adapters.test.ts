@@ -1,4 +1,4 @@
-import {afterEach,describe,it,expect,vi} from 'vitest';
+import {beforeAll,afterEach,describe,it,expect,vi} from 'vitest';
 import {mkdtempSync,rmSync,renameSync,readFileSync,writeFileSync,readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -15,10 +15,12 @@ import {createLoopsClient} from '../src/feature-client.js';
 import {fitsFeatureJson} from '../src/feature-json.js';
 import type {FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
 type ToolRegistration=Parameters<OpenClawPluginApi['registerTool']>[0];
+import {execFileSync} from 'node:child_process';
+beforeAll(()=>{if(!process.env.LOOPS_TEST_PLUGIN)execFileSync(process.execPath,['scripts/build.mjs'],{stdio:'pipe'});},30_000);
 const directories:string[]=[];
 const shutdowns:Array<()=>Promise<void>>=[];
 afterEach(async()=>{for(const shutdown of shutdowns.splice(0))await shutdown();for(const dir of directories.splice(0))rmSync(dir,{recursive:true,force:true});});
-function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>}){
+async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>}){
   const root=options?.root??mkdtempSync(join(tmpdir(),'loops-adapters-'));if(!options?.root)directories.push(root);
   const commands=new Map<string,OpenClawPluginCommandDefinition>(),actions=new Map<string,PluginSessionActionRegistration>(),registered:ToolRegistration[]=[];const services:OpenClawPluginService[]=[];
   const key='agent:main:adapter-test',sessionId='adapter-session';
@@ -27,7 +29,7 @@ function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenCl
   const config={plugins:{entries:{'loops-poc':{enabled:true}}}};
   const api={id:'loops-poc',config,runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>agentId==='main'&&sessionKey===key?{sessionId}:undefined}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
   plugin.register(api);
-  if(options?.start!==false)for(const s of services){s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
+  if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
   const toolContext:OpenClawPluginToolContext={agentId:'main',sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
   const tools=registered.flatMap(t=>{const value=typeof t==='function'?t(toolContext):t;return Array.isArray(value)?value:value?[value]:[];});
   const commandContext={agentId:'main',sessionKey:key,sessionId,senderId:'host-sender',channel:'webchat',isAuthorizedSender:true,gatewayClientScopes:['operator.admin','operator.write'],config} as unknown as PluginCommandContext;
@@ -36,7 +38,7 @@ function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenCl
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   it('shares searchable library pages and stale-cursor diagnostics across commands, tools and UI',async()=>{
-    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const s=await setup(),handler=s.commands.get('loops')!.handler;
     const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
     const client=createLoopsClient(transport),tool=s.tools.find(t=>t.name==='loops_browse')!;
@@ -56,12 +58,12 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await command('library')).length).toBe(27);expect(s.complete).not.toHaveBeenCalled();
   });
   it('exposes capability discovery through the real conversation command',async()=>{
-    const s=setup();
+    const s=await setup();
     const reply=await s.commands.get('loops')!.handler({...s.commandContext,args:'capabilities {}'});
     expect(JSON.parse(reply.text!)).toMatchObject({parameters:expect.any(Array),concurrency:1});
   });
   it('authors and versions the same enabled definitions through commands, tools and UI',async()=>{
-    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const s=await setup(),handler=s.commands.get('loops')!.handler;
     const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);
     definition.slug='command-authored';const inference=definition.nodes.find(node=>node.kind==='inference');if(inference?.kind!=='inference')throw Error();inference.advanced={temperature:0,maxTokens:800};
@@ -88,7 +90,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.complete).not.toHaveBeenCalled();
   });
   it('uses command-bound inference and fresh or explicit retry identities for JSON invocation and recovery',async()=>{
-    const s=setup(),handler=s.commands.get('loops')!.handler,bound=vi.fn(s.complete.getMockImplementation()!);
+    const s=await setup(),handler=s.commands.get('loops')!.handler,bound=vi.fn(s.complete.getMockImplementation()!);
     const context={...s.commandContext,runtimeContext:{llm:{complete:bound}}};
     const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...context,args:`${op} ${JSON.stringify(input)}`})).text!);
     await command('enable',{id:'summarize-text',revision:1,enabled:true});
@@ -110,7 +112,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(tested).toMatchObject({state:'completed',testMode:true});expect(bound).toHaveBeenCalledTimes(6);
   });
   it('validates command identity and authority before mutation and retains optimistic conflicts',async()=>{
-    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const s=await setup(),handler=s.commands.get('loops')!.handler;
     const args=`edit ${JSON.stringify({id:'summarize-text',expectedRevision:1,changes:{name:'Command edit'}})}`;
     expect((await handler({...s.commandContext,isAuthorizedSender:false,args})).text).toContain('Unauthorized');
     expect((await handler({...s.commandContext,gatewayClientScopes:['operator.read'],args})).text).toContain('write access');
@@ -127,7 +129,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.complete).not.toHaveBeenCalled();
   });
   it('rejects host-truncated commands before admitting an altered input',async()=>{
-    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const s=await setup(),handler=s.commands.get('loops')!.handler;
     await s.action('enable',{id:'summarize-text',revision:1,enabled:true});
     const args='run summarize-text '+'Important source. '.repeat(400),before=await s.action('runs',{});
     const reply=await handler({...s.commandContext,commandBody:'/loops '+args,args:args.slice(0,4096)});
@@ -135,7 +137,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('runs',{})).toEqual(before);expect(s.complete).not.toHaveBeenCalled();
   });
   it('retrieves complete command results and accepts the same staged inputs as tools',async()=>{
-    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const s=await setup(),handler=s.commands.get('loops')!.handler;
     const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='command-large';
     definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];definition.edges=[{id:'edge',source:'input',target:'return',port:'next'}];definition.capabilities=[];definition.limits.maxOutputBytes=1024*1024;
@@ -156,15 +158,15 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(output).toBe(text);expect(s.complete).not.toHaveBeenCalled();
   });
   it('restarts after a failed storage close instead of retaining a stopped executor',async()=>{
-    const s=setup(),service=s.services.find(service=>service.id==='loops-poc-store')!,ctx={} as Parameters<OpenClawPluginService['start']>[0];
+    const s=await setup(),service=s.services.find(service=>service.id==='loops-poc-store')!,ctx={} as Parameters<OpenClawPluginService['start']>[0];
     const post=Worker.prototype.postMessage;
     const spy=vi.spyOn(Worker.prototype,'postMessage').mockImplementation(function(this:Worker,message,transfers){return post.call(this,message.operation==='close'?{...message,operation:'injected-close-failure'}:message,transfers);});
-    try{await expect(service.stop?.(ctx)).rejects.toThrow('Unknown storage operation.');}finally{spy.mockRestore();}
+    try{await expect(service.stop?.(ctx)).rejects.toThrow('Unknown service operation.');}finally{spy.mockRestore();}
     await service.start(ctx);
     expect(await s.action('load',{id:'summarize-text'})).toMatchObject({result:{definition:{id:'summarize-text',revision:1}}});
   });
   it('releases storage after engine startup fails so the repaired store can start',async()=>{
-    const s=setup({start:false}),service=s.services.find(service=>service.id==='loops-poc-store')!,ctx={} as Parameters<OpenClawPluginService['start']>[0];
+    const s=await setup({start:false}),service=s.services.find(service=>service.id==='loops-poc-store')!,ctx={} as Parameters<OpenClawPluginService['start']>[0];
     const filename=join(s.root,'loops-poc','loops.sqlite'),store=new SqliteStorage(filename),d={...structuredClone(examples[0]),revision:1};
     store.write({version:1,loops:{[d.id]:{definition:d,enabledRevision:null,grants:[]}},runs:{}});await store.close();
     const fault=new DatabaseSync(filename);
@@ -177,7 +179,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('load',{id:d.id})).toMatchObject({result:{definition:{id:d.id,revision:1}}});
   });
   it('surfaces known safe conflicts through the wire result and the shared UI client',async()=>{
-    const s=setup();await s.action('edit',{id:'summarize-text',expectedRevision:1,changes:{name:'Concurrent saved version'}});
+    const s=await setup();await s.action('edit',{id:'summarize-text',expectedRevision:1,changes:{name:'Concurrent saved version'}});
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
     const client=createLoopsClient(transport);
     await expect(client.invoke('edit',{id:'summarize-text',expectedRevision:1,changes:{name:'Must not replace'}})).rejects.toMatchObject({detail:{code:'LOOPS_REVISION_CONFLICT',message:expect.stringMatching(/Save conflict/)}});
@@ -190,7 +192,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.complete).not.toHaveBeenCalled();
   });
   it('reports actual rejected storage writes to UI, tools and commands without private trigger text or inference',async()=>{
-    const s=setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true});
+    const s=await setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true});
     const fault=new DatabaseSync(join(s.root,'loops-poc','loops.sqlite'));
     const privateText='Synthetic private SQL and credential marker';
     const before=await s.action('runs',{});
@@ -210,7 +212,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     }finally{fault.close();}
   });
   it('reports inaccessible transport storage through UI, tools and commands and stops automatic upload before mutation',async()=>{
-    const s=setup(),before=await s.action('library',{}),directory=join(s.root,'loops-poc','documents'),backup=directory+'-before-fault';
+    const s=await setup(),before=await s.action('library',{}),directory=join(s.root,'loops-poc','documents'),backup=directory+'-before-fault';
     renameSync(directory,backup);writeFileSync(directory,'Private filesystem fault marker');
     const calls:string[]=[],transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
       calls.push(params.actionId as string);return s.action(params.actionId as string,params.payload as Record<string,unknown>);
@@ -230,7 +232,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('upload',input)).toMatchObject({result:{completed:true,reference:{$loopsUpload:expect.any(String)}}});
   });
   it('retains a page-read failure through the UI client and document adapters without returning partial content',async()=>{
-    const s=setup(),directory=join(s.root,'loops-poc','documents'),calls:string[]=[];
+    const s=await setup(),directory=join(s.root,'loops-poc','documents'),calls:string[]=[];
     let damage=false,filename='',saved='';
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
       calls.push(params.actionId as string);
@@ -259,7 +261,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await client.invoke('load',{id:definition.id})).definition.nodes[1]).toMatchObject({value:large});expect(s.complete).not.toHaveBeenCalled();
   });
   it('reports upload validation conflicts consistently and preserves the previously staged value',async()=>{
-    const s=setup(),input={uploadId:'conflict',offset:0,text:'{}'};await s.action('upload',input);
+    const s=await setup(),input={uploadId:'conflict',offset:0,text:'{}'};await s.action('upload',input);
     const changed={...input,text:'[]'},ui=await s.action('upload',changed),tool=await s.tools.find(tool=>tool.name==='loops_upload')!.execute('upload-conflict',changed);
     const command=await s.commands.get('loops')!.handler({...s.commandContext,args:`upload ${JSON.stringify(changed)}`});
     expect(ui).toMatchObject({result:{kind:'loops-error',operation:'upload',error:{code:'LOOPS_UPLOAD_CONFLICT'}}});
@@ -269,7 +271,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.complete).not.toHaveBeenCalled();
   });
   it('keeps provider credentials out of results and persisted history while identifying the failed node model',async()=>{
-    const s=setup(),nodes=structuredClone(examples[0].nodes),node=nodes[1];
+    const s=await setup(),nodes=structuredClone(examples[0].nodes),node=nodes[1];
     if(node.kind!=='inference')throw new Error('Expected fixture inference.');node.model='fake/node-override';
     await s.action('edit',{id:'summarize-text',expectedRevision:1,changes:{nodes},enabled:true});
     const secret='SYNTHETIC_PROVIDER_SECRET';
@@ -286,7 +288,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.complete).toHaveBeenCalledTimes(2);
   });
   it('exposes matching requested history cleanup to agent tools and authorized UI operations',async()=>{
-    const s=setup(),definition={...structuredClone(examples[0]),schemaVersion:2,capabilities:[],inputSchema:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'Synthetic retained result'}],edges:[{id:'a',source:'input',target:'return',port:'next'}]};
+    const s=await setup(),definition={...structuredClone(examples[0]),schemaVersion:2,capabilities:[],inputSchema:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'Synthetic retained result'}],edges:[{id:'a',source:'input',target:'return',port:'next'}]};
     const run=(await s.tools.find(tool=>tool.name==='loops_test')!.execute('history-fixture',{definition,input:{}})).details as {id:string};
     const retention=s.tools.find(tool=>tool.name==='loops_retention')!;
     const preview=(await retention.execute('preview',{policy:{keepLatest:0}})).details as {planId:string;candidates:Array<{id:string}>};
@@ -299,7 +301,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   // This full lifecycle includes many durable writes and paged reads. Allow shared
   // CI runners a bounded 30 seconds while retaining every large-payload assertion.
   it('authors, executes, reads and edits large data through real SDK envelopes without losing content',async()=>{
-    const s=setup();
+    const s=await setup();
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
       expect(fitsFeatureJson(params.payload)).toBe(true);
       const result=await s.action(params.actionId as string,params.payload as Record<string,unknown>);
@@ -326,7 +328,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.complete).not.toHaveBeenCalled();
   },30_000);
   it('authorizes a human command review and rejects callers without human authority',async()=>{
-    const s=setup(),definition=structuredClone(examples[0]);definition.slug='command-review';definition.id='command-review';definition.revision=0;definition.capabilities=[];
+    const s=await setup(),definition=structuredClone(examples[0]);definition.slug='command-review';definition.id='command-review';definition.revision=0;definition.capabilities=[];
     definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'review',kind:'review',label:'Review',proposal:'Synthetic review'},{id:'return',kind:'return',label:'Return',value:'approved'},{id:'fail',kind:'fail',label:'Fail',reason:'rejected'}];
     definition.edges=[{id:'a',source:'input',target:'review',port:'next'},{id:'b',source:'review',target:'return',port:'approve'},{id:'c',source:'review',target:'fail',port:'reject'}];
     await s.action('save',{definition,expectedRevision:0,enabled:true});
@@ -337,16 +339,16 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.tools.some(t=>t.name==='loops_review')).toBe(false);
   });
   it('round trips archived recovery through bounded-JSON SDK output validation',async()=>{
-    const s=setup();await s.action('archive',{id:'summarize-text',expectedRevision:1,archived:true});
+    const s=await setup();await s.action('archive',{id:'summarize-text',expectedRevision:1,archived:true});
     expect(await s.action('deleted',{})).toMatchObject({result:[{id:'summarize-text',archived:true}]});
     const rows=(await s.tools.find(t=>t.name==='loops_deleted')!.execute('archived-list',{})).details as object[];expect(rows[0]).not.toHaveProperty('deletedAt');
     expect(await s.action('recover',{id:'summarize-text',expectedRevision:1})).toMatchObject({result:{archived:false,enabledRevision:null}});
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
-  it('shares the started executor with a separate tool registration scope',async()=>{const gateway=setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',()=>{const s=setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(34);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('shares the started executor with a separate tool registration scope',async()=>{const gateway=await setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=await setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
+  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(34);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
   it('authors through real SDK tools and shares definitions with the UI across registry scopes',async()=>{
-    const gateway=setup(),s=setup({root:gateway.root,start:false});
+    const gateway=await setup(),s=await setup({root:gateway.root,start:false});
     const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('authoring-call',p);
     expect((await call('loops_list',{})).details).toEqual([]);
     expect((await call('loops_library',{})).details).toHaveLength(3);
@@ -363,7 +365,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(gateway.complete).not.toHaveBeenCalled();
   });
   it('rejects authoring identity or grant injection and stale revisions at the tool boundary',async()=>{
-    const s=setup(),edit=s.tools.find(t=>t.name==='loops_edit')!,del=s.tools.find(t=>t.name==='loops_delete')!;
+    const s=await setup(),edit=s.tools.find(t=>t.name==='loops_edit')!,del=s.tools.find(t=>t.name==='loops_delete')!;
     for(const changes of [{enabledRevision:1},{grants:['llm']},{id:'replacement'},{revision:99}])await expect(edit.execute('bad-patch',{id:'summarize-text',expectedRevision:1,changes})).rejects.toThrow(/schema/);
     await expect(edit.execute('forged',{id:'summarize-text',expectedRevision:1,changes:{name:'X'},agentId:'other'})).rejects.toThrow(/schema/);
     await edit.execute('current',{id:'summarize-text',expectedRevision:1,changes:{name:'Current'}});
@@ -372,13 +374,13 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   });
   it('requires a matching host-resolved conversation for all authoring tools',async()=>{
     for(const context of [{agentId:'other'},{sessionKey:'agent:main:forged'},{sessionId:'forged'}]){
-      const s=setup({toolContext:context});
+      const s=await setup({toolContext:context});
       await expect(s.tools.find(t=>t.name==='loops_library')!.execute('bad-reader',{})).rejects.toThrow();
       await expect(s.tools.find(t=>t.name==='loops_delete')!.execute('bad-author',{id:'summarize-text',expectedRevision:1})).rejects.toThrow();
     }
   });
   it('uses Codex-compatible array schemas without weakening ordered Repeat validation',async()=>{
-    const s=setup(),create=s.tools.find(t=>t.name==='loops_create')!;
+    const s=await setup(),create=s.tools.find(t=>t.name==='loops_create')!;
     const inspect=(value:unknown)=>{if(!value||typeof value!=='object')return;const schema=value as Record<string,unknown>;if(schema.type==='array')expect(Array.isArray(schema.items)).toBe(false);for(const child of Object.values(schema))inspect(child);};inspect(create.parameters);
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[1]);
     definition.slug='tuple-check';
@@ -387,13 +389,13 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await create.execute('reversed-tuple',{definition:wrong})).details).toMatchObject({kind:'loops-error',error:{message:expect.stringMatching(/schemaVersion 1/)}});
     expect((await create.execute('valid-tuple',{definition,enabled:false})).details).toMatchObject({issues:[],record:{definition:{revision:1},enabledRevision:null}});
   });
-  it('executes command and tool against the same saved revision',async()=>{const s=setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const command=s.commands.get('loops')!;const reply=await command.handler({...s.commandContext,args:'run summarize-text Supplied source',commandBody:'/loops run summarize-text Supplied source'});expect(reply.text).toContain('revision 1 · completed');expect(reply.text).toContain('An actual adapter result.');const result=await s.tools.find(t=>t.name==='loops_run')!.execute('host-tool-id',{slug:'summarize-text',input:{text:'Supplied source'}});expect(result.details).toMatchObject({state:'completed',source:'tool',requester:'host-sender',owner:{sessionId:s.sessionId},definition:{revision:1},result:'An actual adapter result.'});expect(s.complete).toHaveBeenCalledTimes(2);expect(s.complete.mock.calls[0]).toBeDefined();});
-  it('keeps agent receipts compact while retaining full graphical evidence',async()=>{const s=setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const result=await s.tools.find(t=>t.name==='loops_run')!.execute('compact',{slug:'summarize-text',input:{text:'A'}});const receipt=result.details as {id:string};expect(result.details).toMatchObject({models:['fake/test-only'],result:'An actual adapter result.'});expect(result.details).not.toHaveProperty('outputs');expect(JSON.stringify(result).length).toBeLessThan(5000);const inspected=await s.action('inspect',{runId:receipt.id});expect(inspected).toHaveProperty('result.trace');expect(inspected).toHaveProperty('result.outputs');});
-  it('deduplicates repeated trusted tool calls and commands',async()=>{const s=setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const t=s.tools.find(t=>t.name==='loops_run')!;const a=await t.execute('same-call',{slug:'summarize-text',input:{text:'A'}});const b=await t.execute('same-call',{slug:'summarize-text',input:{text:'A'}});expect(a.details).toEqual(b.details);const c={...s.commandContext,args:'run summarize-text A --request-id retry',commandBody:'/loops run summarize-text A --request-id retry'};expect((await s.commands.get('loops')!.handler(c)).text).toEqual((await s.commands.get('loops')!.handler(c)).text);expect(s.complete).toHaveBeenCalledTimes(2);});
-  it('rejects identity injection before entering the service',async()=>{const s=setup();await expect(s.tools.find(t=>t.name==='loops_run')!.execute('x',{slug:'summarize-text',input:{text:'A'},sessionId:'forged'})).rejects.toThrow(/schema/);});
-  it('accepts the text shortcut with the same strict input validation and rejects ambiguous input',async()=>{const s=setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true});const run=s.tools.find(t=>t.name==='loops_run')!;expect((await run.execute('shortcut',{slug:'summarize-text',text:'Source'})).details).toMatchObject({state:'completed'});expect((await run.execute('ambiguous',{slug:'summarize-text',text:'Source',input:{text:'Other'}})).details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_INVALID_REQUEST',message:expect.stringMatching(/not both/)}});expect(s.complete).toHaveBeenCalledTimes(1);});
+  it('executes command and tool against the same saved revision',async()=>{const s=await setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const command=s.commands.get('loops')!;const reply=await command.handler({...s.commandContext,args:'run summarize-text Supplied source',commandBody:'/loops run summarize-text Supplied source'});expect(reply.text).toContain('revision 1 · completed');expect(reply.text).toContain('An actual adapter result.');const result=await s.tools.find(t=>t.name==='loops_run')!.execute('host-tool-id',{slug:'summarize-text',input:{text:'Supplied source'}});expect(result.details).toMatchObject({state:'completed',source:'tool',requester:'host-sender',owner:{sessionId:s.sessionId},definition:{revision:1},result:'An actual adapter result.'});expect(s.complete).toHaveBeenCalledTimes(2);expect(s.complete.mock.calls[0]).toBeDefined();});
+  it('keeps agent receipts compact while retaining full graphical evidence',async()=>{const s=await setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const result=await s.tools.find(t=>t.name==='loops_run')!.execute('compact',{slug:'summarize-text',input:{text:'A'}});const receipt=result.details as {id:string};expect(result.details).toMatchObject({models:['fake/test-only'],result:'An actual adapter result.'});expect(result.details).not.toHaveProperty('outputs');expect(JSON.stringify(result).length).toBeLessThan(5000);const inspected=await s.action('inspect',{runId:receipt.id});expect(inspected).toHaveProperty('result.trace');expect(inspected).toHaveProperty('result.outputs');});
+  it('deduplicates repeated trusted tool calls and commands',async()=>{const s=await setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const t=s.tools.find(t=>t.name==='loops_run')!;const a=await t.execute('same-call',{slug:'summarize-text',input:{text:'A'}});const b=await t.execute('same-call',{slug:'summarize-text',input:{text:'A'}});expect(a.details).toEqual(b.details);const c={...s.commandContext,args:'run summarize-text A --request-id retry',commandBody:'/loops run summarize-text A --request-id retry'};expect((await s.commands.get('loops')!.handler(c)).text).toEqual((await s.commands.get('loops')!.handler(c)).text);expect(s.complete).toHaveBeenCalledTimes(2);});
+  it('rejects identity injection before entering the service',async()=>{const s=await setup();await expect(s.tools.find(t=>t.name==='loops_run')!.execute('x',{slug:'summarize-text',input:{text:'A'},sessionId:'forged'})).rejects.toThrow(/schema/);});
+  it('accepts the text shortcut with the same strict input validation and rejects ambiguous input',async()=>{const s=await setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true});const run=s.tools.find(t=>t.name==='loops_run')!;expect((await run.execute('shortcut',{slug:'summarize-text',text:'Source'})).details).toMatchObject({state:'completed'});expect((await run.execute('ambiguous',{slug:'summarize-text',text:'Source',input:{text:'Other'}})).details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_INVALID_REQUEST',message:expect.stringMatching(/not both/)}});expect(s.complete).toHaveBeenCalledTimes(1);});
   it('allows operator-write activation while keeping human review separate',async()=>{
-    const s=setup();expect(s.tools.some(t=>/save|review/.test(t.name))).toBe(false);
+    const s=await setup();expect(s.tools.some(t=>/save|review/.test(t.name))).toBe(false);
     expect(await s.action('enable',{id:'summarize-text',revision:1,enabled:true},['operator.write'])).toMatchObject({result:{enabledRevision:1,grants:['llm']}});
     expect(await s.action('enable',{id:'summarize-text',revision:1,enabled:false},['operator.read'])).toMatchObject({result:{kind:'loops-error',error:{message:expect.stringMatching(/authorized/)}}});
     const d={...structuredClone(examples[0]),revision:1,name:'Saved and enabled by operator'};
@@ -401,7 +403,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('review',{runId:'any',decision:'approve'},['operator.write'])).toMatchObject({result:{kind:'loops-error',error:{message:expect.stringMatching(/authenticated human/)}}});
   });
   it('creates enabled loops and controls activation through actual agent tools',async()=>{
-    const s=setup();const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('activation-call',p);
+    const s=await setup();const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('activation-call',p);
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='agent-published';
     const created=(await call('loops_create',{definition})).details as {record:{definition:{id:string}}};const id=created.record.definition.id;
     expect(created).toMatchObject({record:{enabledRevision:1,grants:['llm']}});
@@ -414,7 +416,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await call('loops_edit',{id,expectedRevision:3,changes:{name:'Explicit draft'},enabled:false})).details).toMatchObject({record:{enabledRevision:null}});
     expect(s.complete).toHaveBeenCalledOnce();
   });
-  it('returns truthful waits and refuses generic review approval',async()=>{const s=setup();await s.action('enable',{id:'read-pause-continue',revision:1,enabled:true,grants:['llm','model-info']});const result=await s.tools.find(t=>t.name==='loops_run')!.execute('pause',{slug:'read-pause-continue',input:{text:'A'}});expect(result.details).toMatchObject({state:'waiting',definition:{revision:1}});expect(s.complete).not.toHaveBeenCalled();});
-  it('rejects a host-revoked plugin after a tool factory was created',async()=>{const s=setup();s.config.plugins.entries['loops-poc'].enabled=false;await expect(s.tools.find(t=>t.name==='loops_list')!.execute('disabled',{})).rejects.toThrow(/disabled/);});
-  it('keeps command input bounded and distinguishes explicit retry IDs',()=>{const s=setup();expect(parseCommand({...s.commandContext,args:'run summarize-text hello --request-id once'})).toMatchObject({input:{text:'hello'},requestId:'command:once'});expect(()=>parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)},16000)).toThrow(/large/);expect(parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)})).toHaveProperty('input.text');});
+  it('returns truthful waits and refuses generic review approval',async()=>{const s=await setup();await s.action('enable',{id:'read-pause-continue',revision:1,enabled:true,grants:['llm','model-info']});const result=await s.tools.find(t=>t.name==='loops_run')!.execute('pause',{slug:'read-pause-continue',input:{text:'A'}});expect(result.details).toMatchObject({state:'waiting',definition:{revision:1}});expect(s.complete).not.toHaveBeenCalled();});
+  it('rejects a host-revoked plugin after a tool factory was created',async()=>{const s=await setup();s.config.plugins.entries['loops-poc'].enabled=false;await expect(s.tools.find(t=>t.name==='loops_list')!.execute('disabled',{})).rejects.toThrow(/disabled/);});
+  it('keeps command input bounded and distinguishes explicit retry IDs',async()=>{const s=await setup();expect(parseCommand({...s.commandContext,args:'run summarize-text hello --request-id once'})).toMatchObject({input:{text:'hello'},requestId:'command:once'});expect(()=>parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)},16000)).toThrow(/large/);expect(parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)})).toHaveProperty('input.text');});
 });

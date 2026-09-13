@@ -62,7 +62,7 @@ export class Engine{
   private closing=false;
   private deadlines=new Map<string,number>();
   private active=new Map<string,{controller:AbortController;promise:Promise<Run>}>();
-  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>}={}){
+  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>;retainActor?:(actor:Actor)=>void;releaseActor?:(actor:Actor)=>void}={}){
     this.budgets=resolveBudgets(options.budgets);
     this.state=(storage.indexed?storage.indexed.readWorkingState():storage.read())??{version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}};
     if(this.state.version!==1)throw new Error('Unsupported state store version.');
@@ -111,7 +111,7 @@ export class Engine{
         }else throw new Error('The committed store is unavailable.',{cause:error});
       }catch(readError){
         this.storageFailure=new LoopError({code:'LOOPS_STORAGE_UNAVAILABLE',message:'The last storage commit could not be verified. Loops execution is stopped until the store is reopened.',phase:'storage',retryable:false,recovery:'Check storage health and restart the plugin. Inspect recovered attempts before retrying any uncertain effects.'},{cause:new AggregateError([error,readError],'Storage commit and verification failed.')});
-        this.closing=true;this.queued.clear();
+        this.closing=true;this.clearQueued();
       }finally{for(const active of this.active.values())active.controller.abort(new Error('Storage commit failed; execution stopped.'));}
       throw this.storageFailure??error;
     }
@@ -277,9 +277,9 @@ export class Engine{
     r.review={decision,at:now(),requester:actor.requester??'authenticated-operator'};const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;
     r.outputs[r.cursor]={decision};r.cursor=this.next(r,r.cursor,decision);this.persist(r);return this.dispatch(actor,r);
   }
-  cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return this.status(actor,id);r.state='cancelled';this.queued.delete(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist(r);return this.status(actor,id);}
+  cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return this.status(actor,id);r.state='cancelled';this.dropQueued(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist(r);return this.status(actor,id);}
   async close(){
-    this.closing=true;this.queued.clear();
+    this.closing=true;this.clearQueued();
     try{
       for(const [id,active] of this.active){const r=this.cachedState.runs[id];r.state='interrupted';r.error='Gateway service stopped during execution.';r.uncertainty='A dispatched host call may have completed.';active.controller.abort(new Error(r.error));}
       if(!this.storageFailure)this.persist();
@@ -291,20 +291,23 @@ export class Engine{
   private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw executionError(`Missing ${port} edge from ${id}.`,'LOOPS_INVALID_GRAPH');return next;}
   private checkpoint(r:Run){r.updatedAt=now();this.persist(r);}
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}
-  private drain(){if(this.closing)return;for(const [id,actor] of this.queued){if(this.occupied()>=(this.options.concurrency??1))break;this.queued.delete(id);const run=this.state.runs[id];if(run?.state==='queued')void this.dispatch(actor,run).catch(()=>{});}}
+  private dropQueued(id:string){const actor=this.queued.get(id);this.queued.delete(id);if(actor)this.options.releaseActor?.(actor);}
+  private clearQueued(){for(const id of this.queued.keys())this.dropQueued(id);}
+  private drain(){if(this.closing)return;for(const [id,actor] of this.queued){if(this.occupied()>=(this.options.concurrency??1))break;this.queued.delete(id);try{const run=this.state.runs[id];if(run?.state==='queued')void this.dispatch(actor,run).catch(()=>{});}finally{this.options.releaseActor?.(actor);}}}
   private trackPhysical(id:string,promise:Promise<unknown>){const pending=this.physical.get(id)??new Set();pending.add(promise);this.physical.set(id,pending);const run=this.state.runs[id];const cleanup=()=>{pending.delete(promise);if(!pending.size){this.physical.delete(id);if(run.cleanupPending){run.cleanupPending=false;if(!this.closing)this.checkpoint(run);}this.drain();}};void promise.then(cleanup,cleanup).catch(()=>{});}
 
   private async dispatch(actor:Actor,r:Run):Promise<Run>{
     if(this.active.has(r.id))return structuredClone(r);
     if(this.closing)throw requestError('Loops service is stopping.','LOOPS_SERVICE_UNAVAILABLE');
-    if(this.occupied()>=(this.options.concurrency??1)){r.state='queued';this.queued.set(r.id,actor);this.checkpoint(r);return structuredClone(r);}
+    if(this.occupied()>=(this.options.concurrency??1)){r.state='queued';this.queued.set(r.id,actor);this.options.retainActor?.(actor);try{this.checkpoint(r);}catch(error){this.dropQueued(r.id);throw error;}return structuredClone(r);}
     r.state='running';this.checkpoint(r);
     actor={...actor,...r.executionSettings};
     const controller=new AbortController();const remaining=r.definition.limits.timeoutMs===undefined?undefined:r.definition.limits.timeoutMs-r.activeMs;
     const signal=actor.signal?AbortSignal.any([controller.signal,actor.signal]):controller.signal;
     if(remaining!==undefined)this.deadlines.set(r.id,Date.now()+remaining);
     const timeout=remaining===undefined?undefined:setTimeout(()=>controller.abort(executionError('Execution timeout exceeded.','LOOPS_TIMEOUT','Inspect the interrupted attempt before explicitly retrying. A timed-out host request may have completed.')),Math.max(0,remaining));
-    const started=Date.now();const promise=this.pump(actor,r,signal).finally(()=>{clearTimeout(timeout);this.deadlines.delete(r.id);r.activeMs+=Date.now()-started;this.active.delete(r.id);if(this.physical.has(r.id))r.cleanupPending=true;this.checkpoint(r);this.drain();});
+    this.options.retainActor?.(actor);
+    const started=Date.now();const promise=this.pump(actor,r,signal).finally(()=>{try{clearTimeout(timeout);this.deadlines.delete(r.id);r.activeMs+=Date.now()-started;this.active.delete(r.id);if(this.physical.has(r.id))r.cleanupPending=true;this.checkpoint(r);this.drain();}finally{this.options.releaseActor?.(actor);}});
     this.active.set(r.id,{controller,promise});
     // The service keeps ownership of slow work; callers receive an inspectable
     // running handle instead of holding a chat/RPC request until the deadline.
