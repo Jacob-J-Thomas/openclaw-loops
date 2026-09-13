@@ -33,6 +33,38 @@ describe('graph contracts',()=>{
   it('preserves typed binding values without evaluation',()=>{expect(bind('{{input.count}}',{input:{count:3},nodes:{}})).toBe(3);expect(bind('Value: {{input.count}}',{input:{count:3},nodes:{}})).toBe('Value: 3');expect(()=>bind('{{nodes.absent.text}}',{input:{},nodes:{}})).toThrow();});
   it('rejects unexpected, wrong-type, and oversized input',()=>{for(const input of [{text:3},{text:'ok',requester:'forged'},{}, {text:'a'.repeat(17000)}])expect(()=>validateInput(examples[0],input)).toThrow();});
 });
+describe('recovery attribution',()=>{
+  const definition=()=>({...content('review-attribution'),inputSchema:[],capabilities:[],
+    nodes:[{id:'input',kind:'input',label:'Input'},{id:'first',kind:'review',label:'First review',proposal:'First decision'},
+      {id:'wait',kind:'wait',label:'Wait',message:'Hold'},{id:'second',kind:'review',label:'Second review',proposal:'Second decision'},
+      {id:'return',kind:'return',label:'Return',value:'Accepted'},{id:'fail',kind:'fail',label:'Fail',reason:'Rejected'}],
+    edges:[{id:'a',source:'input',target:'first',port:'next'},{id:'b',source:'first',target:'wait',port:'approve'},
+      {id:'c',source:'first',target:'fail',port:'reject'},{id:'d',source:'wait',target:'second',port:'next'},
+      {id:'e',source:'second',target:'return',port:'approve'},{id:'f',source:'second',target:'fail',port:'reject'}],layout:{}});
+  it('preserves committed earlier decisions at another review, including a recovered continuation',async()=>{
+    const {e,h,host,storage}=setup();e.create(h,definition());const first=await e.run(agent(),'review-attribution',{},'original');
+    await e.review(h,first.id,'approve');e.cancel(h,first.id);const original=e.status(h,first.id);
+    const continued=await e.retry(agent(),first.id,'retry-node','continue');const pending=await e.resume(agent(),continued.id);
+    expect(pending).toMatchObject({state:'review',cursor:'second',review:original.review,outputs:{first:{decision:'approve'},second:{}}});
+    const reopened=new Engine(storage,host);expect(reopened.status(h,pending.id)).toEqual(pending);
+    expect(await reopened.retry(agent(),first.id,'retry-node','continue')).toEqual(pending);
+    expect(await reopened.review({...h,requester:'second-reviewer'},pending.id,'approve')).toMatchObject({state:'completed',review:{decision:'approve',requester:'second-reviewer'},outputs:{first:{decision:'approve'},second:{decision:'approve'}}});
+    expect(reopened.status(h,first.id)).toEqual(original);expect(host.complete).not.toHaveBeenCalled();
+  });
+  it('commits stale pending-review repairs before returning them and preserves terminal evidence',async()=>{
+    const {e,h,host,storage}=setup();e.create(h,definition());const first=await e.run(agent(),'review-attribution',{},'original');
+    await e.review(h,first.id,'approve');e.cancel(h,first.id);const original=e.status(h,first.id);
+    const child=await e.retry(agent(),first.id,'restart','legacy'),terminal=await e.retry(agent(),first.id,'restart','legacy-terminal');e.cancel(h,terminal.id);
+    storage.state!.runs[child.id].review=structuredClone(original.review);storage.state!.runs[terminal.id].review=structuredClone(original.review);
+    const reopened=new Engine(storage,host),before=storage.read(),write=vi.spyOn(storage,'write');
+    expect(()=>reopened.status({...h,check:()=>{throw Error('Current authority denied');}},child.id)).toThrow('Current authority denied');expect(write).not.toHaveBeenCalled();
+    write.mockImplementationOnce(()=>{throw Error('Synthetic repair commit failure');});
+    expect(()=>reopened.status(h,child.id)).toThrow('Synthetic repair commit failure');expect(storage.read()).toEqual(before);
+    expect(reopened.status(h,child.id)).toEqual(child);expect(storage.read()!.runs[child.id]).toEqual(child);
+    expect(reopened.status(h,terminal.id)).toEqual(before!.runs[terminal.id]);expect(reopened.status(h,first.id)).toEqual(original);
+    expect(new Engine(storage,host).status(h,child.id)).toEqual(child);expect(host.complete).not.toHaveBeenCalled();
+  });
+});
 describe('agent definition authoring',()=>{
   it('reads disabled drafts fully without granting execution or exposing a mutable store reference',()=>{
     const {e,h}=setup();e.enable(h,'summarize-text',1,false,[]);

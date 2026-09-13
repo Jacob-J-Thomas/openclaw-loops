@@ -20,7 +20,7 @@ import {FailureNotice,displayFailure} from '../src/failure-notice.js';
 import {fitsFeatureJson} from '../src/feature-json.js';
 import {createFeatureClient,type FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
 import {wireContract,DocumentReferenceSchema} from '../src/wire-contract.js';
-import type {LoopRecord} from '../src/engine.js';
+import type {LoopRecord,Run} from '../src/engine.js';
 import type {RunReceipt} from '../src/receipts.js';
 type ToolRegistration=Parameters<OpenClawPluginApi['registerTool']>[0];
 import {execFileSync} from 'node:child_process';
@@ -66,6 +66,44 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it.each(['ui','command','tool'] as const)('requires a new human decision after %s restart while retaining approval for retry-node continuation',async surface=>{
+    let s=await setup(),sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport);
+    const invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`recovery-${++sequence}`):client.invoke(op,input as never);
+    const definition={slug:`review-restart-${surface}`,name:'Fresh review on restart',description:'Recovery must distinguish retained and repeated decisions.',inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'review',kind:'review',label:'Review',proposal:'Approve this attempt?'},{id:'wait',kind:'wait',label:'Wait',message:'Hold after approval'},{id:'return',kind:'return',label:'Return',value:'Accepted'},{id:'reject',kind:'fail',label:'Reject',reason:'Rejected'}],edges:[{id:'a',source:'input',target:'review',port:'next'},{id:'b',source:'review',target:'wait',port:'approve'},{id:'c',source:'review',target:'reject',port:'reject'},{id:'d',source:'wait',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    await invoke('create',{definition});const first=await invoke('run',{slug:definition.slug,input:{},requestId:'original'}) as RunReceipt;expect(first.state).toBe('review');
+    await client.invoke('review',{runId:first.id,decision:'approve'});await invoke('cancel',{runId:first.id});const original=await invoke('inspect',{runId:first.id}) as Run;expect(original.review?.decision).toBe('approve');
+    const continuation=await invoke('retry',{runId:first.id,mode:'retry-node',requestId:'continue-approved'}) as RunReceipt;expect(continuation).toMatchObject({state:'waiting',parentRunId:first.id});
+    expect((await invoke('inspect',{runId:continuation.id}) as Run).review).toEqual(original.review);expect(await invoke('resume',{runId:continuation.id})).toMatchObject({state:'completed'});
+    const restarted=await invoke('retry',{runId:first.id,mode:'restart',requestId:'restart-review'}) as RunReceipt;expect(restarted).toMatchObject({state:'review',parentRunId:first.id});
+    const pending=await invoke('inspect',{runId:restarted.id}) as Run;expect(pending.review).toBeUndefined();expect(pending.outputs.review).toEqual({});
+    expect(await invoke('inspect',{runId:first.id})).toEqual(original);
+    for(const shutdown of shutdowns.splice(0))await shutdown();
+    // Previous releases persisted the parent's attribution on this fresh child.
+    // Exercise the indexed cold-run path, including idempotent admission first.
+    const filename=join(s.root,'loops-poc','loops.sqlite'),store=new SqliteStorage(filename);
+    store.writeRun({...pending,review:original.review});await store.close();s=await setup({root:s.root});
+    const fault=new DatabaseSync(filename);
+    try{
+      fault.exec("CREATE TRIGGER reject_attribution_repair BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'Synthetic attribution repair failure'); END");
+      const request={runId:first.id,mode:'restart',requestId:'restart-review'};
+      if(surface==='ui')await expect(invoke('retry',request)).rejects.toMatchObject({message:'Loops storage rejected a conflicting write.'});
+      else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`retry ${JSON.stringify(request)}`})).text).toContain('Loops storage rejected a conflicting write.');
+      else expect(await invoke('retry',request)).toMatchObject({kind:'loops-error',error:{message:'Loops storage rejected a conflicting write.'}});
+      expect(JSON.parse((fault.prepare('SELECT record FROM runs WHERE id=?').get(restarted.id) as {record:string}).record).review).toEqual(original.review);
+      fault.exec('DROP TRIGGER reject_attribution_repair');
+    }finally{fault.close();}
+    const duplicate=await invoke('retry',{runId:first.id,mode:'restart',requestId:'restart-review'}) as RunReceipt;
+    expect(duplicate).toMatchObject({id:restarted.id,state:'review'});expect(duplicate.review).toBeUndefined();
+    expect(await invoke('inspect',{runId:restarted.id})).toEqual(pending);
+    const database=new DatabaseSync(filename,{readOnly:true});
+    try{expect(JSON.parse((database.prepare('SELECT record FROM runs WHERE id=?').get(restarted.id) as {record:string}).record)).toEqual(pending);}finally{database.close();}
+    for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
+    expect(await invoke('inspect',{runId:restarted.id})).toEqual(pending);
+    expect(await client.invoke('review',{runId:restarted.id,decision:'reject'})).toMatchObject({state:'failed'});expect((await invoke('inspect',{runId:restarted.id}) as Run).review?.decision).toBe('reject');
+    expect(await invoke('inspect',{runId:first.id})).toEqual(original);expect(s.complete).not.toHaveBeenCalled();
+  });
   it.each(['ui','command','tool'] as const)('preserves published inputs, Advanced overrides and pinned waits through the complete %s version lifecycle',async surface=>{
     let s=await setup(),sequence=0;
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;

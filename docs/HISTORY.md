@@ -1,5 +1,8 @@
 # History and explicit cleanup
 
+See [execution recovery](RECOVERY.md) for checkpoint, retry-node and full-restart
+semantics, including preserved ancestry and fresh human decisions on restart.
+
 ## Loop library pages
 
 The Library and its archived/deleted recovery list search the complete selected view and display 50 records per page. Paging and searching preserve the current editor and its recoverable edits; selecting a different loop resets run-input values. Search matches names, slugs and descriptions without case sensitivity.
