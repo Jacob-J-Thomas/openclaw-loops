@@ -56,7 +56,7 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/76cd63f27fb33e4df3a9b881db135d11213a56abc0661d4ba567173169e604b9/index.js"
+    "entry": "dist/control-ui/bfe8e1b20f9820d371ec80786c1bfe9ba352bc983d32b52f4ca586748550e411/index.js"
   },
   "contracts": {
     "tools": [
@@ -87,6 +87,7 @@
       "loops_revoke",
       "loops_run",
       "loops_runs",
+      "loops_save",
       "loops_status",
       "loops_test",
       "loops_upload",
