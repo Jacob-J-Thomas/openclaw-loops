@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
 import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {SqliteStorage} from '../src/storage.js';
 import {examples} from '../src/examples.js';
 import {Engine,type Actor,type State} from '../src/engine.js';
@@ -123,6 +124,18 @@ describe('plugin-owned SQLite worker',()=>{
     expect(readFileSync(filename)).toEqual(original);
     const inspect=new DatabaseSync(filename,{readOnly:true});
     try{expect(inspect.prepare('PRAGMA journal_mode').get()).toEqual({journal_mode:'delete'});expect(inspect.prepare('PRAGMA user_version').get()).toEqual({user_version:version});expect(inspect.prepare('SELECT * FROM future_evidence').all()).toEqual([{id:'preserve',value:'Future-format evidence'}]);}finally{inspect.close();}
+  });
+  it('rejects a crashed future WAL store without checkpointing or deleting its committed WAL',async()=>{
+    const {filename}=setup();
+    const child=spawnSync(process.execPath,['--input-type=module','--eval',`import {DatabaseSync} from 'node:sqlite';const db=new DatabaseSync(process.argv[1]);db.exec("PRAGMA journal_mode=WAL;PRAGMA wal_autocheckpoint=0;CREATE TABLE future_evidence(value TEXT);INSERT INTO future_evidence VALUES ('Committed future WAL evidence');PRAGMA user_version=99;");process.kill(process.pid,'SIGKILL');`,filename]);
+    expect(child.signal).toBe('SIGKILL');expect(existsSync(filename+'-wal')).toBe(true);
+    const original=readFileSync(filename),wal=readFileSync(filename+'-wal');expect(wal.length).toBeGreaterThan(0);
+    expect(()=>new SqliteStorage(filename)).toThrow(/requires a newer plugin/);
+    await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
+    expect(readFileSync(filename)).toEqual(original);expect(readFileSync(filename+'-wal')).toEqual(wal);
+    const inspect=new DatabaseSync(filename,{readOnly:true});
+    try{expect(inspect.prepare('PRAGMA user_version').get()).toEqual({user_version:99});expect(inspect.prepare('SELECT * FROM future_evidence').all()).toEqual([{value:'Committed future WAL evidence'}]);}finally{inspect.close();}
+    expect(readFileSync(filename)).toEqual(original);expect(readFileSync(filename+'-wal')).toEqual(wal);
   });
   it('preserves legacy and backup inputs after a rejected import transaction and retries without partial records',async()=>{
     const {directory,filename}=setup(),legacy=join(directory,'state.json'),original=JSON.stringify(initial());writeFileSync(legacy,original);

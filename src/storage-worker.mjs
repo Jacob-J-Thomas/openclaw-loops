@@ -1,16 +1,21 @@
 import {parentPort,workerData} from 'node:worker_threads';
 import {DatabaseSync,backup} from 'node:sqlite';
-import {chmodSync} from 'node:fs';
+import {chmodSync,existsSync} from 'node:fs';
 
 // Only this worker opens the plugin database. The host database is never used.
 let database;
 let startupError;
 try{
+let schemaVersion=0;
+if(existsSync(workerData.file)){
+  // A writable connection can checkpoint a crashed WAL on close, even when
+  // admission rejects it before any writer pragma. Read the WAL-aware version
+  // through a read-only connection first; immutable mode would ignore its WAL.
+  const inspection=new DatabaseSync(workerData.file,{readOnly:true});
+  try{schemaVersion=inspection.prepare('PRAGMA user_version').get().user_version;if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');}
+  finally{inspection.close();}
+}
 database=new DatabaseSync(workerData.file);
-const schemaVersion=database.prepare('PRAGMA user_version').get().user_version;
-if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
-// Reject a newer store before writer pragmas can change its journal format.
-// Even a refused open must preserve the operator's rollback inputs.
 database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
 if(schemaVersion===1){
   const destination=`${workerData.file}.before-schema-2-${Date.now()}.bak`;
