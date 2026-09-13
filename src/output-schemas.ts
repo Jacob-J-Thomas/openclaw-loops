@@ -1,5 +1,5 @@
 import {Type} from 'typebox';
-import {DefinitionSchema} from './graph.js';
+import {DefinitionSchema,DefinitionFields} from './graph.js';
 import type {Engine,LoopRecord,Run} from './engine.js';
 import type {RunReceipt,describe} from './receipts.js';
 import type {InferenceCapabilities} from './inference-settings.js';
@@ -22,7 +22,7 @@ const summary=Type.Object({id:text,slug:text,name:text,revision:Type.Integer({mi
 const issues=Type.Array(Type.Object({nodeId:Type.Optional(text),message:text},strict));
 const runRow=Type.Object({id:text,slug:text,revision:integer,state:runState,createdAt:text,updatedAt:text,executions:integer},strict);
 const loopRecord=Type.Object({
-  definition:DefinitionSchema,enabledRevision:nullableRevision,grants:DefinitionSchema.properties.capabilities,
+  definition:DefinitionSchema,enabledRevision:nullableRevision,grants:DefinitionFields.capabilities,
   revisions:Type.Optional(Type.Record(text,DefinitionSchema)),publishedRevision:Type.Optional(nullableRevision),
   revoked:Type.Optional(Type.Boolean()),archived:Type.Optional(Type.Boolean()),deletedAt:Type.Optional(text),
 },strict);
@@ -55,10 +55,10 @@ export const outputs={
   output:Type.Unsafe<ReturnType<Engine['output']>>(Type.Object({runId:text,nodeId:Type.Union([text,Type.Null()]),text,offset:integer,nextOffset:Type.Union([integer,Type.Null()]),totalCharacters:integer,format:enums(['text','json'])},strict)),
   history:Type.Unsafe<ReturnType<Engine['history']>>(Type.Object({items:Type.Array(runRow),nextCursor:Type.Union([integer,Type.Null()]),total:integer},strict)),
   runs:Type.Unsafe<ReturnType<Engine['runs']>>(Type.Array(runRow)),
-  browse:Type.Unsafe<ReturnType<Engine['browse']>>(Type.Object({items:Type.Array(Type.Object({...summary.properties,description:text,enabledRevision:nullableRevision,publishedRevision:nullableRevision,hasDraft:Type.Boolean(),capabilities:DefinitionSchema.properties.capabilities,archived:Type.Boolean(),deletedAt:Type.Optional(text)},strict)),nextCursor:Type.Union([text,Type.Null()]),total:integer,offset:integer},strict)),
-  library:Type.Unsafe<ReturnType<Engine['library']>>(Type.Array(Type.Object({...summary.properties,description:text,enabledRevision:nullableRevision,publishedRevision:nullableRevision,hasDraft:Type.Boolean(),capabilities:DefinitionSchema.properties.capabilities},strict))),
-  list:Type.Unsafe<ReturnType<Engine['list']>>(Type.Array(Type.Object({...summary.properties,description:text,inputSchema:DefinitionSchema.properties.inputSchema},strict))),
-  describe:Type.Unsafe<ReturnType<typeof describe>>(Type.Object({...summary.properties,description:text,inputSchema:DefinitionSchema.properties.inputSchema,capabilities:DefinitionSchema.properties.capabilities,limits:DefinitionSchema.properties.limits,steps:Type.Array(Type.Object({id:text,kind:text,label:text},strict))},strict)),
+  browse:Type.Unsafe<ReturnType<Engine['browse']>>(Type.Object({items:Type.Array(Type.Object({...summary.properties,description:text,enabledRevision:nullableRevision,publishedRevision:nullableRevision,hasDraft:Type.Boolean(),capabilities:DefinitionFields.capabilities,archived:Type.Boolean(),deletedAt:Type.Optional(text)},strict)),nextCursor:Type.Union([text,Type.Null()]),total:integer,offset:integer},strict)),
+  library:Type.Unsafe<ReturnType<Engine['library']>>(Type.Array(Type.Object({...summary.properties,description:text,enabledRevision:nullableRevision,publishedRevision:nullableRevision,hasDraft:Type.Boolean(),capabilities:DefinitionFields.capabilities},strict))),
+  list:Type.Unsafe<ReturnType<Engine['list']>>(Type.Array(Type.Object({...summary.properties,description:text,inputSchema:DefinitionFields.inputSchema},strict))),
+  describe:Type.Unsafe<ReturnType<typeof describe>>(Type.Object({...summary.properties,description:text,inputSchema:DefinitionFields.inputSchema,capabilities:DefinitionFields.capabilities,limits:DefinitionFields.limits,steps:Type.Array(Type.Object({id:text,kind:text,label:text},strict))},strict)),
   deletion:Type.Unsafe<ReturnType<Engine['delete']>>(Type.Object({id:text,slug:text,revision:integer,deleted:Type.Boolean()},strict)),
   capabilities:Type.Unsafe<InferenceCapabilities & {budgets:Budgets;concurrency:number}>(Type.Object({
     model:Type.Optional(text),runtime:Type.Optional(text),configured:Type.Union([Type.Boolean(),Type.Literal('unknown')]),authorized:Type.Union([Type.Boolean(),Type.Literal('unknown')]),available:Type.Union([Type.Boolean(),Type.Literal('unknown')]),

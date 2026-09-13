@@ -6,6 +6,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
 import {createHash} from 'node:crypto';
+import {Value} from 'typebox/value';
 import {SqliteStorage} from '../src/storage.js';
 import type {OpenClawPluginApi,OpenClawPluginToolContext,PluginCommandContext,PluginSessionActionRegistration,OpenClawPluginService,OpenClawPluginCommandDefinition} from 'openclaw/plugin-sdk/plugin-entry';
 import sourcePlugin from '../src/index.js';
@@ -39,6 +40,43 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('shares explicit JSON values and unfinished drafts through agent tools, conversation commands and the editor SDK',async()=>{
+    const s=await setup(),handler=s.commands.get('loops')!.handler;
+    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
+    const tool=async(name:string,input:Record<string,unknown>)=>(await s.tools.find(t=>t.name===`loops_${name}`)!.execute(`json-${name}`,input)).details as Record<string,unknown>;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),{id:_id,revision:_revision,schemaVersion:_version,...content}=structuredClone(examples[0]);
+    content.slug='typed-sdk';content.inputSchema=[];content.capabilities=[];content.limits.maxOutputBytes=100000;
+    content.nodes=[{id:'input',kind:'input',label:'Input'},{id:'condition',kind:'condition',label:'Numeric constant',predicate:{left:{literalJson:'0'},op:'less-than',right:{literalJson:'2'}}},{id:'return',kind:'return',label:'Return',value:{literalJson:'{"count":0,"ready":false,"text":"{{input.absent}}"}'}},{id:'fail',kind:'fail',label:'Fail',reason:'Wrong branch'}];
+    content.edges=[{id:'entry',source:'input',target:'condition',port:'next'},{id:'yes',source:'condition',target:'return',port:'true'},{id:'no',source:'condition',target:'fail',port:'false'}];
+    const created=await tool('create',{definition:content}),record=(created as unknown as Awaited<ReturnType<typeof client.invoke<'create'>>>).record,id=record.definition.id;
+    expect(record).toMatchObject({enabledRevision:1,definition:{schemaVersion:2}});
+    const result={count:0,ready:false,text:'{{input.absent}}'};
+    expect(await command('run',{slug:content.slug,requestId:'command-json'})).toMatchObject({state:'completed',result,source:'command'});
+    expect(await tool('run',{slug:content.slug,requestId:'tool-json'})).toMatchObject({state:'completed',result,source:'tool'});
+    const draft=structuredClone(record.definition);if(draft.nodes[2].kind!=='return')throw Error();draft.nodes[2].value={literalJson:'{"unfinished":'};
+    const saved=await command('draft',{definition:draft,expectedRevision:1});expect(saved).toMatchObject({record:{enabledRevision:1,definition:{revision:2,nodes:draft.nodes}},issues:[{nodeId:'return'}]});
+    await expect(client.invoke('publish',{id,revision:2,expectedRevision:2})).rejects.toThrow('Literal JSON');
+    await expect(client.invoke('test',{definition:draft,input:{},requestId:'invalid-json'})).rejects.toThrow('Literal JSON');
+    expect(await client.invoke('run',{slug:content.slug,requestId:'published-unaffected'})).toMatchObject({state:'completed',result});
+    const repaired=structuredClone(draft.nodes);if(repaired[2].kind!=='return')throw Error();repaired[2].value={literalJson:'[0,false,null]'};
+    expect(await tool('edit',{id,expectedRevision:2,changes:{nodes:repaired}})).toMatchObject({record:{enabledRevision:3,definition:{nodes:repaired}}});
+    expect(await client.invoke('run',{slug:content.slug,requestId:'editor-json'})).toMatchObject({state:'completed',result:[0,false,null],source:'session-action'});
+    const restored=await command('restore',{id,revision:2,expectedRevision:3});expect(restored).toMatchObject({record:{enabledRevision:3,definition:{revision:4,nodes:draft.nodes}}});
+    const test=await tool('test',{definition:{...record.definition,nodes:repaired},input:{},requestId:'unpublished-json'});expect(test).toMatchObject({state:'completed',result:[0,false,null]});
+    // Actual registered public tool schemas reject v1 literals before dispatch.
+    for(const operation of ['draft','test','validate']){
+      const schema=s.tools.find(t=>t.name===`loops_${operation}`)!.parameters;
+      const args={definition:record.definition,...operation==='draft'?{expectedRevision:1}:operation==='test'?{input:{},requestId:'schema-only'}:{}};
+      expect(Value.Check(schema,args),operation).toBe(true);expect(Value.Check(schema,{...args,definition:{...record.definition,schemaVersion:1}}),operation).toBe(false);
+    }
+    await expect(client.invoke('test',{definition:{...record.definition,schemaVersion:1},input:{},requestId:'invalid-version'})).rejects.toThrow();
+    const versions=await client.invoke('versions',{id});expect(versions.map(v=>v.revision)).toEqual([4,3,2,1]);
+    for(const service of s.services)await service.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);
+    const reopened=await setup({root:s.root});const read=(await reopened.tools.find(t=>t.name==='loops_read')!.execute('read-json',{id})).details;
+    expect(read).toMatchObject({enabledRevision:3,definition:{revision:4,nodes:draft.nodes}});
+    expect(s.complete).not.toHaveBeenCalled();expect(reopened.complete).not.toHaveBeenCalled();
+  });
   it('rejects transport before service startup without creating files through any adapter',async()=>{
     const s=await setup({start:false}),input={uploadId:'not-started',offset:0,text:'{}'};
     expect((await s.commands.get('loops')!.handler({...s.commandContext,args:'help'})).text).toContain('Operations:');

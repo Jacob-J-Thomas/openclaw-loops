@@ -1,41 +1,47 @@
-import {Type,type Static} from 'typebox';
+import {Type,type Static,type TSchema} from 'typebox';
 import {AdvancedSchema,ReasoningSchema} from './inference-settings.js';
 import {executionError} from './errors.js';
+import {NodeValueSchema,type NodeValue,type Json} from './node-values.js';
+export type {Json,NodeValue} from './node-values.js';
 
-export type Json = null | boolean | number | string | Json[] | {[key:string]:Json};
 export const identifierSchema=Type.String({pattern:'^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$'});
 const text=Type.String(),strict={additionalProperties:false} as const;
 const identity={id:identifierSchema,label:Type.String({minLength:1,maxLength:100})};
-export const PredicateSchema=Type.Object({
-  left:text,op:Type.Union([Type.Literal('equals'),Type.Literal('not-equals'),Type.Literal('contains'),Type.Literal('less-than'),Type.Literal('greater-than'),Type.Literal('truthy')]),right:text,
+const predicateSchema=<V extends TSchema>(value:V)=>Type.Object({
+  left:value,op:Type.Union([Type.Literal('equals'),Type.Literal('not-equals'),Type.Literal('contains'),Type.Literal('less-than'),Type.Literal('greater-than'),Type.Literal('truthy')]),right:value,
 },strict);
-const inferenceSchema=Type.Object({...identity,kind:Type.Literal('inference'),prompt:text,output:Type.Union([Type.Literal('text'),Type.Literal('json')]),
+export const PredicateSchema=predicateSchema(NodeValueSchema);
+function schemasForValues<V extends TSchema>(value:V){
+const inferenceSchema=Type.Object({...identity,kind:Type.Literal('inference'),prompt:value,output:Type.Union([Type.Literal('text'),Type.Literal('json')]),
   model:Type.Optional(Type.String({minLength:1,maxLength:300})),agentId:Type.Optional(identifierSchema),reasoning:Type.Optional(ReasoningSchema),advanced:Type.Optional(AdvancedSchema),
 },strict);
-const conditionSchema=Type.Object({...identity,kind:Type.Literal('condition'),predicate:PredicateSchema},strict);
-const schemas={
+const conditionSchema=Type.Object({...identity,kind:Type.Literal('condition'),predicate:predicateSchema(value)},strict);
+return {
   input:Type.Object({...identity,kind:Type.Literal('input')},strict),
   inference:inferenceSchema,
   action:Type.Object({...identity,kind:Type.Literal('action'),capability:Type.Literal('model-info')},strict),
   condition:conditionSchema,
   repeat:Type.Object({...identity,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:Type.Tuple([inferenceSchema,conditionSchema])},strict),
-  wait:Type.Object({...identity,kind:Type.Literal('wait'),message:text},strict),
-  review:Type.Object({...identity,kind:Type.Literal('review'),proposal:text},strict),
-  return:Type.Object({...identity,kind:Type.Literal('return'),value:text},strict),
-  fail:Type.Object({...identity,kind:Type.Literal('fail'),reason:text},strict),
+  wait:Type.Object({...identity,kind:Type.Literal('wait'),message:value},strict),
+  review:Type.Object({...identity,kind:Type.Literal('review'),proposal:value},strict),
+  return:Type.Object({...identity,kind:Type.Literal('return'),value},strict),
+  fail:Type.Object({...identity,kind:Type.Literal('fail'),reason:value},strict),
 };
+}
+const schemas=schemasForValues(NodeValueSchema),legacySchemas=schemasForValues(text);
 export const NodeSchema=Type.Union([schemas.input,schemas.inference,schemas.action,schemas.condition,schemas.repeat,schemas.wait,schemas.review,schemas.return,schemas.fail]);
+export const LegacyNodeSchema=Type.Union([legacySchemas.input,legacySchemas.inference,legacySchemas.action,legacySchemas.condition,legacySchemas.repeat,legacySchemas.wait,legacySchemas.review,legacySchemas.return,legacySchemas.fail]);
 export type GraphNode=Static<typeof NodeSchema>;
 export type Predicate=Static<typeof PredicateSchema>;
 export type NodeKind=GraphNode['kind'];
 export type NodeOf<K extends NodeKind>=Extract<GraphNode,{kind:K}>;
 export type NodeCapability='llm'|'model-info';
-export type BindingUse={text:string;prior?:string[]};
+export type BindingUse={text:NodeValue;prior?:string[]};
 export type NodeOutcome={output:Json;port?:string;park?:{state:'waiting'|'review';value:Json};returned?:boolean};
 export type NodeExecutionContext={
   signal:AbortSignal;
   input:Record<string,Json>;
-  bind:(template:string)=>Json;
+  bind:(template:NodeValue)=>Json;
   compare:(predicate:Predicate,iteration?:number)=>boolean;
   infer:(node:NodeOf<'inference'>,iteration?:number)=>Promise<Json>;
   modelInfo:()=>Promise<Json>;

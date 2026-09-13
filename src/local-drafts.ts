@@ -1,20 +1,20 @@
-import {DefinitionSchema,parseDefinition,type Definition} from './graph.js';
+import {DefinitionVersionSchemas,DefinitionFields,parseDefinition,type Definition} from './graph.js';
+import {Type} from 'typebox';
 import {Value} from 'typebox/value';
 import {defaultBudgets} from './budgets.js';
 
 // Local drafts capture an editor in progress: a blank name, disconnected graph,
 // invalid range or empty node list must survive a browser restart. Preserve the
 // renderer's structural types while deferring authoring validity to Save/Test.
-const editableSchema=structuredClone(DefinitionSchema);
+const editableSchema=Type.Union(Object.values(DefinitionVersionSchemas).map(schema=>{
+  const variant=structuredClone(schema);relax(variant);variant.properties.id=DefinitionFields.id;variant.properties.revision=DefinitionFields.revision;return variant;
+}));
 function relax(schema:unknown):void{
   if(!schema||typeof schema!=='object')return;
   const value=schema as Record<string,unknown>;
   for(const key of ['minimum','maximum','minLength','maxLength','pattern','minItems','maxItems','uniqueItems'])delete value[key];
   for(const child of Object.values(value))relax(child);
 }
-relax(editableSchema);
-editableSchema.properties.id=DefinitionSchema.properties.id;
-editableSchema.properties.revision=DefinitionSchema.properties.revision;
 type BrowserStore=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
 export type LocalDraft={definition:Definition;base:Definition|null;updatedAt:string};
 const prefix=(scope:string)=>`loops-editor:v2:${scope}:`;
