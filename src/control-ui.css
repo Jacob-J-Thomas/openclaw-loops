@@ -111,3 +111,7 @@ button.danger,.danger{color:var(--lp-danger)}
 .react-flow__controls,.react-flow__minimap{border-color:var(--lp-control-border)}
 .react-flow__attribution a{color:var(--lp-muted)}
 .lp-run-failure{display:block}.lp-run-failure>p{margin-top:8px}.lp-run-failure dl{margin:12px 0}.lp-run-failure dt{font-weight:650;margin-top:6px}.lp-run-failure dd{margin:0;overflow-wrap:anywhere}
+
+.lp-library-pages{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 12px;font-size:11px}.lp-library-pages button{font-size:10px;white-space:normal}.lp-library-notice{padding:8px 12px;font-size:11px;overflow-wrap:anywhere}
+.lp-library-recovery button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:620px){.lp-library{max-height:400px;overflow:auto}}

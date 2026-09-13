@@ -16,6 +16,7 @@ export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string};
 export type Run={id:string;requestKey:string;requestFingerprint:string;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
+export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
 export type RunSummary=Pick<Run,'id'|'state'|'createdAt'|'updatedAt'|'executions'>&{slug:string;revision:number};
 export type RunMetadata=Pick<Run,'id'|'owner'|'requestKey'|'requestFingerprint'|'state'|'createdAt'|'updatedAt'|'parentRunId'|'cleanupPending'>;
@@ -129,6 +130,32 @@ export class Engine{
   private allowed(actor:Actor,d:Definition,record:LoopRecord|undefined){actor.check();if(!record||record.revoked)throw requestError('Loop permission revoked.');for(const c of d.capabilities){if(!record.grants.includes(c))throw requestError(`Loop permission revoked: ${c}`);this.host.check(actor,c);}}
   private allowedRun(actor:Actor,run:Run){if(run.testMode){this.ensureAuthor(actor);for(const capability of run.definition.capabilities)this.host.check(actor,capability);}else this.allowed(actor,run.definition,this.state.loops[run.definition.id]);}
   library(actor:Actor){actor.check();return Object.values(this.state.loops).filter(r=>!r.deletedAt&&!r.archived).map(r=>({id:r.definition.id,slug:r.definition.slug,name:r.definition.name,description:r.definition.description,revision:r.definition.revision,enabledRevision:r.enabledRevision,publishedRevision:r.publishedRevision??null,hasDraft:r.definition.revision!==r.publishedRevision,capabilities:r.definition.capabilities}));}
+  browse(actor:Actor,query:LibraryQuery={}){
+    actor.check();const {view='active',search='',limit=50,cursor}=query;
+    if(!['active','runnable','recoverable'].includes(view)||typeof search!=='string'||search.length>500||!Number.isSafeInteger(limit)||limit<1||limit>1000||cursor!==undefined&&(typeof cursor!=='string'||cursor.length<1||cursor.length>512))throw requestError('Library browsing requires a valid view, search up to 500 characters, limit 1–1000, and an opaque cursor from the previous page.');
+    if(view==='recoverable')this.ensureAuthor(actor);
+    const term=search.trim().toLowerCase();
+    const rows=Object.values(this.state.loops).flatMap(record=>{
+      const hidden=Boolean(record.deletedAt||record.archived);
+      if(view==='recoverable'?!hidden:hidden)return [];
+      const definition=view==='runnable'?this.published(record):record.definition;if(!definition)return [];
+      if(view==='runnable'){try{this.allowed(actor,definition,record);}catch{return [];}}
+      if(term&&!`${definition.name} ${definition.slug} ${definition.description}`.toLowerCase().includes(term))return [];
+      return [{record,definition}];
+    }).sort((a,b)=>a.definition.id<b.definition.id?-1:a.definition.id>b.definition.id?1:0);
+    actor.check();
+    const version=hash(canonical({owner:ownerKey(actor),view,term,rows:rows.map(({record,definition})=>[definition.id,definition.revision,record.definition.revision,record.enabledRevision,record.publishedRevision??null,record.archived??false,record.deletedAt??null])}));
+    let offset=0;
+    if(cursor!==undefined){
+      let saved:unknown;try{saved=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));}catch{throw requestError('Invalid library cursor. Start browsing from the first page.');}
+      if(!saved||typeof saved!=='object'||!('offset' in saved)||typeof saved.offset!=='number'||!Number.isSafeInteger(saved.offset)||saved.offset<0||!('version' in saved)||typeof saved.version!=='string')throw requestError('Invalid library cursor. Start browsing from the first page.');
+      if(saved.version!==version)throw requestError('Library changed since this page was read. Start browsing from the first page.','LOOPS_LIBRARY_CHANGED','Omit cursor and keep the same search and view to refresh the library. No definitions or running work were changed.');
+      offset=saved.offset;if(offset>rows.length)throw requestError('Invalid library cursor offset. Start browsing from the first page.');
+    }
+    const items=rows.slice(offset,offset+limit).map(({record:r,definition:d})=>({id:d.id,slug:d.slug,name:d.name,description:d.description,revision:d.revision,enabledRevision:r.enabledRevision,publishedRevision:r.publishedRevision??null,hasDraft:r.definition.revision!==r.publishedRevision,capabilities:[...d.capabilities],archived:r.archived??false,...r.deletedAt?{deletedAt:r.deletedAt}:{}}));
+    const nextCursor=offset+limit<rows.length?Buffer.from(JSON.stringify({version,offset:offset+limit})).toString('base64url'):null;
+    return {items,nextCursor,total:rows.length,offset};
+  }
   private published(record:LoopRecord){return record.enabledRevision===null?undefined:record.revisions?.[record.enabledRevision]??(record.definition.revision===record.enabledRevision?record.definition:undefined);}
   list(actor:Actor){actor.check();return Object.values(this.state.loops).flatMap(r=>{try{const d=this.published(r);if(!d||r.deletedAt||r.archived)return [];this.allowed(actor,d,r);return [{id:d.id,slug:d.slug,name:d.name,description:d.description,revision:d.revision,inputSchema:d.inputSchema}];}catch{return [];}});}
   describe(actor:Actor,slug:string){const r=Object.values(this.state.loops).find(r=>this.published(r)?.slug===slug&&!r.deletedAt&&!r.archived);const d=r&&this.published(r);if(!r||!d)throw requestError('Enabled loop not found.');this.allowed(actor,d,r);return structuredClone(d);}

@@ -1,5 +1,15 @@
 # History and explicit cleanup
 
+## Loop library pages
+
+The Library and its archived/deleted recovery list search the complete selected view and display 50 records per page. Paging and searching preserve the current editor and its recoverable edits; selecting a different loop resets run-input values. Search matches names, slugs and descriptions without case sensitivity.
+
+Agents and conversation commands use `loops_browse` or `/loops browse {"search":"research","limit":50}`. `view:"active"` includes published loops and disabled drafts; `view:"runnable"` shows currently authorized published revisions; `view:"recoverable"` shows archived/deleted records under author authority. A draft's renamed fields do not replace the published definition in the runnable view. The legacy `loops_library`, `loops_list` and `loops_deleted` operations retain their array results.
+
+Follow `nextCursor` until it is null. Records have stable ID ordering; each opaque cursor is bound to its conversation, normalized search, view and visible definition/publication versions. A changed library or permission-filtered result returns `LOOPS_LIBRARY_CHANGED`; restart without a cursor instead of skipping or duplicating changed records. The UI refreshes from the first page while preserving its editor. Page size defaults to 50 and supports 1–1,000 records. There is no total-count limit or implicit deletion. Pagination bounds retrieval/DOM size; definitions and revisions still reside in the engine and filtering scans that library.
+
+## Run history
+
 History is retained by default. The native run inspector pages through 100 runs at a time; `loops_history` supports pages of up to 1,000. No limit on history length implicitly deletes a run. Alpha.15 reads history pages through the SQLite owner/time index. Completed and parked runs stay on disk until an authorized inspection, output request or continuation needs that individual run. Startup loads unfinished execution/cleanup records, definitions and revisions; it does not retain complete historical outputs in the engine or worker.
 
 The compatibility `loops_runs` operation still returns all compact summaries for the conversation. Explicit cleanup scans compact metadata across retained history to protect recovery ancestry. Individual full-run inspection materializes that run, and worker commits still have a synchronous acknowledgement barrier. These are bounded improvements to history loading, not a claim of unlimited storage or constant-time operations.

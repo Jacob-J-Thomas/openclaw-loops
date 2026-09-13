@@ -35,6 +35,26 @@ function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenCl
   return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('shares searchable library pages and stale-cursor diagnostics across commands, tools and UI',async()=>{
+    const s=setup(),handler=s.commands.get('loops')!.handler;
+    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),tool=s.tools.find(t=>t.name==='loops_browse')!;
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);
+    for(let i=0;i<25;i++)await command('create',{definition:{...definition,slug:`paged-adapter-${i}`,name:`Paged ${i}`},enabled:false});
+    const query={search:'paged-adapter-',limit:4},first=await command('browse',query);
+    expect(first).toMatchObject({total:25,offset:0,nextCursor:expect.any(String)});expect(first.items).toHaveLength(4);
+    expect(await client.invoke('browse',query)).toEqual(first);expect((await tool.execute('library-page',query)).details).toEqual(first);
+    const ids:string[]=first.items.map((item:{id:string})=>item.id);let cursor:string|null=first.nextCursor;
+    while(cursor){const page=await client.invoke('browse',{...query,cursor});ids.push(...page.items.map(item=>item.id));cursor=page.nextCursor;}
+    expect(ids).toHaveLength(25);expect(new Set(ids).size).toBe(25);
+    await command('archive',{id:first.items[0].id,expectedRevision:1,archived:true});
+    await expect(client.invoke('browse',{...query,cursor:first.nextCursor})).rejects.toMatchObject({code:'LOOPS_LIBRARY_CHANGED'});
+    expect((await tool.execute('stale-library',{...query,cursor:first.nextCursor})).details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_LIBRARY_CHANGED'}});
+    expect((await handler({...s.commandContext,args:`browse ${JSON.stringify({...query,cursor:first.nextCursor})}`})).text).toContain('LOOPS_LIBRARY_CHANGED');
+    expect((await client.invoke('browse',{view:'recoverable',search:query.search})).total).toBe(1);
+    expect((await command('library')).length).toBe(27);expect(s.complete).not.toHaveBeenCalled();
+  });
   it('exposes capability discovery through the real conversation command',async()=>{
     const s=setup();
     const reply=await s.commands.get('loops')!.handler({...s.commandContext,args:'capabilities {}'});
@@ -324,7 +344,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',()=>{const s=setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(33);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('registers authoring and execution tools with a single command namespace',()=>{const s=setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(34);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
   it('authors through real SDK tools and shares definitions with the UI across registry scopes',async()=>{
     const gateway=setup(),s=setup({root:gateway.root,start:false});
     const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('authoring-call',p);
