@@ -17,9 +17,10 @@ export const DefinitionFields = {
   capabilities:Type.Array(Type.Union([Type.Literal('llm'),Type.Literal('model-info')]),{maxItems:2,uniqueItems:true}),
   limits:Type.Object({maxExecutions:Type.Integer({minimum:2}),timeoutMs:Type.Optional(Type.Integer({minimum:1000})),maxOutputBytes:Type.Integer({minimum:128})},obj),
 };
+const v2Layout=Type.Record(key,Type.Object({x:Type.Number({minimum:-Number.MAX_SAFE_INTEGER,maximum:Number.MAX_SAFE_INTEGER}),y:Type.Number({minimum:-Number.MAX_SAFE_INTEGER,maximum:Number.MAX_SAFE_INTEGER})},obj));
 export const DefinitionVersionSchemas={
   1:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(1),nodes:Type.Array(LegacyNodeSchema,{minItems:2}),limits:Type.Required(DefinitionFields.limits,obj)},obj),
-  2:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(2)},obj),
+  2:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(2),layout:v2Layout},obj),
 };
 // Editable state can be temporarily inconsistent while a user changes format.
 // Public validation still enforces the discriminated version schemas below.
