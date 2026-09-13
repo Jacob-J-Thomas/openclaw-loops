@@ -1,5 +1,10 @@
 import {outputFields,type Definition,type GraphNode} from './graph.js';
 
+export function copyDefinition(definition:Definition,id:string,templateDefaults?:Pick<Definition['limits'],'maxExecutions'|'maxOutputBytes'>):Definition{
+  const copy={...structuredClone(definition),id,slug:id,revision:0};
+  return templateDefaults?{...copy,schemaVersion:2,limits:{...copy.limits,...templateDefaults}}:copy;
+}
+
 export function autoLayout(definition:Definition):Definition{
   const depth=new Map<string,number>();
   for(const node of definition.nodes)depth.set(node.id,0);

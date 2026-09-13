@@ -9,7 +9,7 @@ import {SqliteStorage} from '../src/storage.js';
 import {bind,compare,parseDefinition,validateGraph,DefinitionSchema,type Definition,type GraphNode} from '../src/graph.js';
 import {literalValue,type Json,type NodeValue} from '../src/node-values.js';
 import {nodeContract,nodeKinds,requiredCapabilities} from '../src/node-contracts.js';
-import {duplicateNode,revisionChanges} from '../src/editor-operations.js';
+import {copyDefinition,duplicateNode,revisionChanges} from '../src/editor-operations.js';
 import {examples} from '../src/examples.js';
 
 const literal=(value:Json)=>({literalJson:JSON.stringify(value)});
@@ -87,6 +87,19 @@ describe('explicit JSON node values',()=>{
 });
 
 describe('JSON values through durable execution',()=>{
+  it('preserves v1 clone/import comparison semantics and budgets while new templates opt into v2 defaults',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-copy-values-')),capabilities=host(),engine=new Engine(new SqliteStorage(join(root,'loops.sqlite')),capabilities);
+    try{
+      const legacy=definition('{{nodes.check.value}}');legacy.schemaVersion=1;legacy.limits={maxExecutions:42,timeoutMs:10000,maxOutputBytes:4096};legacy.nodes.splice(1,0,{id:'check',kind:'condition',label:'Legacy numeric',predicate:{left:'2',op:'less-than',right:'10'}});legacy.edges=[{id:'entry',source:'input',target:'check',port:'next'},{id:'yes',source:'check',target:'result',port:'true'},{id:'no',source:'check',target:'result',port:'false'}];
+      engine.save(actor,legacy,0,true);const source=engine.load(actor,legacy.id).definition;
+      for(const [name,original] of [['cloned',source],['imported',parseDefinition(JSON.parse(JSON.stringify(source)))]] as const){
+        const copy=copyDefinition(original,name);expect(copy).toMatchObject({schemaVersion:1,revision:0,id:name,slug:name,limits:legacy.limits,nodes:legacy.nodes});expect((await engine.test(actor,copy,{},name)).result).toBe(true);
+      }
+      const template=copyDefinition(legacy,'new-template',{maxExecutions:1000,maxOutputBytes:100000});expect(template).toMatchObject({schemaVersion:2,limits:{maxExecutions:1000,timeoutMs:10000,maxOutputBytes:100000}});expect((await engine.test(actor,template,{},'template')).result).toBe(false);
+      const json=definition({literalJson:'[0,false,null]'}),copy=copyDefinition(json,'json-copy');expect(parseDefinition(copy).nodes).toEqual(json.nodes);expect((await engine.test(actor,copy,{},'json-copy')).result).toEqual([0,false,null]);
+      copy.nodes[1].label='Independent edit';expect(json.nodes[1].label).toBe('Result');expect(capabilities.complete).not.toHaveBeenCalled();
+    }finally{await engine.close();rmSync(root,{recursive:true,force:true});}
+  });
   it('retains invalid drafts, valid publications and pinned v1 waits through SQLite restart, restore and import',async()=>{
     const root=mkdtempSync(join(tmpdir(),'loops-values-')),file=join(root,'loops.sqlite'),capabilities=host();let engine=new Engine(new SqliteStorage(file),capabilities);
     try{
