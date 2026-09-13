@@ -1,11 +1,17 @@
 import type {PluginCommandContext} from 'openclaw/plugin-sdk/plugin-entry';
 import {Value} from 'typebox/value';
 import {randomUUID} from 'node:crypto';
-import {wireContract,OperationFailureSchema,DocumentReferenceSchema} from './wire-contract.js';
+import {wireContract,OperationFailureSchema,DocumentReferenceSchema,type DocumentReference} from './wire-contract.js';
 import {outputs} from './output-schemas.js';
 import {parseCommand,formatRun} from './openclaw.js';
 import {requestError} from './errors.js';
 import type {RunReceipt} from './receipts.js';
+import type {textPage} from './feature-json.js';
+
+// Verified conversation display envelope on OpenClaw 2026.9.3. Measure the
+// complete reply in UTF-16 units, including JSON escaping and instructions.
+// This limits one message, never the persisted result or requested page range.
+export const commandReplyLimit=8000;
 
 type Operation=keyof typeof wireContract.operations;
 type Invocation={kind:'invoke';operation:Operation;input:Record<string,unknown>;format:'json'|'run'};
@@ -58,4 +64,21 @@ export function formatCommandResult(value:unknown,format:Invocation['format']='j
   if(Value.Check(DocumentReferenceSchema,value))return `${JSON.stringify(value,null,2)}\n\nRead the full JSON result with /loops document ${JSON.stringify({documentId:value.documentId,offset:0})}. Follow nextOffset until null.`;
   if(format==='run'&&Value.Check(outputs.receipt,value))return formatRun(value as RunReceipt);
   return typeof value==='string'?value:JSON.stringify(value,null,2);
+}
+
+export async function commandReply(value:unknown,snapshot:(value:unknown)=>Promise<DocumentReference>,format:Invocation['format']='json'):Promise<string>{
+  const text=formatCommandResult(value,format);
+  return text.length<=commandReplyLimit?text:formatCommandResult(await snapshot(value));
+}
+
+// Page reads must make progress directly, rather than snapshotting a page into
+// another document. Preserve offsets in Unicode code points after shrinking.
+export function commandPage<T extends ReturnType<typeof textPage>>(page:T):T{
+  if(formatCommandResult(page).length<=commandReplyLimit)return page;
+  const characters=Array.from(page.text);
+  const take=(count:number):T=>({...page,text:characters.slice(0,count).join(''),nextOffset:count<characters.length?page.offset+count:page.nextOffset});
+  let low=0,high=characters.length;
+  while(low<high){const middle=Math.ceil((low+high)/2);if(formatCommandResult(take(middle)).length<=commandReplyLimit)low=middle;else high=middle-1;}
+  if(low===0)throw requestError('The page metadata exceeds the conversation reply envelope.','LOOPS_COMMAND_REPLY_LIMIT','Retrieve this page through loops_document/loops_output or the editor.');
+  return take(low);
 }

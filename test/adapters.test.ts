@@ -16,7 +16,7 @@ import {examples} from '../src/examples.js';
 import {createLoopsClient} from '../src/feature-client.js';
 import {fitsFeatureJson} from '../src/feature-json.js';
 import {createFeatureClient,type FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
-import {wireContract} from '../src/wire-contract.js';
+import {wireContract,DocumentReferenceSchema} from '../src/wire-contract.js';
 type ToolRegistration=Parameters<OpenClawPluginApi['registerTool']>[0];
 import {execFileSync} from 'node:child_process';
 beforeAll(()=>{if(!process.env.LOOPS_TEST_PLUGIN)execFileSync(process.execPath,['scripts/build.mjs'],{stdio:'pipe'});},30_000);
@@ -39,10 +39,21 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   const action=(id:string,payload:Record<string,unknown>,scopes=['operator.admin','operator.write','operator.read'])=>actions.get(id)!.handler({pluginId:'loops-poc',actionId:id,agentId:'main',sessionKey:key,payload:payload as never,client:{connId:'human',scopes}});
   return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
 }
+// Conversation consumers follow the same documented reference protocol. Check
+// each formatted reply, not only the larger feature-SDK envelope.
+async function commandJson(s:Awaited<ReturnType<typeof setup>>,op:string,input:unknown={}){
+  const invoke=async(operation:string,payload:unknown)=>{
+    const text=(await s.commands.get('loops')!.handler({...s.commandContext,args:`${operation} ${JSON.stringify(payload)}`})).text!;
+    expect(text.length).toBeLessThanOrEqual(8000);return JSON.parse(text.split('\n\nRead the full JSON result with ')[0]);
+  };
+  const value=await invoke(op,input);if(!Value.Check(DocumentReferenceSchema,value))return value;
+  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset});expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+}
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   it('shares explicit JSON values and unfinished drafts through agent tools, conversation commands and the editor SDK',async()=>{
-    const s=await setup(),handler=s.commands.get('loops')!.handler;
-    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
+    const s=await setup();
+    const command=(op:string,input:unknown={})=>commandJson(s,op,input);
     const tool=async(name:string,input:Record<string,unknown>)=>(await s.tools.find(t=>t.name===`loops_${name}`)!.execute(`json-${name}`,input)).details as Record<string,unknown>;
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
     const client=createLoopsClient(transport),{id:_id,revision:_revision,schemaVersion:_version,...content}=structuredClone(examples[0]);
@@ -133,7 +144,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   },30_000);
   it('shares searchable library pages and stale-cursor diagnostics across commands, tools and UI',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler;
-    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
+    const command=(op:string,input:unknown={})=>commandJson(s,op,input);
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
     const client=createLoopsClient(transport),tool=s.tools.find(t=>t.name==='loops_browse')!;
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);
@@ -158,7 +169,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   });
   it('authors and versions the same enabled definitions through commands, tools and UI',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler;
-    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
+    const command=(op:string,input:unknown={})=>commandJson(s,op,input);
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);
     definition.slug='command-authored';const inference=definition.nodes.find(node=>node.kind==='inference');if(inference?.kind!=='inference')throw Error();inference.advanced={temperature:0,maxTokens:800};
     const created=await command('create',{definition}),id=created.record.definition.id;
@@ -232,7 +243,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   });
   it('retrieves complete command results and accepts the same staged inputs as tools',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler;
-    const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
+    const command=async(op:string,input:unknown={})=>{const reply=(await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!;expect(reply.length).toBeLessThanOrEqual(8000);return JSON.parse(reply);};
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='command-large';
     definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];definition.edges=[{id:'edge',source:'input',target:'return',port:'next'}];definition.capabilities=[];definition.limits.maxOutputBytes=1024*1024;
     await command('create',{definition});
@@ -250,6 +261,44 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await handler({...s.commandContext,args:`status ${run.id}`})).text).toContain('Result preview');
     let output='';offset=0;while(true){const page=await command('output',{runId:run.id,offset});output+=page.text;if(page.nextOffset===null)break;offset=page.nextOffset;}
     expect(output).toBe(text);expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('snapshots formatted command results and help, preserving pages through edits and restart',async()=>{
+    const s=await setup(),handler=s.commands.get('loops')!.handler;
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='command-envelope';definition.capabilities=[];definition.inputSchema=[];
+    definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'x'.repeat(2800)}];definition.edges=[{id:'edge',source:'input',target:'return',port:'next'}];
+    const args='create '+JSON.stringify({definition});expect(args.length).toBeLessThan(4096);
+    const reply=(await handler({...s.commandContext,args})).text!;expect(reply.length).toBeLessThanOrEqual(8000);
+    const reference=JSON.parse(reply.split('\n\nRead the full JSON result with ')[0]);expect(Value.Check(DocumentReferenceSchema,reference)).toBe(true);
+    const first=await commandJson(s,'document',{documentId:reference.documentId,limit:7});expect(first.nextOffset).toBe(7);
+    const tool=await s.tools.find(t=>t.name==='loops_document')!.execute('first-page',{documentId:reference.documentId,limit:7});expect(tool.details).toEqual(first);
+    const id=(await commandJson(s,'browse',{search:definition.slug})).items[0].id;
+    await commandJson(s,'edit',{id,expectedRevision:1,changes:{name:'Changed after snapshot'}});
+    for(const service of s.services)await service.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);
+    const reopened=await setup({root:s.root});let full=first.text,offset=first.nextOffset;
+    while(true){const page=await commandJson(reopened,'document',{documentId:reference.documentId,offset,limit:100000});expect(page.sha256).toBe(reference.sha256);full+=page.text;if(page.nextOffset===null)break;offset=page.nextOffset;}
+    expect(createHash('sha256').update(full).digest('hex')).toBe(reference.sha256);expect(Buffer.byteLength(full)).toBe(reference.bytes);
+    expect(JSON.parse(full)).toMatchObject({record:{definition:{name:definition.name,revision:1,nodes:definition.nodes},enabledRevision:1}});
+    expect(await commandJson(reopened,'read',{id})).toMatchObject({definition:{name:'Changed after snapshot',revision:2}});
+    const help=(await reopened.commands.get('loops')!.handler({...reopened.commandContext,args:'help test'})).text!;expect(help.length).toBeLessThanOrEqual(8000);
+    const helpReference=JSON.parse(help.split('\n\nRead the full JSON result with ')[0]);expect(Value.Check(DocumentReferenceSchema,helpReference)).toBe(true);
+    let helpText='';offset=0;while(true){const page=await commandJson(reopened,'document',{documentId:helpReference.documentId,offset});helpText+=page.text;if(page.nextOffset===null)break;offset=page.nextOffset;}
+    expect(createHash('sha256').update(helpText).digest('hex')).toBe(helpReference.sha256);expect(JSON.parse(helpText)).toContain('Input schema:');
+    expect(s.complete).not.toHaveBeenCalled();expect(reopened.complete).not.toHaveBeenCalled();
+  });
+  it('retains a committed mutation when its command response snapshot fails and recovers without repeating it',async()=>{
+    const s=await setup(),handler=s.commands.get('loops')!.handler,directory=join(s.root,'loops-poc','documents');
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='snapshot-recovery';definition.capabilities=[];definition.inputSchema=[];
+    definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'x'.repeat(4000)}];definition.edges=[{id:'edge',source:'input',target:'return',port:'next'}];
+    const created=await commandJson(s,'create',{definition}),id=created.record.definition.id;
+    renameSync(directory,directory+'-held');writeFileSync(directory,'Synthetic directory fault');
+    const args='edit '+JSON.stringify({id,expectedRevision:1,changes:{name:'Committed despite reply failure'}});
+    try{
+      const reply=(await handler({...s.commandContext,args})).text!;expect(reply).toContain('LOOPS_STORAGE_ACCESS');expect(reply).not.toContain(s.root);expect(reply.length).toBeLessThanOrEqual(8000);
+      expect(await s.action('load',{id})).toMatchObject({result:{definition:{revision:2,name:'Committed despite reply failure'}}});
+    }finally{rmSync(directory);renameSync(directory+'-held',directory);}
+    expect((await handler({...s.commandContext,args})).text).toContain('LOOPS_REVISION_CONFLICT');
+    expect(await commandJson(s,'read',{id})).toMatchObject({definition:{revision:2,name:'Committed despite reply failure'}});
+    expect((await commandJson(s,'versions',{id})).map((v:{revision:number})=>v.revision)).toEqual([2,1]);expect(s.complete).not.toHaveBeenCalled();
   });
   it('restarts after a failed storage close instead of retaining a stopped executor',async()=>{
     const s=await setup(),service=s.services.find(service=>service.id==='loops-poc-store')!,ctx={} as Parameters<OpenClawPluginService['start']>[0];
