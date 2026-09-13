@@ -139,7 +139,24 @@
                 "const": "inference"
               },
               "prompt": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "literalJson"
+                    ],
+                    "properties": {
+                      "literalJson": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               },
               "output": {
                 "anyOf": [
@@ -319,7 +336,24 @@
                 ],
                 "properties": {
                   "left": {
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
                   },
                   "op": {
                     "anyOf": [
@@ -350,7 +384,24 @@
                     ]
                   },
                   "right": {
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
                   }
                 },
                 "additionalProperties": false
@@ -413,7 +464,24 @@
                         "const": "inference"
                       },
                       "prompt": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "literalJson"
+                            ],
+                            "properties": {
+                              "literalJson": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        ],
+                        "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
                       },
                       "output": {
                         "anyOf": [
@@ -564,7 +632,24 @@
                         ],
                         "properties": {
                           "left": {
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "literalJson"
+                                ],
+                                "properties": {
+                                  "literalJson": {
+                                    "type": "string"
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ],
+                            "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
                           },
                           "op": {
                             "anyOf": [
@@ -595,7 +680,24 @@
                             ]
                           },
                           "right": {
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "literalJson"
+                                ],
+                                "properties": {
+                                  "literalJson": {
+                                    "type": "string"
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ],
+                            "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
                           }
                         },
                         "additionalProperties": false
@@ -632,7 +734,24 @@
                 "const": "wait"
               },
               "message": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "literalJson"
+                    ],
+                    "properties": {
+                      "literalJson": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               }
             },
             "additionalProperties": false
@@ -660,7 +779,24 @@
                 "const": "review"
               },
               "proposal": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "literalJson"
+                    ],
+                    "properties": {
+                      "literalJson": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               }
             },
             "additionalProperties": false
@@ -688,7 +824,24 @@
                 "const": "return"
               },
               "value": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "literalJson"
+                    ],
+                    "properties": {
+                      "literalJson": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               }
             },
             "additionalProperties": false
@@ -716,7 +869,24 @@
                 "const": "fail"
               },
               "reason": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "literalJson"
+                    ],
+                    "properties": {
+                      "literalJson": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               }
             },
             "additionalProperties": false

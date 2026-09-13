@@ -2,7 +2,10 @@ import {requestError,executionError} from './errors.js';
 import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import {defaultBudgets,legacyBudgets,type Budgets} from './budgets.js';
-import {identifierSchema as key,NodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
+import {identifierSchema as key,NodeSchema,LegacyNodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
+import {isJson,literalValue,type NodeValue} from './node-values.js';
+export {isJson} from './node-values.js';
+export {LegacyNodeSchema} from './node-contracts.js';
 export {NodeSchema,PredicateSchema,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 const obj={additionalProperties:false} as const;
 export const DefinitionSchema = Type.Object({
@@ -36,6 +39,7 @@ export const ports=(node:GraphNode):string[]=>[...nodeContract(node.kind).ports]
 export function parseDefinition(value:unknown,budgets:Budgets=defaultBudgets):Definition {
   if (!Value.Check(DefinitionSchema,value)) throw requestError('Definition does not match schemaVersion 1 or 2.');
   if(value.schemaVersion===1&&value.limits.timeoutMs===undefined)throw requestError('Version 1 definitions require their original explicit timeout.');
+  if(value.schemaVersion===1&&value.nodes.some(node=>!Value.Check(LegacyNodeSchema,node)))throw requestError('Version 1 nodes accept text templates only. Convert the draft to version 2 to use literal JSON values.');
   const budget=value.schemaVersion===1?legacyBudgets.definitionBytes:budgets.definitionBytes;
   if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw requestError(`Definition exceeds its ${budget}-byte transport budget.`);
   return structuredClone(value);
@@ -77,7 +81,12 @@ export function validateGraph(d:Definition):Issue[] {
     const pred=predecessors(n.id);const common=new Set(pred.length?[...(dom.get(pred[0])??[])].filter(x=>pred.every(p=>dom.get(p)?.has(x))):[]);
     common.add(n.id);dom.set(n.id,common);
   }
-  const checkText=(s:string,n:GraphNode,bodyPrior:string[]=[])=>{
+  const checkText=(s:NodeValue,n:GraphNode,bodyPrior:string[]=[])=>{
+    if(typeof s!=='string'){
+      if(d.schemaVersion===1)error('Literal JSON values require a version 2 definition.',n.id);
+      else try{literalValue(s.literalJson);}catch(cause){error(cause instanceof Error?cause.message:'Invalid literal JSON.',n.id);}
+      return;
+    }
     for(const match of s.matchAll(/\{\{(.*?)\}\}/g)){
       const path=match[1].trim();
       const pattern=d.schemaVersion===1?/^(input\.[a-z][\w-]*|nodes\.[a-z][\w-]*\.(text|value|succeeded|iterations|exhausted|provider|model|agentId)|repeat\.index)$/:/^(input\.[a-z][\w-]*(?:\.[\w-]+)*|nodes\.[a-z][\w-]*\.[a-z][\w-]*(?:\.[\w-]+)*|repeat\.index)$/;
@@ -106,7 +115,8 @@ export function validateInput(d:Definition,value:unknown,budgets:Budgets=default
   return structuredClone(input);
 }
 export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;repeat?:{index:number}};
-export function bind(template:string,ctx:BindingContext):Json{
+export function bind(template:NodeValue,ctx:BindingContext):Json{
+  if(typeof template!=='string')return literalValue(template.literalJson);
   const resolve=(raw:string):Json=>{let value:unknown=ctx;for(const part of raw.trim().split('.')){if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');value=(value as Record<string,unknown>)[part];}if(value===undefined)throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');return value as Json;};
   const exact=/^\{\{([^{}]+)\}\}$/.exec(template);if(exact)return resolve(exact[1]);
   return template.replace(/\{\{([^{}]+)\}\}/g,(_,p:string)=>{const v=resolve(p);return typeof v==='string'?v:JSON.stringify(v);});
@@ -119,5 +129,4 @@ export function compare(p:Predicate,ctx:BindingContext,version:1|2=1):boolean{
   switch(p.op){case'equals':return version===1?display(l)===display(r):equalJson(l,r);case'not-equals':return version===1?display(l)!==display(r):!equalJson(l,r);case'contains':return version===2&&Array.isArray(l)?l.some(value=>equalJson(value,r)):display(l).includes(display(r));case'less-than':return version===2?typeof l==='number'&&typeof r==='number'&&l<r:Number.isFinite(Number(l))&&Number.isFinite(Number(r))&&Number(l)<Number(r);case'greater-than':return version===2?typeof l==='number'&&typeof r==='number'&&l>r:Number.isFinite(Number(l))&&Number.isFinite(Number(r))&&Number(l)>Number(r);}
 }
 function equalJson(left:Json,right:Json):boolean{if(left===right)return true;if(typeof left!==typeof right||!left||!right||typeof left!=='object'||typeof right!=='object'||Array.isArray(left)!==Array.isArray(right))return false;const entries=Object.entries(left);return entries.length===Object.keys(right).length&&entries.every(([key,value])=>Object.hasOwn(right,key)&&equalJson(value,(right as Record<string,Json>)[key]));}
-export function isJson(value:unknown,depth=0):value is Json{if(depth>100)return false;if(value===null||typeof value==='boolean'||typeof value==='string')return true;if(typeof value==='number')return Number.isFinite(value);if(Array.isArray(value))return value.every(item=>isJson(item,depth+1));if(value&&typeof value==='object'&&Object.getPrototypeOf(value)===Object.prototype)return Object.entries(value).every(([key,item])=>!['__proto__','constructor','prototype'].includes(key)&&isJson(item,depth+1));return false;}
 export function outputFields(node:GraphNode):string[]{return nodeContract(node.kind).outputFields(node);}

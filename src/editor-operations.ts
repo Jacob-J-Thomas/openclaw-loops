@@ -17,8 +17,7 @@ export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:
   const duplicate=structuredClone(original);duplicate.id=fresh(original.kind);duplicate.label=`${duplicate.label} copy`.slice(0,100);
   if(duplicate.kind==='repeat'){
     const previous=duplicate.body[0].id;duplicate.body[0].id=fresh('inference');duplicate.body[1].id=fresh('condition');
-    duplicate.body[1].predicate.left=duplicate.body[1].predicate.left.replaceAll(`nodes.${previous}.`,`nodes.${duplicate.body[0].id}.`);
-    duplicate.body[1].predicate.right=duplicate.body[1].predicate.right.replaceAll(`nodes.${previous}.`,`nodes.${duplicate.body[0].id}.`);
+    for(const operand of ['left','right'] as const){const value=duplicate.body[1].predicate[operand];if(typeof value==='string')duplicate.body[1].predicate[operand]=value.replaceAll(`nodes.${previous}.`,`nodes.${duplicate.body[0].id}.`);}
   }
   const position=definition.layout[nodeId]??{x:0,y:0};
   return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}}};
@@ -34,7 +33,7 @@ export function bindingChoices(definition:Definition,consumer:GraphNode):string[
 }
 export function revisionChanges(before:Definition,after:Definition):string[]{
   const changes:string[]=[];
-  for(const key of ['name','slug','description','inputSchema','capabilities','limits','edges','layout'] as const)if(JSON.stringify(before[key])!==JSON.stringify(after[key]))changes.push(`${key} changed`);
+  for(const key of ['schemaVersion','name','slug','description','inputSchema','capabilities','limits','edges','layout'] as const)if(JSON.stringify(before[key])!==JSON.stringify(after[key]))changes.push(`${key} changed`);
   for(const node of after.nodes){const old=before.nodes.find(n=>n.id===node.id);if(!old)changes.push(`Added ${node.label}`);else if(JSON.stringify(old)!==JSON.stringify(node))changes.push(`Changed ${node.label}`);}
   for(const node of before.nodes)if(!after.nodes.some(n=>n.id===node.id))changes.push(`Removed ${node.label}`);
   return changes;
