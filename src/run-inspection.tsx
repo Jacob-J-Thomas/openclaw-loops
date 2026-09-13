@@ -5,22 +5,24 @@ import {ports,type GraphNode,type Json} from './graph.js';
 import {nodeContract} from './node-contracts.js';
 
 type InspectionNode=Node<{node:GraphNode;output:OutputState},'inspection'>;
-type OutputState={label:string;value?:Json|string};
+type OutputState={label:string;value?:Json|string;checkpoint?:{label:string;value:Json|string}};
 
 function display(value:unknown){return typeof value==='string'?value:JSON.stringify(value,null,2);}
 export function inspectionOutput(run:Run,nodeId:string):OutputState{
   const evidence=[...run.trace].reverse().find(item=>item.nodeId===nodeId);
   const node=run.definition.nodes.find(item=>item.id===nodeId);
+  const hasOutput=Object.hasOwn(run.outputs,nodeId),value=run.outputs[nodeId];
+  const recorded={label:run.parentRunId?evidence?.state==='completed'&&Object.hasOwn(evidence,'output')?'Recorded in this recovery':'Inherited from parent run':'Recorded output',value};
   if(node?.kind==='wait'||node?.kind==='review'){
-    const checkpoint=node.kind==='wait'?'Wait checkpoint':'Human review proposal';
-    if(run.cursor===nodeId&&run.pending!==undefined&&((node.kind==='wait'&&run.state==='waiting')||(node.kind==='review'&&run.state==='review')))return {label:`Pending ${checkpoint}`,value:run.pending};
-    if(evidence&&Object.hasOwn(evidence,'output'))return {label:`${checkpoint} evidence`,value:evidence.output!};
-    if(run.parentRunId&&Object.hasOwn(run.outputs,nodeId))return {label:'See parent run for checkpoint evidence'};
+    const title=node.kind==='wait'?'Wait checkpoint':'Human review proposal';
+    const pending=run.cursor===nodeId&&run.pending!==undefined&&((node.kind==='wait'&&run.state==='waiting')||(node.kind==='review'&&run.state==='review'));
+    const checkpoint=pending?{label:`Pending ${title}`,value:run.pending!}:evidence&&Object.hasOwn(evidence,'output')?{label:`${title} evidence`,value:evidence.output!}:undefined;
+    const placeholder=value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===0;
+    if(hasOutput&&!placeholder)return {...recorded,...checkpoint?{checkpoint}:{}};
+    if(checkpoint)return checkpoint;
+    if(hasOutput)return {label:run.parentRunId?'See parent run for checkpoint evidence':'No checkpoint evidence recorded'};
   }
-  if(Object.hasOwn(run.outputs,nodeId)){
-    if(run.parentRunId&&!(evidence?.state==='completed'&&Object.hasOwn(evidence,'output')))return {label:'Inherited from parent run',value:run.outputs[nodeId]};
-    return {label:run.parentRunId?'Recorded in this recovery':'Recorded output',value:run.outputs[nodeId]};
-  }
+  if(hasOutput)return recorded;
   if(evidence&&Object.hasOwn(evidence,'output'))return {label:'Recorded trace output',value:evidence.output!};
   if(evidence)return {label:`${evidence.state} without output`};
   return {label:'Node was not started'};
@@ -48,7 +50,7 @@ export function RunInspection({run,onSelectRun,onExport}:{run:Run;onSelectRun:(i
     <details open><summary>Executed workflow (read-only)</summary><p className="lp-hint">This graph is the definition saved with this run. It does not edit or replace the current authoring draft.</p>
       <label className="lp-field"><span>Select executed node</span><select aria-label="Select executed node" value={selectedId} onChange={event=>setSelectedId(event.target.value)}>{run.definition.nodes.map(node=><option key={node.id} value={node.id}>{node.label} · {nodeContract(node.kind).editor.title}</option>)}</select></label>
       <div className="lp-executed-flow"><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable onNodeClick={(_,node)=>setSelectedId(node.id)} onNodesChange={()=>{}} onEdgesChange={()=>{}} proOptions={{hideAttribution:true}}><Background/><Controls showInteractive={false}/><MiniMap pannable zoomable/></ReactFlow></div>
-      {selected&&<div className="lp-run-node-detail"><h3>{selected.label}</h3><p className="lp-muted">{nodeContract(selected.kind).editor.title} · {selected.id}</p><h4>Executed settings</h4><pre>{settings(selected)}</pre><h4>{output.label}</h4>{output.value===undefined?<p className="lp-muted">No output is available for this node in this run.</p>:<pre className="lp-full-output">{display(output.value)}</pre>}</div>}
+      {selected&&<div className="lp-run-node-detail"><h3>{selected.label}</h3><p className="lp-muted">{nodeContract(selected.kind).editor.title} · {selected.id}</p><h4>Executed settings</h4><pre>{settings(selected)}</pre>{output.checkpoint&&<><h4>{output.checkpoint.label}</h4><pre className="lp-checkpoint-output">{display(output.checkpoint.value)}</pre></>}<h4>{output.label}</h4>{output.value===undefined?<p className="lp-muted">No output is available for this node in this run.</p>:<pre className="lp-full-output">{display(output.value)}</pre>}</div>}
     </details>
   </section>;
 }

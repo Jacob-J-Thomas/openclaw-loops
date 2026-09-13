@@ -34,6 +34,17 @@ describe('run inspection',()=>{
   it('directs inherited checkpoint placeholders to the parent without inventing checkpoint text',()=>{
     expect(inspectionOutput({...run,cursor:'return',outputs:{wait:{}},trace:[]},'wait')).toEqual({label:'See parent run for checkpoint evidence'});
   });
+  it('keeps each completed review decision alongside its own proposal, independently of the latest run decision',()=>{
+    const definition=parseDefinition({...pinned,nodes:[pinned.nodes[0],{id:'first',kind:'review',label:'First review',proposal:'First proposal'},{id:'second',kind:'review',label:'Second review',proposal:'Second proposal'},pinned.nodes[3],{id:'fail',kind:'fail',label:'Rejected',reason:'rejected'}],edges:[{id:'a',source:'input',target:'first',port:'next'},{id:'b',source:'first',target:'second',port:'approve'},{id:'c',source:'first',target:'fail',port:'reject'},{id:'d',source:'second',target:'return',port:'approve'},{id:'e',source:'second',target:'fail',port:'reject'}]});
+    const reviewed:Run={...run,parentRunId:undefined,definition,cursor:'first',state:'failed',outputs:{first:{decision:'approve'},second:{decision:'reject'}},review:{decision:'reject',at:run.updatedAt,requester:'operator'},trace:[{nodeId:'first',kind:'review',state:'completed',startedAt:run.createdAt,output:'Bound first proposal'},{nodeId:'second',kind:'review',state:'completed',startedAt:run.updatedAt,output:'Bound second proposal'}]};
+    expect(inspectionOutput(reviewed,'first')).toEqual({label:'Recorded output',value:{decision:'approve'},checkpoint:{label:'Human review proposal evidence',value:'Bound first proposal'}});
+    expect(inspectionOutput(reviewed,'second')).toEqual({label:'Recorded output',value:{decision:'reject'},checkpoint:{label:'Human review proposal evidence',value:'Bound second proposal'}});
+    const html=render(reviewed);expect(html).toContain('class="lp-checkpoint-output"');expect(html).toContain('Bound first proposal');expect(html).toContain('&quot;decision&quot;: &quot;approve&quot;');
+  });
+  it('retains an inherited review decision even when the proposal is only in its parent',()=>{
+    const definition=parseDefinition({...pinned,nodes:pinned.nodes.map(node=>node.id==='wait'?{id:'wait',kind:'review',label:'Prior review',proposal:'Earlier proposal'}:node)});
+    expect(inspectionOutput({...run,definition,cursor:'return',outputs:{wait:{decision:'approve'}},trace:[]},'wait')).toEqual({label:'Inherited from parent run',value:{decision:'approve'}});
+  });
   it('renders parent inspection, export, and keyboard node selection controls',()=>{
     const html=render();expect(html).toContain('Inspect parent run');expect(html).toContain('Export run evidence');expect(html).toContain('Select executed node');expect(html).toContain('parent-run');
   });
