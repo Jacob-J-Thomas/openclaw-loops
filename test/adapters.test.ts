@@ -68,6 +68,15 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('preflights explicit incompatible inference settings through the registered UI adapter without dispatching them',async()=>{
+    const s=await setup(),inherited=structuredClone(examples[0]);
+    expect(await s.action('test',{definition:inherited,input:{text:'Inherited settings'},requestId:'capability-inherit'})).toMatchObject({ok:true,result:{state:'completed'}});
+    const incompatible=structuredClone(inherited),node=incompatible.nodes.find(candidate=>candidate.kind==='inference');
+    if(!node||node.kind!=='inference')throw Error('Expected inference fixture.');
+    node.advanced={topP:0};
+    expect(await s.action('test',{definition:incompatible,input:{text:'Must not dispatch'},requestId:'capability-unsupported'})).toMatchObject({ok:true,result:{kind:'loops-error',operation:'test',error:{code:'LOOPS_INVALID_REQUEST',message:expect.stringMatching(/public isolated completion/)}}});
+    expect(s.complete).toHaveBeenCalledOnce();
+  });
   it('protects actual parked, queued and settling run snapshots after reader release, including a parked restart',async()=>{
     let s=await setup(),release!:()=>void;const entered:AbortSignal[]=[];
     const implementation=s.complete.getMockImplementation()!;
