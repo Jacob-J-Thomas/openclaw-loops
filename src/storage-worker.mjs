@@ -1,15 +1,46 @@
 import {parentPort,workerData} from 'node:worker_threads';
 import {DatabaseSync,backup} from 'node:sqlite';
-import {chmodSync} from 'node:fs';
+import {chmodSync,existsSync} from 'node:fs';
 
 // Only this worker opens the plugin database. The host database is never used.
 let database;
 let startupError;
+let schemaVersion=0;
+let writable=false;
 try{
+if(existsSync(workerData.file)){
+  // A writable connection can checkpoint a crashed WAL on close, even when
+  // admission rejects it before any writer pragma. Read the WAL-aware version
+  // through a read-only connection first; immutable mode would ignore its WAL.
+  database=new DatabaseSync(workerData.file,{readOnly:true});
+  schemaVersion=database.prepare('PRAGMA user_version').get().user_version;
+  if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
+  const integrity=database.prepare('PRAGMA quick_check').get().quick_check;
+  if(integrity!=='ok')throw new Error(`Loops database integrity check failed: ${integrity}`);
+  if(schemaVersion===0){
+    if(database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get())throw new Error('Invalid unversioned Loops database schema.');
+  }else{
+      // Check required columns and JSON syntax without materializing cold history.
+      // Schema 1 legitimately lacks the retired-admission table added by schema 2.
+      const tables={metadata:'key,value',loops:'id,record',revisions:'loop_id,revision,definition',runs:'id,owner_key,state,created_at,record',admissions:'request_key,fingerprint,run_id',attempts:'run_id,sequence,node_id,state,evidence',outputs:'run_id,node_id,value',events:'sequence,run_id,state,at',...schemaVersion>=2?{retired_admissions:'request_key,record'}:{}};
+      for(const [table,columns] of Object.entries(tables))database.prepare(`SELECT ${columns} FROM ${table} LIMIT 0`);
+      for(const [table,column] of Object.entries({metadata:'value',loops:'record',revisions:'definition',runs:'record',attempts:'evidence',outputs:'value',...schemaVersion>=2?{retired_admissions:'record'}:{}})){
+        if(database.prepare(`SELECT 1 FROM ${table} WHERE NOT json_valid(${column}) LIMIT 1`).get())throw new Error(`Invalid saved JSON in Loops ${table}.`);
+      }
+      if(!database.prepare("SELECT 1 FROM metadata WHERE key='version'").get()){
+        for(const table of Object.keys(tables))if(database.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())throw new Error('Invalid Loops state: saved records have no format version.');
+      }
+    }
+}
+}catch(error){startupError=error;}
+const initialize=async()=>{
+if(writable)throw new Error('Loops storage is already initialized.');
+// The coordinator validates read-working with the existing typed state contract
+// before sending initialize. Rejected restores never acquire a writable handle.
+database?.close();
 database=new DatabaseSync(workerData.file);
+writable=true;
 database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
-const schemaVersion=database.prepare('PRAGMA user_version').get().user_version;
-if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
 if(schemaVersion===1){
   const destination=`${workerData.file}.before-schema-2-${Date.now()}.bak`;
   await backup(database,destination);chmodSync(destination,0o600);
@@ -35,7 +66,7 @@ database.exec(`
 `);
 const integrity=database.prepare('PRAGMA quick_check').get().quick_check;
 if(integrity!=='ok')throw new Error(`Loops database integrity check failed: ${integrity}`);
-}catch(error){startupError=error;}
+};
 const port=workerData.port;
 const read=()=>{
   const version=database.prepare("SELECT value FROM metadata WHERE key='version'").get();
@@ -44,6 +75,7 @@ const read=()=>{
   return {version:JSON.parse(version.value),loops:Object.fromEntries(database.prepare('SELECT id,record FROM loops').all().map(row=>[row.id,JSON.parse(row.record)])),runs:Object.fromEntries(database.prepare('SELECT id,record FROM runs').all().map(row=>[row.id,JSON.parse(row.record)])),...retired.length?{retiredAdmissions:Object.fromEntries(retired.map(row=>[row.request_key,JSON.parse(row.record)]))}:{}};
 };
 const workingState=()=>{
+  if(!writable&&schemaVersion===0)return undefined;
   const version=database.prepare("SELECT value FROM metadata WHERE key='version'").get();
   if(!version)return undefined;
   const loops=Object.fromEntries(database.prepare('SELECT id,record FROM loops').all().map(row=>[row.id,JSON.parse(row.record)]));
@@ -163,6 +195,7 @@ parentPort.on('message',async message=>{
   try{
     if(startupError)throw startupError;
     switch(message.operation){
+      case 'initialize':await initialize();break;
       case 'read':result=read();break;
       case 'read-working':result=workingState();break;
       case 'read-run':{

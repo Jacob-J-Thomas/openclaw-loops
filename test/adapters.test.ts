@@ -1,7 +1,8 @@
 import {beforeAll,afterEach,describe,it,expect,vi} from 'vitest';
-import {mkdtempSync,rmSync,renameSync,readFileSync,writeFileSync,readdirSync} from 'node:fs';
+import {mkdtempSync,rmSync,renameSync,readFileSync,writeFileSync,readdirSync,cpSync,mkdirSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,resolve,dirname} from 'node:path';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
 import {createHash} from 'node:crypto';
@@ -13,14 +14,15 @@ import {parseCommand} from '../src/openclaw.js';
 import {examples} from '../src/examples.js';
 import {createLoopsClient} from '../src/feature-client.js';
 import {fitsFeatureJson} from '../src/feature-json.js';
-import type {FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
+import {createFeatureClient,type FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
+import {wireContract} from '../src/wire-contract.js';
 type ToolRegistration=Parameters<OpenClawPluginApi['registerTool']>[0];
 import {execFileSync} from 'node:child_process';
 beforeAll(()=>{if(!process.env.LOOPS_TEST_PLUGIN)execFileSync(process.execPath,['scripts/build.mjs'],{stdio:'pipe'});},30_000);
 const directories:string[]=[];
 const shutdowns:Array<()=>Promise<void>>=[];
 afterEach(async()=>{for(const shutdown of shutdowns.splice(0))await shutdown();for(const dir of directories.splice(0))rmSync(dir,{recursive:true,force:true});});
-async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>}){
+async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin}){
   const root=options?.root??mkdtempSync(join(tmpdir(),'loops-adapters-'));if(!options?.root)directories.push(root);
   const commands=new Map<string,OpenClawPluginCommandDefinition>(),actions=new Map<string,PluginSessionActionRegistration>(),registered:ToolRegistration[]=[];const services:OpenClawPluginService[]=[];
   const key='agent:main:adapter-test',sessionId='adapter-session';
@@ -28,7 +30,7 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async()=>({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
   const config={plugins:{entries:{'loops-poc':{enabled:true}}}};
   const api={id:'loops-poc',config,runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>agentId==='main'&&sessionKey===key?{sessionId}:undefined}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
-  plugin.register(api);
+  (options?.plugin??plugin).register(api);
   if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
   const toolContext:OpenClawPluginToolContext={agentId:'main',sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
   const tools=registered.flatMap(t=>{const value=typeof t==='function'?t(toolContext):t;return Array.isArray(value)?value:value?[value]:[];});
@@ -37,6 +39,52 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('restores a matched application, database and document snapshot without changing the backup',async()=>{
+    mkdirSync('.dev-profile',{recursive:true});const root=mkdtempSync(resolve('.dev-profile/backup-qualification-'));directories.push(root);
+    const original=await setup({root:join(root,'original')}),backup=join(root,'backup'),restoration=join(root,'restoration');
+    const appRoot=process.env.LOOPS_TEST_PLUGIN?dirname(dirname(fileURLToPath(process.env.LOOPS_TEST_PLUGIN))):resolve('.');
+    const context={} as Parameters<OpenClawPluginService['start']>[0];
+    const stop=async(s:Awaited<ReturnType<typeof setup>>)=>{for(const service of s.services)await service.stop?.(context);};
+    const transportFor=(s:Awaited<ReturnType<typeof setup>>)=>({pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport);
+    const clientFor=(s:Awaited<ReturnType<typeof setup>>)=>createLoopsClient(transportFor(s));
+    const wireFor=(s:Awaited<ReturnType<typeof setup>>)=>createFeatureClient(wireContract,transportFor(s));
+    const client=clientFor(original),large='Complete 🙂 backup evidence. '.repeat(3500);expect(fitsFeatureJson({text:large})).toBe(false);
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);
+    definition.slug='backup-completed';definition.capabilities=[];definition.limits.maxOutputBytes=1024*1024;
+    definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];definition.edges=[{id:'next',source:'input',target:'return',port:'next'}];
+    const completedDefinition=await client.invoke('create',{definition});
+    const completed=await client.invoke('run',{slug:definition.slug,input:{text:large},requestId:'backup-completed'});expect(completed.state).toBe('completed');
+    const document=await wireFor(original).invoke('inspect',{runId:completed.id}) as {kind:string;documentId:string;sha256:string};expect(document.kind).toBe('loops-document');
+    const parkedDefinition=await client.invoke('create',{definition:{...definition,slug:'backup-waiting',nodes:[definition.nodes[0],{id:'wait',kind:'wait',label:'Wait',message:'Durable backup checkpoint'},definition.nodes[1]],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'return',port:'next'}]}});
+    const parked=await client.invoke('run',{slug:'backup-waiting',input:{text:'Pinned backup result'},requestId:'backup-parked'});expect(parked.state).toBe('waiting');
+    await client.invoke('edit',{id:parkedDefinition.record.definition.id,expectedRevision:1,changes:{name:'Revision 2 after parked admission'}});
+    const staged=JSON.stringify({text:'Resume this staged request after rollback'}),cut=20;
+    await wireFor(original).invoke('upload',{uploadId:'backup-partial',offset:0,text:staged.slice(0,cut)});
+    const expectedLibrary=await client.invoke('library',{}),expectedHistory=await client.invoke('history',{}),expectedRun=await client.invoke('inspect',{runId:completed.id}),expectedVersions=await client.invoke('versions',{id:parkedDefinition.record.definition.id});
+    expect(expectedLibrary).toHaveLength(5);expect(expectedHistory.total).toBe(2);await stop(original);
+    mkdirSync(join(backup,'app'),{recursive:true});
+    for(const name of ['dist','package.json','openclaw.plugin.json'])cpSync(join(appRoot,name),join(backup,'app',name),{recursive:true});
+    cpSync(join(original.root,'loops-poc'),join(backup,'profile','loops-poc'),{recursive:true});
+    const hashes=(directory:string,prefix=''):Record<string,string>=>Object.fromEntries(readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name)).flatMap(entry=>entry.isDirectory()?Object.entries(hashes(join(directory,entry.name),prefix+entry.name+'/')):[[prefix+entry.name,createHash('sha256').update(readFileSync(join(directory,entry.name))).digest('hex')]]));
+    const backupHashes=hashes(backup);expect(Object.keys(backupHashes).some(name=>name.startsWith('profile/loops-poc/documents/document-'))).toBe(true);expect(Object.keys(backupHashes).some(name=>name.startsWith('profile/loops-poc/documents/upload-'))).toBe(true);
+    // A newer working profile can diverge without modifying its stopped backup.
+    const newer=await setup({root:original.root});await clientFor(newer).invoke('edit',{id:completedDefinition.record.definition.id,expectedRevision:1,changes:{name:'Later work outside the backup'}});await stop(newer);
+    cpSync(backup,restoration,{recursive:true});expect(hashes(restoration)).toEqual(backupHashes);
+    if(process.env.LOOPS_TEST_PLUGIN){const manifest=JSON.parse(readFileSync(join(restoration,'app/openclaw.plugin.json'),'utf8'));expect(existsSync(join(restoration,'app',manifest.controlUi.entry))).toBe(true);}
+    const restoredPlugin=(await import(/* @vite-ignore */ pathToFileURL(join(restoration,'app/dist/index.js')).href)).default as typeof sourcePlugin;
+    const restored=await setup({root:join(restoration,'profile'),plugin:restoredPlugin}),read=clientFor(restored);
+    expect(await read.invoke('library',{})).toEqual(expectedLibrary);expect(await read.invoke('history',{})).toEqual(expectedHistory);
+    expect(await read.invoke('inspect',{runId:completed.id})).toEqual(expectedRun);expect(await read.invoke('versions',{id:parkedDefinition.record.definition.id})).toEqual(expectedVersions);
+    let text='',offset=0;while(true){const page=await wireFor(restored).invoke('document',{documentId:document.documentId,offset,limit:16000});if('kind' in page)throw new Error(page.error.message);text+=page.text;if(page.nextOffset===null)break;offset=page.nextOffset;}
+    expect(createHash('sha256').update(text).digest('hex')).toBe(document.sha256);expect(JSON.parse(text)).toEqual(expectedRun);expect(expectedRun.result).toBe(large);
+    expect(await read.invoke('resume',{runId:parked.id})).toMatchObject({state:'completed',definition:{revision:1},result:'Pinned backup result'});
+    const upload=await wireFor(restored).invoke('upload',{uploadId:'backup-partial',offset:cut,text:staged.slice(cut),complete:true,sha256:createHash('sha256').update(staged).digest('hex')});if('kind' in upload)throw new Error(upload.error.message);expect(upload.completed).toBe(true);
+    expect(await read.invoke('run',{slug:definition.slug,input:upload.reference!,requestId:'restored-staging'})).toMatchObject({state:'completed',result:'Resume this staged request after rollback'});
+    await stop(restored);expect(hashes(backup)).toEqual(backupHashes);
+    const db=new DatabaseSync(join(restoration,'profile/loops-poc/loops.sqlite'),{readOnly:true});
+    try{expect(db.prepare('PRAGMA integrity_check').all()).toEqual([{integrity_check:'ok'}]);expect(db.prepare('SELECT count(*) AS n FROM loops').get()).toEqual({n:5});expect(db.prepare('SELECT count(*) AS n FROM runs').get()).toEqual({n:3});}finally{db.close();}
+    expect(original.complete).not.toHaveBeenCalled();expect(restored.complete).not.toHaveBeenCalled();
+  },30_000);
   it('shares searchable library pages and stale-cursor diagnostics across commands, tools and UI',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler;
     const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text!);
