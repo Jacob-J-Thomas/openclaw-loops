@@ -14,6 +14,12 @@ function content(slug='agent-draft'){
   const {id:_id,revision:_revision,schemaVersion:_version,...value}=structuredClone(examples[0]);
   return {...value,slug};
 }
+function parkedGrantContent(park:'wait'|'review',slug:string){
+  return {...content(slug),inputSchema:[],capabilities:['model-info'],
+    nodes:[{id:'input',kind:'input',label:'Input'},park==='wait'?{id:'park',kind:'wait',label:'Wait',message:'Hold'}:{id:'park',kind:'review',label:'Review',proposal:'Approve the next host action'},
+      {id:'model',kind:'action',label:'Read model',capability:'model-info'},{id:'return',kind:'return',label:'Return',value:'{{nodes.model.model}}'},...park==='review'?[{id:'fail',kind:'fail',label:'Fail',reason:'Rejected'}]:[]],
+    edges:[{id:'a',source:'input',target:'park',port:'next'},{id:'b',source:'park',target:'model',port:park==='wait'?'next':'approve'},{id:'c',source:'model',target:'return',port:'next'},...park==='review'?[{id:'d',source:'park',target:'fail',port:'reject'}]:[]],layout:{}};
+}
 function setup(text='A safe draft with KEY'){
   const storage=new Memory();const host:HostCapabilities={check:vi.fn(),complete:vi.fn(async()=>({text,provider:'fake',model:'deterministic-test-only',agentId:'main'})),modelInfo:vi.fn(async()=>({provider:'fake',model:'deterministic-test-only',agentId:'main'}))};
   const e=new Engine(storage,host);const h=human();for(const ex of examples)e.enable(h,ex.id,1,true,ex.capabilities);return {e,host,storage,h};
@@ -159,6 +165,62 @@ describe('agent activation and publishing',()=>{
     expect((await e.resume(agent(),parked.id))).toMatchObject({state:'completed',definition:{revision:1,name:'Read, pause, continue'}});
     e.enable(agent(),'read-pause-continue',2,true);const revoked=await e.run(agent(),'read-pause-continue',{text:'B'},'revoked');
     e.revoke(agent(),'read-pause-continue');await expect(e.resume(agent(),revoked.id)).rejects.toThrow(/revoked/);
+  });
+  it.each((['wait','review'] as const).flatMap(park=>(['enable','publish','edit','save'] as const).map(activation=>({park,activation}))))('keeps a revoked $park admission revoked after $activation and restart, with explicit recovery still available',async({park,activation})=>{
+    const {e,host,storage}=setup(),slug=`grant-${park}-${activation}`,record=e.create(agent(),parkedGrantContent(park,slug)).record,id=record.definition.id;
+    const parked=await e.run(agent(),slug,{},'old-admission'),before=e.status(agent(),parked.id);expect(parked.state).toBe(park==='wait'?'waiting':'review');
+    e.revoke(agent(),id);
+    if(activation==='enable')e.enable(agent(),id,1,true);
+    else if(activation==='publish')e.publish(agent(),id,1,1);
+    else if(activation==='edit')e.edit(agent(),id,1,{name:'New publication'},true);
+    else e.save(agent(),{...record.definition,name:'New publication'},1,true);
+    await e.close();const reopened=new Engine(storage,host);
+    const proceed=(runId:string)=>park==='wait'?reopened.resume(agent(),runId):reopened.review(human(),runId,'approve');
+    await expect(proceed(parked.id)).rejects.toThrow(/revoked/i);expect(host.modelInfo).not.toHaveBeenCalled();expect(reopened.status(agent(),parked.id)).toEqual(before);
+    const fresh=await reopened.run(agent(),slug,{},'new-admission');expect((await proceed(fresh.id))).toMatchObject({state:'completed',result:'deterministic-test-only'});
+    reopened.cancel(agent(),parked.id);
+    const recovered=await reopened.retry(agent(),parked.id,'restart','explicit-recovery');expect(recovered.parentRunId).toBe(parked.id);expect((await proceed(recovered.id)).state).toBe('completed');
+    expect(reopened.status(agent(),parked.id).state).toBe('cancelled');expect(host.modelInfo).toHaveBeenCalledTimes(2);expect(host.complete).not.toHaveBeenCalled();await reopened.close();
+  });
+  it.each(['wait','review'] as const)('preserves a parked %s grant through capability-removing publication, disable and restart while rechecking host authority',async park=>{
+    const {e,host,storage}=setup(),slug=`ordinary-${park}`,record=e.create(agent(),parkedGrantContent(park,slug)).record,id=record.definition.id;
+    const parked=await e.run(agent(),slug,{},'ordinary-admission'),before=e.status(agent(),parked.id);
+    const draft={...record.definition,capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'New revision'}],edges:[{id:'new',source:'input',target:'return',port:'next'}]};
+    e.draft(agent(),draft,1);e.publish(agent(),id,2,2);e.enable(agent(),id,2,false);
+    await expect(e.run(agent(),slug,{},'disabled-new-start')).rejects.toThrow(/Enabled/);
+    await e.close();const reopened=new Engine(storage,host),proceed=()=>park==='wait'?reopened.resume(agent(),parked.id):reopened.review(human(),parked.id,'approve');
+    vi.mocked(host.check).mockImplementation(()=>{throw Error('Current host authority denied');});await expect(proceed()).rejects.toThrow(/Current host authority/);
+    expect(reopened.status(agent(),parked.id)).toEqual(before);expect(host.modelInfo).not.toHaveBeenCalled();vi.mocked(host.check).mockReset();
+    expect(await proceed()).toMatchObject({state:'completed',definition:{revision:1},result:'deterministic-test-only'});expect(host.modelInfo).toHaveBeenCalledOnce();await reopened.close();
+  });
+  it('does not reauthorize queued or active admissions when a revoked loop is re-enabled',async()=>{
+    const {host}=setup(),storage=new Memory(),e=new Engine(storage,host,{concurrency:1,replyTimeoutMs:1});
+    const value={...parkedGrantContent('wait','dispatch-revocation'),nodes:[{id:'input',kind:'input',label:'Input'},{id:'first',kind:'action',label:'First',capability:'model-info'},{id:'second',kind:'action',label:'Second',capability:'model-info'},{id:'return',kind:'return',label:'Return',value:'{{nodes.second.model}}'}],edges:[{id:'a',source:'input',target:'first',port:'next'},{id:'b',source:'first',target:'second',port:'next'},{id:'c',source:'second',target:'return',port:'next'}]};
+    const id=e.create(agent(),value).record.definition.id;let settle!:(value:Awaited<ReturnType<HostCapabilities['modelInfo']>>)=>void;
+    vi.mocked(host.modelInfo).mockImplementationOnce(()=>new Promise(resolve=>{settle=resolve;}));
+    const active=await e.run(agent(),value.slug,{},'active'),queued=await e.run(agent(),value.slug,{},'queued');expect(active.state).toBe('running');expect(queued.state).toBe('queued');
+    e.revoke(agent(),id);e.enable(agent(),id,1,true);settle({provider:'fake',model:'already-dispatched',agentId:'main'});
+    await vi.waitFor(()=>{expect(e.status(agent(),active.id).state).toBe('failed');expect(e.status(agent(),queued.id).state).toBe('failed');});
+    expect(host.modelInfo).toHaveBeenCalledOnce();expect(e.status(agent(),active.id).trace.some(t=>t.nodeId==='second')).toBe(false);
+    const fresh=await e.run(agent(),value.slug,{},'fresh-after-revoke');await vi.waitFor(()=>expect(e.status(agent(),fresh.id).state).toBe('completed'));expect(host.modelInfo).toHaveBeenCalledTimes(3);await e.close();
+  });
+  it('rolls back a failed revocation without changing the admitted grant',async()=>{
+    const {e,host,storage}=setup(),record=e.create(agent(),parkedGrantContent('wait','failed-revocation')).record,id=record.definition.id;
+    const parked=await e.run(agent(),'failed-revocation',{},'admission'),before=e.load(agent(),id);
+    vi.spyOn(storage,'write').mockImplementationOnce(()=>{throw Error('Synthetic revoke write failure');});
+    expect(()=>e.revoke(agent(),id)).toThrow('Synthetic revoke write failure');expect(e.load(agent(),id)).toEqual(before);
+    expect((await e.resume(agent(),parked.id)).state).toBe('completed');expect(host.modelInfo).toHaveBeenCalledOnce();await e.close();
+  });
+  it.each([false,true])('migrates legacy parked grants with current revoked=%s without changing the saved run',async revoked=>{
+    const {e,host,storage}=setup(),record=e.create(agent(),parkedGrantContent('wait','legacy-grants')).record,id=record.definition.id;
+    const parked=await e.run(agent(),'legacy-grants',{},'legacy-admission');if(revoked)e.revoke(agent(),id);await e.close();
+    const legacy=storage.read()!;for(const loop of Object.values(legacy.loops))delete loop.grantGeneration;for(const run of Object.values(legacy.runs))delete run.grantGeneration;
+    storage.state=legacy;const before=structuredClone(legacy.runs[parked.id]),reopened=new Engine(storage,host);reopened.enable(agent(),id,1,true);
+    expect(reopened.status(agent(),parked.id)).toEqual(before);
+    if(revoked){await expect(reopened.resume(agent(),parked.id)).rejects.toThrow(/revoked/);expect(host.modelInfo).not.toHaveBeenCalled();}
+    else expect((await reopened.resume(agent(),parked.id)).state).toBe('completed');
+    await reopened.close();const again=new Engine(storage,host);
+    if(revoked){await expect(again.resume(agent(),parked.id)).rejects.toThrow(/revoked/);expect(host.modelInfo).not.toHaveBeenCalled();}await again.close();
   });
   it('supports atomic Save and enable from an operator with write access',()=>{
     const {e}=setup();const operator={...human(),human:false,canManage:true};

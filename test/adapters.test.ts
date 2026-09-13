@@ -63,6 +63,35 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it.each(['ui','command','tool'] as const)('retains revoked parked grants through %s reactivation and SQLite restart while allowing explicit new admissions',async surface=>{
+    let s=await setup();let sequence=0;
+    const invoke=async(op:string,input:Record<string,unknown>={})=>{
+      if(surface==='tool')return toolJson(s,op==='load'?'read':op,input,`grants-${++sequence}`);
+      if(surface==='command')return commandJson(s,op,input);
+      const response=await s.action(op,input);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;
+    };
+    const failure=async(op:string,input:Record<string,unknown>)=>{
+      if(surface==='command')return (await s.commands.get('loops')!.handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text;
+      return invoke(op,input).then(value=>JSON.stringify(value),error=>String(error));
+    };
+    const {id:_id,revision:_revision,schemaVersion:_version,...content}=structuredClone(examples[0]);
+    const definition={...content,slug:`grant-adapter-${surface}`,inputSchema:[],capabilities:['model-info'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Hold before host dispatch'},{id:'model',kind:'action',label:'Model',capability:'model-info'},{id:'return',kind:'return',label:'Return',value:'{{nodes.model.model}}'}],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'model',port:'next'},{id:'c',source:'model',target:'return',port:'next'}],layout:{}};
+    const created=await invoke('create',{definition}),id=created.record.definition.id;
+    const parked=await invoke('run',{slug:definition.slug,input:{},requestId:'parked'});expect(parked.state).toBe('waiting');
+    const original=await invoke('inspect',{runId:parked.id});expect(original.grantGeneration).toBe(created.record.grantGeneration);
+    const revoked=await invoke('revoke',{id});expect(revoked.grantGeneration).not.toBe(created.record.grantGeneration);
+    await invoke('enable',{id,revision:1,enabled:true});
+    for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
+    expect(await failure('resume',{runId:parked.id})).toContain('LOOPS_RUN_REVOKED');expect(await invoke('inspect',{runId:parked.id})).toEqual(original);
+    const current=await invoke('load',{id});expect(current.grantGeneration).toBe(revoked.grantGeneration);
+    const fresh=await invoke('run',{slug:definition.slug,input:{},requestId:'fresh'});expect((await invoke('resume',{runId:fresh.id})).state).toBe('completed');
+    await invoke('cancel',{runId:parked.id});
+    const recovery=await invoke('retry',{runId:parked.id,mode:'restart',requestId:'explicit-recovery'});expect(recovery.parentRunId).toBe(parked.id);
+    const recovered=await invoke('inspect',{runId:recovery.id});expect(recovered.grantGeneration).toBe(current.grantGeneration);expect(recovered.grantGeneration).not.toBe(original.grantGeneration);
+    expect((await invoke('resume',{runId:recovery.id})).state).toBe('completed');expect((await invoke('inspect',{runId:parked.id})).grantGeneration).toBe(original.grantGeneration);
+    expect(await failure('edit',{id,expectedRevision:1,changes:{grantGeneration:original.grantGeneration}})).toMatch(/schema/i);
+    expect((await invoke('load',{id})).grantGeneration).toBe(current.grantGeneration);expect(s.complete).not.toHaveBeenCalled();
+  });
   it.each(['ui','command','tool'] as const)('qualifies every lifecycle operation and common negative boundaries through %s',async surface=>{
     const s=await setup();
     Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});

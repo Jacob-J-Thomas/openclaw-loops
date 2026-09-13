@@ -35,6 +35,10 @@ The isolated development profile uses Ollama `qwen3.5:4b`, Q4_K_M, 32,768 contex
 
 Do not copy a live SQLite main file without its transactional state. Do not delete the original JSON/backup as part of upgrade acceptance.
 
+The pinned-grant update adds runtime `grantGeneration` metadata to loop records and new published-run admissions. An existing unrevoked loop keeps an implicit legacy grant for its older runs. A loop that is already revoked at upgrade receives a new generation, so subsequently enabling it cannot revive its old admissions. The upgrade preserves those saved run records and definitions. Revocations already cleared by older code cannot be reconstructed from a missing historical record; inspect such runs before deciding whether to revoke or recover them.
+
+This update retains database schema 2 but requires a reader that understands the new control metadata. The tested immediately preceding alpha.17 artifact rejects it during typed read-only startup, before writable initialization; its database and committed WAL bytes remain unchanged. This is evidence for that exact artifact, not a promise about every historical build. Use the matching application/state backup for rollback, and retain archive hashes because both development artifacts have the same package version. Do not strip grant fields or rewrite version metadata to force a downgrade.
+
 History retention and its explicit UI/agent cleanup policy are documented in [HISTORY.md](HISTORY.md). Cleanup is disabled until requested; no upgrade deletes old history automatically.
 
 ## Storage ownership and crash recovery
