@@ -39,6 +39,7 @@ const receipt=Type.Unsafe<RunReceipt>(Type.Object({
 },strict));
 const runData=Type.Object({
   id:text,requestKey:text,requestFingerprint:text,owner,source:enums(['command','tool','session-action']),requester:Type.Optional(text),
+  requestFingerprintVersion:Type.Optional(Type.Literal(2)),
   executionSettings:Type.Optional(Type.Object({model:Type.Optional(text),reasoning:Type.Optional(text),authProfileId:Type.Optional(text)},strict)),
   cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),
   grantGeneration:Type.Optional(grantGeneration),
@@ -48,7 +49,7 @@ const runData=Type.Object({
   errorDetail:Type.Optional(error),pending:Type.Optional(text),uncertainty:Type.Optional(text),review:Type.Optional(review),
 },strict);
 const completeRun=Type.Unsafe<Run>(runData);
-export const runMetadataSchema=Type.Array(Type.Pick(runData,['id','owner','requestKey','requestFingerprint','state','createdAt','updatedAt','parentRunId','cleanupPending'],strict));
+export const runMetadataSchema=Type.Array(Type.Pick(runData,['id','owner','requestKey','requestFingerprint','requestFingerprintVersion','state','createdAt','updatedAt','parentRunId','cleanupPending'],strict));
 export const outputs={
   receipt,record,completeRun,retention:RetentionResultSchema,
   saved:Type.Unsafe<ReturnType<Engine['save']>>(Type.Object({record:loopRecord,issues},strict)),

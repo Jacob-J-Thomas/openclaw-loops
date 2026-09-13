@@ -57,6 +57,33 @@ under R19–R23; calling an action handler alone is not browser evidence.
 
 ## Common negative and unavailable cases
 
+`run`, `test` and `retry` share a conversation-scoped request-ID namespace. Reuse
+an ID for a retry of the same request; choose a new ID only for an intentional
+new execution. Duplicate admissions return the original run without dispatching
+again, including after restart. Changed input, unpublished definition, recovery
+parent or recovery mode conflicts with that ID. Object key order is immaterial;
+array order, scalar types and distinct Unicode key spellings remain significant.
+The fingerprint comparison is independent of the Gateway's locale. A different
+invocation surface does not change an explicit ID's scope or payload contract.
+The legacy `--request-id X` text shortcut uses `command:X`; the JSON
+`requestId` field passes through unchanged on every surface.
+
+Each editor Run/Test/recovery action creates a new ID. Commands generate an ID
+for a new invocation unless one is supplied. Tools use their host tool-call ID
+when the explicit ID is omitted; a new tool call is a new intentional request,
+so agents should supply the original request ID when retrying uncertain delivery.
+These IDs prevent duplicate plugin dispatch, not duplicate remote side effects
+after an uncertain host-call outcome. Recovery remains an explicit new admission.
+
+New runs pin `requestFingerprintVersion:2`. Existing run hashes are immutable;
+retained legacy requests are also compared against their saved payload. When
+legacy history is removed now, its tombstone preserves an additional canonical
+hash before deleting that payload. IDs removed by an older artifact remain
+reserved: their discarded payload cannot be reconstructed, so an equivalent
+request reordered across Unicode keys/locales may report a conflict instead of
+`LOOPS_HISTORY_REMOVED`. Neither response starts work. See
+[upgrade and rollback](DEPLOYMENT.md) for the database-version boundary.
+
 All operations reject unrecognized caller-identity fields before dispatch and
 recheck current host authority. A revoked plugin cannot continue serving a tool
 factory created earlier. A stopped service returns `LOOPS_SERVICE_UNAVAILABLE`;
