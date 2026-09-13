@@ -7,9 +7,11 @@ let database;
 let startupError;
 try{
 database=new DatabaseSync(workerData.file);
-database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
 const schemaVersion=database.prepare('PRAGMA user_version').get().user_version;
 if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
+// Reject a newer store before writer pragmas can change its journal format.
+// Even a refused open must preserve the operator's rollback inputs.
+database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
 if(schemaVersion===1){
   const destination=`${workerData.file}.before-schema-2-${Date.now()}.bak`;
   await backup(database,destination);chmodSync(destination,0o600);

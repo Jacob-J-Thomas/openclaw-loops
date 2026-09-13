@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
+import {createHash} from 'node:crypto';
 import {SqliteStorage} from '../src/storage.js';
 import {examples} from '../src/examples.js';
 import {Engine,type Actor,type State} from '../src/engine.js';
@@ -112,6 +113,37 @@ describe('plugin-owned SQLite worker',()=>{
     const {directory,filename}=setup();const store=new SqliteStorage(filename);cleanups.push(()=>store.close());store.write(initial());
     const snapshot=join(directory,'backup.sqlite');store.backup(snapshot);const restored=new SqliteStorage(snapshot);cleanups.push(()=>restored.close());
     expect(restored.read()).toEqual(store.read());expect(restored.integrity()).toEqual([{integrity_check:'ok'}]);
+  });
+  it.each([3,99])('rejects future schema %i without changing database bytes or journal format',async version=>{
+    const {filename}=setup(),database=new DatabaseSync(filename);
+    database.exec(`PRAGMA journal_mode=DELETE;CREATE TABLE future_evidence(id TEXT,value TEXT);INSERT INTO future_evidence VALUES ('preserve','Future-format evidence');PRAGMA user_version=${version};`);database.close();
+    const original=readFileSync(filename);
+    expect(()=>new SqliteStorage(filename)).toThrow(/requires a newer plugin/);
+    await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
+    expect(readFileSync(filename)).toEqual(original);
+    const inspect=new DatabaseSync(filename,{readOnly:true});
+    try{expect(inspect.prepare('PRAGMA journal_mode').get()).toEqual({journal_mode:'delete'});expect(inspect.prepare('PRAGMA user_version').get()).toEqual({user_version:version});expect(inspect.prepare('SELECT * FROM future_evidence').all()).toEqual([{id:'preserve',value:'Future-format evidence'}]);}finally{inspect.close();}
+  });
+  it('preserves legacy and backup inputs after a rejected import transaction and retries without partial records',async()=>{
+    const {directory,filename}=setup(),legacy=join(directory,'state.json'),original=JSON.stringify(initial());writeFileSync(legacy,original);
+    const uninitialized=new SqliteStorage(filename);await uninitialized.close();
+    const fault=new DatabaseSync(filename);fault.exec("CREATE TRIGGER reject_import BEFORE INSERT ON metadata BEGIN SELECT RAISE(ABORT,'Synthetic import rejection'); END;");fault.close();
+    expect(()=>new SqliteStorage(filename,legacy)).toThrow(/conflicting write/);
+    await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
+    const backup=join(directory,readdirSync(directory).find(name=>name.startsWith('state.json.before-sqlite-'))!);
+    expect(readFileSync(legacy,'utf8')).toBe(original);expect(readFileSync(backup,'utf8')).toBe(original);
+    const inspect=new DatabaseSync(filename);
+    try{for(const table of ['metadata','loops','revisions','runs'])expect(inspect.prepare(`SELECT count(*) AS n FROM ${table}`).get()).toEqual({n:0});inspect.exec('DROP TRIGGER reject_import');}finally{inspect.close();}
+    const recovered=new SqliteStorage(filename,legacy);cleanups.push(()=>recovered.close());expect(recovered.read()).toEqual(initial());expect(recovered.integrity()).toEqual([{integrity_check:'ok'}]);
+    expect(readFileSync(legacy,'utf8')).toBe(original);expect(readFileSync(backup,'utf8')).toBe(original);
+  });
+  it('rejects a corrupt restored copy while preserving the verified backup and source store',async()=>{
+    const {directory,filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());store.write(initial());
+    const backup=join(directory,'verified.sqlite');store.backup(backup);
+    const digest=(file:string)=>createHash('sha256').update(readFileSync(file)).digest('hex'),before=digest(backup),corrupt=join(directory,'damaged-restore.sqlite');writeFileSync(corrupt,readFileSync(backup).subarray(0,100));const damaged=digest(corrupt);
+    expect(()=>new SqliteStorage(corrupt)).toThrow(/corrupt|not a SQLite database/);await vi.waitFor(()=>expect(existsSync(corrupt+'.lock')).toBe(false));
+    expect(digest(corrupt)).toBe(damaged);expect(digest(backup)).toBe(before);expect(store.read()).toEqual(initial());
+    const restored=new SqliteStorage(backup);cleanups.push(()=>restored.close());expect(restored.read()).toEqual(initial());
   });
   it('refuses invalid legacy data without replacing it and releases ownership after worker cleanup',async()=>{
     const {directory,filename}=setup(),legacy=join(directory,'state.json');writeFileSync(legacy,'{"version":99}');
