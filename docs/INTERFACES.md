@@ -12,6 +12,21 @@ false **or omitted** saves a disabled revision. Use `draft` to preserve a curren
 publication while editing. `create` enables by default and `edit` preserves
 activation by default. None of these operations can impersonate Human review.
 
+The editor selects a **Run target** explicitly: the published revision or the
+current draft. Published execution uses that revision's slug and input schema,
+including while a newer draft is unsaved or invalid. Draft testing uses the
+draft's inputs without changing publication. Each target keeps separate input
+values; changing loops or input schemas initializes the corresponding form
+again. Compatible input values survive saving or publishing another revision. Optional omission, explicit zero and false retain their meaning.
+
+**Save draft** preserves publication. **Save & publish** saves and activates the
+edited draft; **Publish rN** activates a saved revision. **Disable new runs** and
+**Enable published rN** control the selected publication without replacing local
+draft edits. Historical publication also preserves those edits. Version restore
+explicitly creates a new draft, and the editor asks before replacing unsaved
+edits with that restored draft. Existing runs retain their admitted definitions
+and settings under the current host and loop authority rules.
+
 The table inventories semantic operations, not one button per operation. For
 example, copying/importing a graph uses save/create, the editor retrieves full
 documents automatically, and its run browser uses paged history. Graphical
