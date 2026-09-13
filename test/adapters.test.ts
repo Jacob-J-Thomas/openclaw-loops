@@ -66,6 +66,42 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it.each(['ui','command','tool'] as const)('keeps %s queued work behind cancellation cleanup and preserves the completed queue after restart',async surface=>{
+    let s=await setup(),sequence=0,release!:()=>void,physical=0,maximum=0;const entered:Array<AbortSignal|undefined>=[];
+    const implementation=s.complete.getMockImplementation()!;
+    s.complete.mockImplementation(async request=>{
+      physical++;maximum=Math.max(maximum,physical);entered.push(request.signal);
+      try{if(entered.length===1)await new Promise<void>(resolve=>{release=resolve;});return await implementation(request);}finally{physical--;}
+    });
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`queue-${++sequence}`):client.invoke(op,input as never);
+    try{
+      await invoke('enable',{id:'summarize-text',revision:1,enabled:true});
+      const running=invoke('run',{slug:'summarize-text',input:{text:'Active'},requestId:'active'});
+      await vi.waitFor(()=>expect(entered).toHaveLength(1));const first=(await invoke('runs') as Array<{id:string}>)[0];
+      const cancelled=await invoke('run',{slug:'summarize-text',input:{text:'Cancel queued'},requestId:'cancel-queued'}) as RunReceipt;
+      const next=await invoke('run',{slug:'summarize-text',input:{text:'Next'},requestId:'next'}) as RunReceipt;
+      expect(cancelled).toMatchObject({state:'queued',executions:0,steps:[]});expect(next).toMatchObject({state:'queued',executions:0,steps:[]});
+      expect(await invoke('cancel',{runId:cancelled.id})).toMatchObject({state:'cancelled',executions:0});
+      expect(await invoke('cancel',{runId:first.id})).toMatchObject({state:'cancelled',cleanupPending:true});expect(await running).toMatchObject({id:first.id,state:'cancelled'});
+      await vi.waitFor(()=>expect(entered[0]?.aborted).toBe(true));expect(entered).toHaveLength(1);expect(physical).toBe(1);
+      expect(await invoke('run',{slug:'summarize-text',input:{text:'Active'},requestId:'active'})).toMatchObject({id:first.id,state:'cancelled',cleanupPending:true});
+      const recovery={runId:first.id,mode:'retry-node',requestId:'premature-recovery'};
+      if(surface==='ui')await expect(invoke('retry',recovery)).rejects.toThrow(/physical execution cleanup/);
+      else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`retry ${JSON.stringify(recovery)}`})).text).toContain('physical execution cleanup');
+      else expect(await invoke('retry',recovery)).toMatchObject({kind:'loops-error',error:{message:expect.stringContaining('physical execution cleanup')}});
+      expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'queued',executions:0,trace:[]});expect(entered).toHaveLength(1);
+      release();await vi.waitFor(async()=>expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'completed',result:'An actual adapter result.'}));
+      await vi.waitFor(async()=>expect((await invoke('inspect',{runId:first.id}) as Run).cleanupPending).not.toBe(true));
+      expect(entered).toHaveLength(2);expect(maximum).toBe(1);expect(physical).toBe(0);
+      const completed=await Promise.all([first.id,cancelled.id,next.id].map(runId=>invoke('inspect',{runId}))) as Run[];
+      expect(completed[0]).toMatchObject({state:'cancelled',cleanupPending:false});expect(completed[0].outputs.summary).toBeUndefined();expect(completed[0].trace.some(node=>node.nodeId==='return')).toBe(false);
+      expect(completed[1]).toMatchObject({state:'cancelled',executions:0,trace:[]});
+      for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
+      expect(await Promise.all(completed.map(run=>invoke('inspect',{runId:run.id})))).toEqual(completed);
+      expect(await invoke('run',{slug:'summarize-text',input:{text:'Active'},requestId:'active'})).toMatchObject({id:first.id,state:'cancelled'});expect(s.complete).not.toHaveBeenCalled();
+    }finally{release?.();}
+  },30000);
   it.each(['ui','command','tool'] as const)('requires a new human decision after %s restart while retaining approval for retry-node continuation',async surface=>{
     let s=await setup(),sequence=0;
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;

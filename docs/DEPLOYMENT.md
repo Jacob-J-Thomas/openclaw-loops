@@ -26,6 +26,10 @@ The isolated development profile uses Ollama `qwen3.5:4b`, Q4_K_M, 32,768 contex
 
 `scripts/init-profile.mjs` preserves existing configurations and repairs only the recognizable generated one-model policy. Review custom profiles individually. The dev scripts use dedicated state and config paths; they never initialize the personal assistant profile.
 
+See [queue capacity and cancellation](RECOVERY.md#queue-capacity-and-cancellation)
+for active/settling capacity, queued continuations, timeouts and the difference
+between a settled host promise and a confirmed provider stop.
+
 ## Upgrade
 
 1. Keep the previous plugin artifact and stop the affected Gateway so no host calls are active.
