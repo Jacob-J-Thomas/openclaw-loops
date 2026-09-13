@@ -36,6 +36,17 @@ export function bindingChoices(definition:Definition,consumer:GraphNode):string[
   const prior=definition.nodes.filter(node=>node.id!==consumer.id&&!reachableWithout(node.id).has(consumer.id));
   return [...definition.inputSchema.map(field=>`{{input.${field.name}}}`),...prior.flatMap(node=>outputFields(node).map(field=>`{{nodes.${node.id}.${field}}}`)),...consumer.kind==='repeat'?['{{repeat.index}}']:[]];
 }
+export function insertBinding(node:GraphNode,binding:string):GraphNode{
+  const replaceOrAppend=(value:unknown)=>typeof value==='string'?value+binding:binding;
+  if(node.kind==='inference')return {...node,prompt:replaceOrAppend(node.prompt)};
+  if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
+  if(node.kind==='return')return {...node,value:binding};
+  if(node.kind==='condition')return {...node,predicate:{...node.predicate,left:binding}};
+  if(node.kind==='wait')return {...node,message:binding};
+  if(node.kind==='review')return {...node,proposal:binding};
+  if(node.kind==='fail')return {...node,reason:binding};
+  return node;
+}
 export function revisionChanges(before:Definition,after:Definition):string[]{
   const changes:string[]=[];
   for(const key of ['schemaVersion','name','slug','description','inputSchema','capabilities','limits','edges','layout'] as const)if(JSON.stringify(before[key])!==JSON.stringify(after[key]))changes.push(`${key} changed`);
