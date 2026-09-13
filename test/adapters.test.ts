@@ -66,6 +66,32 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it.each(['ui','command','tool'] as const)('preserves published inputs, Advanced overrides and pinned waits through the complete %s version lifecycle',async surface=>{
+    let s=await setup(),sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport);
+    const invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`versions-${++sequence}`):client.invoke(op,input as never);
+    const definition={slug:'version-published',name:'Published version',description:'Version lifecycle fixture',inputSchema:[{name:'original',label:'Published input',type:'text',required:true}],capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Hold this version'},{id:'infer',kind:'inference',label:'Inference',model:'fake/test-only',prompt:'{{input.original}}',output:'text',advanced:{temperature:0,maxTokens:128}},{id:'return',kind:'return',label:'Return',value:'{{input.original}}'}],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'infer',port:'next'},{id:'c',source:'infer',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    const created=(await invoke('create',{definition}) as {record:LoopRecord}).record,id=created.definition.id;
+    const original=await invoke('run',{slug:definition.slug,input:{original:'Original run'},requestId:'original'}) as RunReceipt,before=await invoke('inspect',{runId:original.id});expect(original.state).toBe('waiting');
+    const draft={...created.definition,slug:'version-draft',inputSchema:[{name:'replacement',label:'Draft input',type:'text',required:true}],nodes:created.definition.nodes.map(node=>node.kind==='inference'?{...node,prompt:'{{input.replacement}}',advanced:{temperature:0.5,maxTokens:256}}:node.kind==='return'?{...node,value:'{{input.replacement}}'}:node)};
+    const saved=(await invoke('draft',{definition:draft,expectedRevision:1}) as {record:LoopRecord}).record;expect(saved).toMatchObject({enabledRevision:1,publishedRevision:1,definition:{revision:2}});
+    expect(await invoke('describe',{slug:definition.slug})).toMatchObject({revision:1,inputSchema:[{name:'original'}]});
+    const tested=await invoke('test',{definition:saved.definition,input:{replacement:'Draft test'},requestId:'draft'}) as RunReceipt;
+    const published=await invoke('run',{slug:definition.slug,input:{original:'Published run'},requestId:'published'}) as RunReceipt;
+    expect(tested).toMatchObject({state:'waiting',testMode:true,definition:{revision:2}});expect(published).toMatchObject({state:'waiting',definition:{revision:1}});
+    expect(await invoke('enable',{id,revision:2,enabled:false})).toMatchObject({enabledRevision:null,publishedRevision:1});
+    expect(await invoke('save',{definition:saved.definition,expectedRevision:2,enabled:false})).toMatchObject({record:{enabledRevision:null,definition:{revision:3}}});
+    const restored=(await invoke('restore',{id,revision:1,expectedRevision:3}) as {record:LoopRecord}).record;expect(restored.definition.nodes[2]).toMatchObject({advanced:{temperature:0,maxTokens:128}});
+    expect(await invoke('publish',{id,revision:2,expectedRevision:4})).toMatchObject({enabledRevision:2,publishedRevision:2,definition:{revision:4}});
+    expect(await invoke('publish',{id,revision:1,expectedRevision:4})).toMatchObject({enabledRevision:1,publishedRevision:1});
+    expect(await invoke('archive',{id,expectedRevision:4,archived:true})).toMatchObject({archived:true,enabledRevision:null});
+    expect(await invoke('recover',{id,expectedRevision:4})).toMatchObject({archived:false,enabledRevision:null});expect(await invoke('inspect',{runId:original.id})).toEqual(before);expect(s.complete).not.toHaveBeenCalled();
+    for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});expect(await invoke('inspect',{runId:original.id})).toEqual(before);
+    for(const [run,result] of [[original,'Original run'],[tested,'Draft test'],[published,'Published run']] as const)expect(await invoke('resume',{runId:run.id})).toMatchObject({state:'completed',result});
+    expect(s.complete.mock.calls.map(([request])=>({temperature:request.temperature,maxTokens:request.maxTokens}))).toEqual([{temperature:0,maxTokens:128},{temperature:0.5,maxTokens:256},{temperature:0,maxTokens:128}]);
+    const completed=await invoke('inspect',{runId:original.id});await invoke('delete',{id,expectedRevision:4});expect(await invoke('recover',{id,expectedRevision:4})).toMatchObject({enabledRevision:null,definition:restored.definition});expect(await invoke('inspect',{runId:original.id})).toEqual(completed);expect(await invoke('versions',{id})).toMatchObject([{revision:4},{revision:3},{revision:2},{revision:1}]);
+  });
   it.each(['ui','command','tool'] as const)('preserves current and published slug reservations through %s lifecycle operations',async surface=>{
     const s=await setup();let sequence=0;
     const invoke=async(op:string,input:Record<string,unknown>={})=>{
