@@ -11,6 +11,7 @@ import {resolveBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {textPage} from './feature-json.js';
 import {retentionCandidates,type RetentionPolicy,type RetentionResult,type RetiredAdmission} from './retention.js';
 import {DocumentStore} from './document-store.js';
+import {type DocumentLinks, type MaintenancePolicy, type TransportRelease, emptyDocumentLinks} from './document-maintenance.js';
 import {fingerprintJson} from './fingerprint.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
@@ -138,9 +139,19 @@ export class Engine{
     if(!this.options.documentDirectory)throw requestError('Loops document storage is unavailable.','LOOPS_SERVICE_UNAVAILABLE');
     return this.documents??=new DocumentStore(this.options.documentDirectory,Math.max(this.budgets.definitionBytes,this.budgets.inputBytes)*2);
   }
-  documentWrap(actor:Actor,value:unknown){return this.documentStore(actor).wrap(actor,value);}
-  documentSnapshot(actor:Actor,value:unknown){return this.documentStore(actor).snapshot(actor,value);}
-  documentRead(actor:Actor,id:string,offset?:number,limit?:number){return this.documentStore(actor).read(actor,id,offset,limit);}
+  documentWrap(actor:Actor,value:unknown,links:DocumentLinks={...emptyDocumentLinks(),unknown:true}){return this.documentStore(actor).wrap(actor,value,links);}
+  documentSnapshot(actor:Actor,value:unknown,links:DocumentLinks={...emptyDocumentLinks(),unknown:true}){return this.documentStore(actor).snapshot(actor,value,links);}
+  documentRead(actor:Actor,id:string,offset?:number,limit?:number,readerId?:string){return this.documentStore(actor).read(actor,id,offset,limit,readerId);}
+  documentAcquire(actor:Actor,id:string){return this.documentStore(actor).acquire(actor,id);}
+  documentRelease(actor:Actor,id:string,readerId:string){return this.documentStore(actor).release(actor,{kind:'reader',documentId:id,readerId});}
+  documentUse(actor:Actor,reference:Parameters<DocumentStore['use']>[1]){return this.documentStore(actor).use(actor,reference);}
+  documentFinishUse(actor:Actor,id:string,readerId:string|undefined,links:DocumentLinks){return this.documentStore(actor).finishUse(actor,id,readerId,links);}
+  maintenance(actor:Actor,policy:MaintenancePolicy,applyPlanId?:string){
+    this.ensureAuthor(actor);
+    const runs=this.storage.indexed?.runMetadata()??Object.values(this.state.runs);
+    return this.documentStore(actor).maintenance(actor,policy,{runs:new Set(runs.map(run=>run.id)),loops:new Set(Object.keys(this.state.loops))},applyPlanId);
+  }
+  transportRelease(actor:Actor,input:TransportRelease){this.ensureAuthor(actor);return this.documentStore(actor).release(actor,input);}
   documentUpload(actor:Actor,input:Parameters<DocumentStore['upload']>[1]){return this.documentStore(actor).upload(actor,input);}
   documentResolve(actor:Actor,reference:Parameters<DocumentStore['resolve']>[1]){return this.documentStore(actor).resolve(actor,reference);}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}

@@ -31,6 +31,7 @@ summary:focus-visible{outline:2px solid #8177d5;outline-offset:3px}button:disabl
 .lp-history-cleanup{margin:12px 0;padding:12px;border:1px solid var(--lp-border,#8d91a2);border-radius:8px}
 .lp-history-cleanup>summary{cursor:pointer;font-weight:600}
 .lp-history-cleanup .lp-field{max-width:320px}
+.lp-history-cleanup li{overflow-wrap:anywhere;margin:8px 0}.lp-history-cleanup li button{margin:4px 0}.lp-history-cleanup code{overflow-wrap:anywhere}
 
 /* Inherit the host's resolved color scheme, including manual theme overrides.
    Native CSS pairs also update across the shadow boundary without inspecting

@@ -52,8 +52,8 @@ async function commandJson(s:Awaited<ReturnType<typeof setup>>,op:string,input:u
     expect(text.length).toBeLessThanOrEqual(8000);return JSON.parse(text.split('\n\nRead the full JSON result with ')[0]);
   };
   const value=await invoke(op,input);if(!Value.Check(DocumentReferenceSchema,value))return value;
-  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset});expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
-  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset,...value.readerId?{readerId:value.readerId}:{}});expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
 async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Record<string,unknown>,callId=`fixture-${name}`){
   const invoke=async(name:string,input:Record<string,unknown>)=>{
@@ -62,10 +62,89 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
     expect(JSON.stringify({tool:{id:`openclaw:loops-poc:loops_${name}`,name:`loops_${name}`,source:'openclaw'},result},null,2).length).toBeLessThanOrEqual(16000);return result.details;
   };
   const value=await invoke(name,input);if(!Value.Check(DocumentReferenceSchema,value))return value as Record<string,unknown>;
-  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset}) as {text:string;offset:number;nextOffset:number|null;sha256:string};expect(page.offset).toBe(offset);expect(page.sha256).toBe(value.sha256);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
-  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset,...value.readerId?{readerId:value.readerId}:{}}) as {text:string;offset:number;nextOffset:number|null;sha256:string};expect(page.offset).toBe(offset);expect(page.sha256).toBe(value.sha256);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('protects actual parked, queued and settling run snapshots after reader release, including a parked restart',async()=>{
+    let s=await setup(),release!:()=>void;const entered:AbortSignal[]=[];
+    const implementation=s.complete.getMockImplementation()!;
+    s.complete.mockImplementation(async request=>{entered.push(request.signal!);await new Promise<void>(resolve=>{release=resolve;});return implementation(request);});
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),wire=createFeatureClient(wireContract,transport);
+    const definition:import('../src/graph.js').Definition={...structuredClone(examples[0]),revision:1,schemaVersion:2,limits:{maxExecutions:1000,maxOutputBytes:1048576},nodes:[
+      {id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Keep this evidence'},
+      {id:'summary',kind:'inference',label:'Inference',prompt:'Synthetic completion after waiting',output:'text'},
+      {id:'return',kind:'return',label:'Return',value:'{{nodes.summary.text}}'}],edges:[
+      {id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'summary',port:'next'},{id:'c',source:'summary',target:'return',port:'next'}]};
+    const saved=await client.invoke('save',{definition,expectedRevision:1,enabled:true});expect(saved.record.definition.revision).toBe(2);
+    const input={text:'Large run evidence 🙂 '.repeat(4000)};expect(fitsFeatureJson(input)).toBe(false);
+    const first=await client.invoke('run',{slug:definition.slug,input,requestId:'settling'}),parked=await client.invoke('run',{slug:definition.slug,input,requestId:'parked'});
+    expect(first.state).toBe('waiting');expect(parked.state).toBe('waiting');
+    const pending=client.invoke('resume',{runId:first.id});
+    try{
+      await vi.waitFor(()=>expect(entered).toHaveLength(1));
+      const queued=await client.invoke('run',{slug:definition.slug,input,requestId:'queued'});expect(queued.state).toBe('queued');
+      const references:string[]=[];
+      for(const run of [first,parked,queued]){
+        const reference=await wire.invoke('inspect',{runId:run.id});expect(Value.Check(DocumentReferenceSchema,reference)).toBe(true);
+        const document=reference as {documentId:string;readerId:string};references.push(document.documentId);
+        expect(await wire.invoke('document_release',{documentId:document.documentId,readerId:document.readerId})).toEqual({released:true});
+      }
+      expect(await client.invoke('cancel',{runId:first.id})).toMatchObject({state:'cancelled',cleanupPending:true});await pending;
+      await vi.waitFor(()=>expect(entered[0].aborted).toBe(true));
+      const preview=await client.invoke('maintenance',{policy:{keepLatest:0}});
+      expect(preview.readers).toEqual([]);expect(preview.protected.referenced).toBeGreaterThanOrEqual(3);
+      expect(preview.candidates.every(file=>!references.includes(file.id))).toBe(true);
+      const history=await client.invoke('retention',{policy:{keepLatest:0}});expect(history.candidates).toEqual([]);
+      expect((await client.invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId})).applied).toBe(true);
+      for(const id of references){const acquired=await wire.invoke('document_acquire',{documentId:id}) as {documentId:string;readerId:string};expect(await wire.invoke('document',acquired)).toMatchObject({documentId:id});await wire.invoke('document_release',acquired);}
+      release();await vi.waitFor(async()=>expect(await client.invoke('status',{runId:queued.id})).toMatchObject({state:'waiting'}));
+      await vi.waitFor(async()=>expect((await client.invoke('inspect',{runId:first.id})).cleanupPending).toBe(false));
+      const evidence=await client.invoke('inspect',{runId:parked.id});
+      for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
+      expect(await client.invoke('inspect',{runId:parked.id})).toEqual(evidence);
+      const reopened=await client.invoke('maintenance',{policy:{keepLatest:0}});expect(reopened.readers).toEqual([]);
+      expect(reopened.candidates.every(file=>!references.includes(file.id))).toBe(true);expect(reopened.protected.referenced).toBeGreaterThanOrEqual(3);
+    }finally{release?.();await pending;}
+  },30000);
+  it.each(['ui','command','tool'] as const)('protects readers and run evidence through %s maintenance, then reclaims released files after restart',async surface=>{
+    let s=await setup();let sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),wire=createFeatureClient(wireContract,transport),readOnly=createFeatureClient(wireContract,{...transport,request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>,['operator.read'])} as FeatureTransport);
+    const invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op,input,`maintenance-${++sequence}`):client.invoke(op,input as never);
+    const upload=async(input:Record<string,unknown>)=>surface==='command'?commandJson(s,'upload',input):surface==='tool'?toolJson(s,'upload',input,`upload-${++sequence}`):wire.invoke('upload',input as never);
+    const definition={...structuredClone(examples[0]),schemaVersion:2 as const,inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'Full transport evidence 🙂 '.repeat(3000)}],edges:[{id:'next',source:'input',target:'return',port:'next'}],limits:{maxExecutions:5,maxOutputBytes:200000}};
+    expect(fitsFeatureJson(definition.nodes[1].value)).toBe(false);
+    const encoded=JSON.stringify(definition);let offset=0,reference:unknown;
+    const characters=Array.from(encoded);
+    while(offset<characters.length){const text=characters.slice(offset,offset+1000).join(''),complete=offset+1000>=characters.length;const saved=await upload({uploadId:'definition',offset,text,...complete?{complete:true,sha256:createHash('sha256').update(encoded).digest('hex')}:{}}) as {offset:number;reference?:unknown};offset=saved.offset;reference=saved.reference;}
+    const run=await (surface==='ui'?wire.invoke('test',{definition:reference,input:{},requestId:'maintenance-run'} as never):invoke('test',{definition:reference,input:{},requestId:'maintenance-run'})) as RunReceipt;
+    expect(run).toMatchObject({state:'completed'});expect(s.complete).not.toHaveBeenCalled();
+    const full=await invoke('inspect',{runId:run.id}) as Run;expect(full.result).toBe(definition.nodes[1].value);
+    const held=await wire.invoke('inspect',{runId:run.id});expect(held).toMatchObject({kind:'loops-document'});expect(Value.Check(DocumentReferenceSchema,held)).toBe(true);
+    const doc=held as {documentId:string;readerId:string},second=await readOnly.invoke('document_acquire',{documentId:doc.documentId}) as {readerId:string};
+    expect(second.readerId).not.toBe(doc.readerId);
+    expect(await readOnly.invoke('maintenance',{policy:{keepLatest:0}})).toMatchObject({kind:'loops-error',error:{message:expect.stringContaining('write access')}});
+    expect(await readOnly.invoke('transport_release',{kind:'reader',documentId:doc.documentId,readerId:doc.readerId})).toMatchObject({kind:'loops-error'});
+    await upload({uploadId:'abandoned',offset:0,text:'{"pending":'});
+    let preview=await invoke('maintenance',{policy:{keepLatest:0}}) as import('../src/document-maintenance.js').MaintenanceResult;
+    expect(preview.protected.readers).toBeGreaterThan(0);expect(preview.protected.uploads).toBe(1);
+    expect(preview.uploads[0].uploadId).toBe('abandoned');
+    await invoke('transport_release',{kind:'upload',uploadId:'abandoned',sha256:preview.uploads[0].sha256});
+    await readOnly.invoke('document_release',{documentId:doc.documentId,readerId:doc.readerId});
+    preview=await invoke('maintenance',{policy:{keepLatest:0}}) as typeof preview;expect(preview.readers.some(reader=>reader.readerId===second.readerId)).toBe(true);
+    await readOnly.invoke('document_release',{documentId:doc.documentId,readerId:second.readerId});
+    preview=await invoke('maintenance',{policy:{keepLatest:0}}) as typeof preview;expect(preview.readers).toEqual([]);expect(preview.protected.referenced).toBeGreaterThan(0);
+    expect((await invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId}) as typeof preview).applied).toBe(true);
+    expect(await invoke('inspect',{runId:run.id})).toEqual(full);
+    const retired=await invoke('retention',{policy:{keepLatest:0}}) as {planId:string;policy:Record<string,unknown>};await invoke('retention',{policy:retired.policy,applyPlanId:retired.planId});
+    for(const service of s.services)await service.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);s=await setup({root:s.root});
+    preview=await invoke('maintenance',{policy:{keepLatest:0}}) as typeof preview;expect(preview.candidates.some(file=>file.kind==='document')).toBe(true);expect(preview.protected).toMatchObject({readers:0,referenced:0,uploads:0,legacy:0});
+    const directory=join(s.root,'loops-poc','documents'),bytes=()=>readdirSync(directory).reduce((sum,name)=>sum+readFileSync(join(directory,name)).length,0),before=bytes();
+    expect((await invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId}) as typeof preview).applied).toBe(true);expect(before-bytes()).toBe(preview.bytes);
+    expect(readdirSync(directory)).toEqual([]);expect(await invoke('runs')).toEqual([]);
+  },30000);
   it.each(['ui','command','tool'] as const)('keeps %s queued work behind cancellation cleanup and preserves the completed queue after restart',async surface=>{
     let s=await setup(),sequence=0,release!:()=>void,physical=0,maximum=0;const entered:Array<AbortSignal|undefined>=[];
     const implementation=s.complete.getMockImplementation()!;
@@ -272,7 +351,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const s=await setup();
     Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});
     type Operation=keyof typeof wireContract.operations;
-    const inputs=new Map<Operation,Record<string,unknown>>();let sequence=0;
+    const inputs=new Map<Operation,Record<string,unknown>>();let sequence=0,lastDocument:string|undefined;
     const raw=async(op:Operation,input:Record<string,unknown>):Promise<unknown>=>{
       if(surface==='command')return (await s.commands.get('loops')!.handler({...s.commandContext,args:`${op} --json-base64 ${Buffer.from(JSON.stringify(input)).toString('base64')}`})).text;
       if(surface==='tool'){
@@ -287,9 +366,10 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       if(surface==='command'&&(response as string).startsWith('Loops ['))return {kind:'loops-error',display:response};
       const value=surface==='command'?JSON.parse((response as string).split('\n\nRead the full JSON result with ')[0]):response;
       if(!Value.Check(DocumentReferenceSchema,value))return value;
+      lastDocument=value.documentId;
       let text='',offset=0;
-      while(true){const page=await invoke('document',{documentId:value.documentId,offset}) as {text:string;sha256:string;offset:number;nextOffset:number|null};expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
-      expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+      while(true){const page=await invoke('document',{documentId:value.documentId,offset,...value.readerId?{readerId:value.readerId}:{}}) as {text:string;sha256:string;offset:number;nextOffset:number|null};expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+      expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
     };
     const {id:_id,revision:_revision,schemaVersion:_version,...content}=structuredClone(examples[0]);
     content.slug=`inventory-${surface}`;content.capabilities=[];content.limits.maxOutputBytes=1024*1024;
@@ -354,6 +434,11 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await invoke('delete',{id,expectedRevision:5})).toMatchObject({id,deleted:true});
     const policy={keepLatest:1000},plan=await invoke('retention',{policy}) as {planId:string};
     expect(await invoke('retention',{policy,applyPlanId:plan.planId})).toMatchObject({applied:true,candidates:[]});
+    expect(lastDocument).toBeTypeOf('string');
+    const reader=await invoke('document_acquire',{documentId:lastDocument}) as {documentId:string;readerId:string};
+    expect(await invoke('transport_release',{kind:'reader',...reader})).toEqual({released:true});
+    const cleanup=await invoke('maintenance',{policy}) as {planId:string};
+    expect(await invoke('maintenance',{policy,applyPlanId:cleanup.planId})).toMatchObject({applied:true,candidates:[]});
     expect([...inputs.keys()].sort()).toEqual(Object.keys(wireContract.operations).filter(op=>surface!=='tool'||op!=='review').sort());
     const before=await s.action('history',{});
     // Every operation rejects caller-identity injection before dispatch. This
@@ -844,7 +929,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=await setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=await setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(34);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(38);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
   it('authors through real SDK tools and shares definitions with the UI across registry scopes',async()=>{
     const gateway=await setup(),s=await setup({root:gateway.root,start:false});
     const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('authoring-call',p);

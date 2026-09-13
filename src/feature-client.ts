@@ -28,11 +28,12 @@ export function createLoopsClient(host: FeatureTransport): Pick<FeatureClient<ty
     }
     if (!fitsFeatureJson(payload)) throw new Error('This request exceeds the host transport envelope and has no remaining upload-capable fields. No operation was submitted.');
     let result = await wire.invoke(operation, payload as FeatureInput<typeof wireContract, typeof operation>, options);
+    let consumed: {documentId: string; readerId?: string} | undefined;
     if (Value.Check(DocumentReferenceSchema, result)) {
       const reference = result;
       let text = '', offset = 0;
       while (true) {
-        const page = await wire.invoke('document', {documentId: reference.documentId, offset}, options);
+        const page = await wire.invoke('document', {documentId: reference.documentId, offset, ...reference.readerId ? {readerId: reference.readerId} : {}}, options);
         if (Value.Check(OperationFailureSchema, page)) throw new LoopError(page.error);
         if (page.offset !== offset || page.sha256 !== reference.sha256 || page.nextOffset !== null && page.nextOffset <= offset) throw new Error('Document page identity or sequence changed.');
         text += page.text;
@@ -41,9 +42,17 @@ export function createLoopsClient(host: FeatureTransport): Pick<FeatureClient<ty
       }
       if (new TextEncoder().encode(text).byteLength !== reference.bytes || await digest(text) !== reference.sha256) throw new Error('Document integrity check failed.');
       result = JSON.parse(text);
+      consumed = reference;
     }
     if(Value.Check(OperationFailureSchema,result))throw new LoopError(result.error);
     if (!Value.Check(contract.operations[operation].output, result)) throw new Error('Operation result does not match its Loops schema.');
+    // Release only after the complete result passes its domain schema. Failed
+    // writes preserve the reservation; a lost acknowledgement needs inspection.
+    // Neither case should discard verified data or automatically retry cleanup.
+    if (consumed?.readerId) {
+      try { await wire.invoke('document_release', {documentId: consumed.documentId, readerId: consumed.readerId}, options); }
+      catch { /* Inspect an unacknowledged release instead of replaying it. */ }
+    }
     return result as FeatureOutput<typeof contract, typeof operation>;
   };
   return {invoke, on: wire.on};
