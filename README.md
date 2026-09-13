@@ -88,7 +88,7 @@ A normal command invocation receives a fresh identity. Reuse an explicit request
 
 Agents use `loops_library` and `loops_read` for the full library, `loops_create`/`loops_edit` for authoring, and `loops_run` for real execution. `loops_run` accepts either named `input` values or a `text` shortcut; omit both for zero-input loops. An empty enabled list does not mean the library is empty. Agents can publish, enable, disable, archive, recover and delete on request. Only a graph containing an explicit **Human review** pauses for the authenticated human decision path.
 
-The manifest lists all 31 tools. Additional operations cover capability/preflight checks, draft testing, immutable versions, full inspection, paged output/history and explicit recovery. For an older dev profile with explicit tool additions, merge the current inventory before restarting:
+The manifest lists the current tool inventory, including `loops_save` for full-definition saves. Additional operations cover capability/preflight checks, draft testing, immutable versions, full inspection, paged output/history and explicit recovery. For an older dev profile with explicit tool additions, merge the current inventory before restarting; otherwise its tool profile may exclude newly added operations:
 
 ```sh
 node scripts/enable-agent-tools.mjs .dev-profile/openclaw.json

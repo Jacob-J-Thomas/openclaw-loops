@@ -17,6 +17,8 @@ import {createLoopsClient} from '../src/feature-client.js';
 import {fitsFeatureJson} from '../src/feature-json.js';
 import {createFeatureClient,type FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
 import {wireContract,DocumentReferenceSchema} from '../src/wire-contract.js';
+import type {LoopRecord} from '../src/engine.js';
+import type {RunReceipt} from '../src/receipts.js';
 type ToolRegistration=Parameters<OpenClawPluginApi['registerTool']>[0];
 import {execFileSync} from 'node:child_process';
 beforeAll(()=>{if(!process.env.LOOPS_TEST_PLUGIN)execFileSync(process.execPath,['scripts/build.mjs'],{stdio:'pipe'});},30_000);
@@ -61,6 +63,120 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it.each(['ui','command','tool'] as const)('qualifies every lifecycle operation and common negative boundaries through %s',async surface=>{
+    const s=await setup();
+    Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});
+    type Operation=keyof typeof wireContract.operations;
+    const inputs=new Map<Operation,Record<string,unknown>>();let sequence=0;
+    const raw=async(op:Operation,input:Record<string,unknown>):Promise<unknown>=>{
+      if(surface==='command')return (await s.commands.get('loops')!.handler({...s.commandContext,args:`${op} --json-base64 ${Buffer.from(JSON.stringify(input)).toString('base64')}`})).text;
+      if(surface==='tool'){
+        const operation=wireContract.operations[op];if(!('tool' in operation))throw new Error('No agent tool for '+op);
+        return (await s.tools.find(t=>t.name===operation.tool.name)!.execute(`inventory-${++sequence}`,input)).details;
+      }
+      const response=await s.action(op,input);if(!response?.ok)throw new Error(JSON.stringify(response));return response.result;
+    };
+    const invoke=async(op:Operation,input:Record<string,unknown>={}):Promise<unknown>=>{
+      inputs.set(op,input);
+      const response=await raw(op,input);
+      if(surface==='command'&&(response as string).startsWith('Loops ['))return {kind:'loops-error',display:response};
+      const value=surface==='command'?JSON.parse((response as string).split('\n\nRead the full JSON result with ')[0]):response;
+      if(!Value.Check(DocumentReferenceSchema,value))return value;
+      let text='',offset=0;
+      while(true){const page=await invoke('document',{documentId:value.documentId,offset}) as {text:string;sha256:string;offset:number;nextOffset:number|null};expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+      expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+    };
+    const {id:_id,revision:_revision,schemaVersion:_version,...content}=structuredClone(examples[0]);
+    content.slug=`inventory-${surface}`;content.capabilities=[];content.limits.maxOutputBytes=1024*1024;
+    content.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];content.edges=[{id:'next',source:'input',target:'return',port:'next'}];
+    const created=await invoke('create',{definition:content}) as {record:LoopRecord},id=created.record.definition.id;
+    expect(created.record.enabledRevision).toBe(1);
+    expect(await invoke('load',{id})).toEqual(created.record);
+    expect(await invoke('library')).toEqual(expect.arrayContaining([expect.objectContaining({id})]));
+    expect(await invoke('browse',{search:content.slug,limit:1})).toMatchObject({total:1,nextCursor:null,items:[{id}]});
+    expect(await invoke('list')).toEqual(expect.arrayContaining([expect.objectContaining({id})]));
+    expect(await invoke('capabilities')).toMatchObject({model:'fake/test-only',parameters:expect.any(Array),concurrency:1});
+    expect(await invoke('validate',{definition:created.record.definition})).toEqual({valid:true,issues:[]});
+    const saved=await invoke('save',{definition:{...created.record.definition,name:'Full save'},expectedRevision:1,enabled:true}) as {record:LoopRecord};
+    expect(saved.record).toMatchObject({enabledRevision:2,definition:{revision:2,name:'Full save'}});
+    const draft=await invoke('draft',{definition:{...saved.record.definition,name:'Unpublished draft'},expectedRevision:2}) as {record:LoopRecord};
+    expect(draft.record).toMatchObject({enabledRevision:2,publishedRevision:2,definition:{revision:3}});
+    expect(await invoke('edit',{id,expectedRevision:3,changes:{description:'Edited'}})).toMatchObject({record:{enabledRevision:4,definition:{revision:4}}});
+    expect(await invoke('versions',{id})).toMatchObject([{revision:4},{revision:3},{revision:2},{revision:1}]);
+    const restored=await invoke('restore',{id,revision:2,expectedRevision:4}) as {record:LoopRecord};
+    expect(restored.record).toMatchObject({enabledRevision:4,definition:{revision:5,name:'Full save'}});
+    expect(await invoke('publish',{id,revision:5,expectedRevision:5})).toMatchObject({enabledRevision:5,publishedRevision:5});
+    expect(await invoke('describe',{slug:content.slug})).toMatchObject({id,revision:5,name:'Full save'});
+    expect(await invoke('enable',{id,revision:5,enabled:false})).toMatchObject({enabledRevision:null});
+    expect(await invoke('run',{slug:content.slug,input:{text:'Disabled'},requestId:'disabled'})).toMatchObject({kind:'loops-error'});
+    await invoke('enable',{id,revision:5,enabled:true});
+    const first=await invoke('run',{slug:content.slug,input:{text:'Complete result'},requestId:'first'}) as RunReceipt;
+    expect(first).toMatchObject({state:'completed',source:surface==='ui'?'session-action':surface,result:'Complete result',definition:{revision:5}});
+    expect(await invoke('status',{runId:first.id})).toEqual(first);
+    expect(await invoke('runs')).toEqual(expect.arrayContaining([expect.objectContaining({id:first.id,state:'completed'})]));
+    expect(await invoke('history',{limit:1})).toMatchObject({total:1,nextCursor:null,items:[{id:first.id}]});
+    expect(await invoke('inspect',{runId:first.id})).toMatchObject({result:'Complete result',definition:{revision:5},input:{text:'Complete result'}});
+    expect(await invoke('output',{runId:first.id})).toMatchObject({text:'Complete result',nextOffset:null});
+    // Exceed the actual feature string envelope, stage bounded UTF-8 JSON and
+    // reconstruct the returned immutable document on every surface.
+    const large='x'.repeat(66000)+'🙂END',json=JSON.stringify({text:large}),characters=Array.from(json),sha256=createHash('sha256').update(json).digest('hex');
+    let reference:unknown;
+    for(let offset=0;offset<characters.length;offset+=1000){const page=await invoke('upload',{uploadId:'inventory-upload',offset,text:characters.slice(offset,offset+1000).join(''),complete:offset+1000>=characters.length,sha256}) as {reference?:unknown};reference=page.reference;}
+    const big=await invoke('run',{slug:content.slug,input:reference,requestId:'large'}) as RunReceipt;
+    expect(big).toMatchObject({state:'completed',resultTruncated:true});
+    expect(await invoke('inspect',{runId:big.id})).toMatchObject({result:large});
+    const definition={...restored.record.definition,nodes:[content.nodes[0],{id:'wait',kind:'wait',label:'Wait',message:'Continue explicitly'},content.nodes[1]],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'return',port:'next'}]};
+    const wait=await invoke('test',{definition,input:{text:'Wait result'},requestId:'wait'}) as RunReceipt;
+    expect(wait).toMatchObject({state:'waiting',testMode:true});expect(await invoke('resume',{runId:wait.id})).toMatchObject({state:'completed',result:'Wait result'});
+    const cancelled=await invoke('test',{definition,input:{text:'Cancelled result'},requestId:'cancel'}) as RunReceipt;
+    expect(await invoke('cancel',{runId:cancelled.id})).toMatchObject({state:'cancelled'});
+    const retry=await invoke('retry',{runId:cancelled.id,mode:'restart',requestId:'restart'}) as RunReceipt;
+    expect(retry).toMatchObject({state:'waiting',parentRunId:cancelled.id});await invoke('cancel',{runId:retry.id});
+    const reviewDefinition={...definition,nodes:[content.nodes[0],{id:'review',kind:'review',label:'Review',proposal:'Authored human decision'},content.nodes[1],{id:'fail',kind:'fail',label:'Fail',reason:'Rejected'}],edges:[{id:'a',source:'input',target:'review',port:'next'},{id:'b',source:'review',target:'return',port:'approve'},{id:'c',source:'review',target:'fail',port:'reject'}]};
+    const review=await invoke('test',{definition:reviewDefinition,input:{text:'Approved'},requestId:'review'}) as RunReceipt;
+    expect(review.state).toBe('review');expect(await invoke('resume',{runId:review.id})).toMatchObject({kind:'loops-error'});
+    expect(await s.action('review',{runId:review.id,decision:'approve'},['operator.write'])).toMatchObject({result:{kind:'loops-error'}});
+    if(surface==='tool'){
+      expect(s.tools.some(t=>t.name==='loops_review')).toBe(false);
+      // A separate authenticated human action, never attributed to the agent.
+      expect(await s.action('review',{runId:review.id,decision:'approve'})).toMatchObject({result:{state:'completed',result:'Approved'}});
+    }else expect(await invoke('review',{runId:review.id,decision:'approve'})).toMatchObject({state:'completed',result:'Approved'});
+    expect(await invoke('revoke',{id})).toMatchObject({enabledRevision:null,revoked:true});
+    expect(await invoke('run',{slug:content.slug,input:{text:'Revoked'},requestId:'revoked'})).toMatchObject({kind:'loops-error'});
+    expect(await invoke('archive',{id,expectedRevision:5,archived:true})).toMatchObject({archived:true});
+    expect(await invoke('deleted')).toEqual(expect.arrayContaining([expect.objectContaining({id,archived:true})]));
+    expect(await invoke('recover',{id,expectedRevision:5})).toMatchObject({archived:false,enabledRevision:null});
+    expect(await invoke('delete',{id,expectedRevision:5})).toMatchObject({id,deleted:true});
+    const policy={keepLatest:1000},plan=await invoke('retention',{policy}) as {planId:string};
+    expect(await invoke('retention',{policy,applyPlanId:plan.planId})).toMatchObject({applied:true,candidates:[]});
+    expect([...inputs.keys()].sort()).toEqual(Object.keys(wireContract.operations).filter(op=>surface!=='tool'||op!=='review').sort());
+    const before=await s.action('history',{});
+    // Every operation rejects caller-identity injection before dispatch. This
+    // uses each actual valid request, not synthetic schema-only assertions.
+    for(const [op,input] of inputs){const denied=await raw(op,{...input,sessionId:'forged'}).then(value=>JSON.stringify(value),error=>String(error));expect(denied,`${surface}/${op} schema`).toMatch(/schema/i);}
+    expect(await s.action('history',{})).toEqual(before);
+    s.config.plugins.entries['loops-poc'].enabled=false;
+    for(const [op,input] of inputs){const denied=await raw(op,input).then(value=>JSON.stringify(value),error=>String(error));expect(denied,`${surface}/${op} revoked host policy`).toMatch(/disabled/i);}
+    s.config.plugins.entries['loops-poc'].enabled=true;
+    for(const service of s.services)await service.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);
+    for(const [op,input] of inputs){const unavailable=await raw(op,input).then(value=>JSON.stringify(value),error=>String(error));expect(unavailable,`${surface}/${op} stopped service`).toMatch(/LOOPS_SERVICE_UNAVAILABLE/);}
+    expect(s.complete).not.toHaveBeenCalled();
+  },30_000);
+  it('lets agents save full definitions with the same activation and conflict semantics as the editor',async()=>{
+    const s=await setup(),save=s.tools.find(t=>t.name==='loops_save');
+    expect(save,'Every non-human-only operation must have an agent tool').toBeDefined();
+    const definition={...structuredClone(examples[1]),id:'agent-full-save',slug:'agent-full-save',revision:0};
+    const inspect=(value:unknown)=>{if(!value||typeof value!=='object')return;const schema=value as Record<string,unknown>;if(schema.type==='array')expect(Array.isArray(schema.items)).toBe(false);for(const child of Object.values(schema))inspect(child);};inspect(save!.parameters);
+    const saved=await toolJson(s,'save',{definition,expectedRevision:0,enabled:true});
+    expect(saved).toMatchObject({issues:[],record:{enabledRevision:1,definition:{revision:1}}});
+    const loaded=await s.action('load',{id:definition.id});if(!loaded?.ok)throw new Error('Saved definition was not readable');
+    const current=loaded.result as {definition:typeof definition};
+    expect(await toolJson(s,'save',{definition:{...current.definition,name:'Full replacement'},expectedRevision:1})).toMatchObject({record:{enabledRevision:null,definition:{revision:2,name:'Full replacement'}}});
+    expect(await toolJson(s,'save',{definition:current.definition,expectedRevision:1,enabled:true})).toMatchObject({kind:'loops-error',error:{code:'LOOPS_REVISION_CONFLICT'}});
+    for(const injection of [{grants:['llm']},{human:true},{sessionId:'forged'}])await expect(save!.execute('forged-save',{definition:current.definition,expectedRevision:2,...injection})).rejects.toThrow(/schema/);
+    expect(await commandJson(s,'read',{id:definition.id})).toMatchObject({enabledRevision:null,definition:{revision:2,name:'Full replacement'}});
+    expect(s.complete).not.toHaveBeenCalled();
+  });
   it('shares explicit JSON values and unfinished drafts through agent tools, conversation commands and the editor SDK',async()=>{
     const s=await setup();
     const command=(op:string,input:unknown={})=>commandJson(s,op,input);
@@ -523,7 +639,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=await setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=await setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(34);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(34);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
   it('authors through real SDK tools and shares definitions with the UI across registry scopes',async()=>{
     const gateway=await setup(),s=await setup({root:gateway.root,start:false});
     const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('authoring-call',p);
@@ -572,7 +688,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   it('rejects identity injection before entering the service',async()=>{const s=await setup();await expect(s.tools.find(t=>t.name==='loops_run')!.execute('x',{slug:'summarize-text',input:{text:'A'},sessionId:'forged'})).rejects.toThrow(/schema/);});
   it('accepts the text shortcut with the same strict input validation and rejects ambiguous input',async()=>{const s=await setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true});const run=s.tools.find(t=>t.name==='loops_run')!;expect((await run.execute('shortcut',{slug:'summarize-text',text:'Source'})).details).toMatchObject({state:'completed'});expect((await run.execute('ambiguous',{slug:'summarize-text',text:'Source',input:{text:'Other'}})).details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_INVALID_REQUEST',message:expect.stringMatching(/not both/)}});expect(s.complete).toHaveBeenCalledTimes(1);});
   it('allows operator-write activation while keeping human review separate',async()=>{
-    const s=await setup();expect(s.tools.some(t=>/save|review/.test(t.name))).toBe(false);
+    const s=await setup();expect(s.tools.some(t=>t.name==='loops_review')).toBe(false);expect(s.tools.some(t=>t.name==='loops_save')).toBe(true);
     expect(await s.action('enable',{id:'summarize-text',revision:1,enabled:true},['operator.write'])).toMatchObject({result:{enabledRevision:1,grants:['llm']}});
     expect(await s.action('enable',{id:'summarize-text',revision:1,enabled:false},['operator.read'])).toMatchObject({result:{kind:'loops-error',error:{message:expect.stringMatching(/authorized/)}}});
     const d={...structuredClone(examples[0]),revision:1,name:'Saved and enabled by operator'};

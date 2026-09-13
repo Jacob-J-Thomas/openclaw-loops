@@ -29,7 +29,8 @@
     "docs/DEPLOYMENT.md",
     "docs/THIRD_PARTY_NOTICES.md",
     "docs/TRANSPORT.md",
-    "docs/HISTORY.md"
+    "docs/HISTORY.md",
+    "docs/INTERFACES.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
