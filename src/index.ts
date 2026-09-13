@@ -5,8 +5,8 @@ import { contract } from './contract.js';
 import {wireContract, uploadFields, UploadReferenceSchema} from './wire-contract.js';
 import {DocumentStore} from './document-store.js';
 import {parsePluginConfig,pluginConfigSchema,resolveBudgets} from './budgets.js';
-import { Engine, type Actor } from './engine.js';
-import { SqliteStorage } from './storage.js';
+import type { Actor } from './engine.js';
+import { EngineService } from './engine-service.js';
 import { createBridge } from './openclaw.js';
 import {commandHelp,parseCommandInvocation,formatCommandResult} from './commands.js';
 import {receipt,describe} from './receipts.js';
@@ -15,20 +15,20 @@ import {LoopError,requestError,errorDetail,safeFailure} from './errors.js';
 // OpenClaw may evaluate the external plugin for more than one registry scope.
 // Keep one plugin-owned executor per state directory in this Gateway process.
 // Only service.start creates it; tool registration cannot start a competing store.
-const runtimeKey=Symbol.for('openclaw-loops-poc.executor.v1');
-const scope=globalThis as typeof globalThis & {[runtimeKey]?:Map<string,Engine>};
-const engines=scope[runtimeKey]??=new Map<string,Engine>();
+const runtimeKey=Symbol.for('openclaw-loops-poc.executor.v2');
+const scope=globalThis as typeof globalThis & {[runtimeKey]?:Map<string,EngineService>};
+const engines=scope[runtimeKey]??=new Map<string,EngineService>();
 const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description:'Inspectable, bounded loops shared by native UI and chat.',setup(api,events){
   const config=parsePluginConfig(api.pluginConfig),budgets=resolveBudgets(config.budgets);
   const bridge=createBridge(api);const stateFile=join(api.runtime.state.resolveStateDir(),'loops-poc','state.json');
   let documents:DocumentStore|undefined;
   const documentStore=()=>documents??=new DocumentStore(join(api.runtime.state.resolveStateDir(),'loops-poc','documents'),Math.max(budgets.definitionBytes,budgets.inputBytes)*2);
   const service=()=>{const engine=engines.get(stateFile);if(!engine)throw requestError('Loops service has not started in this Gateway.','LOOPS_SERVICE_UNAVAILABLE','Start or restart the enabled Loops plugin in this Gateway before trying again.');return engine;};
-  api.registerService({id:'loops-poc-store',start(){
-    if(engines.has(stateFile))return;
-    const storage=new SqliteStorage(join(api.runtime.state.resolveStateDir(),'loops-poc','loops.sqlite'),stateFile);
-    try{engines.set(stateFile,new Engine(storage,bridge.host,{budgets,concurrency:config.maxConcurrentRuns??1,onChange:()=>events.emit('changed',{})}));}
-    catch(error){return storage.close().then(()=>{throw error;},cleanupError=>{throw new AggregateError([error,cleanupError],'Loops startup failed and storage cleanup reported a failure.');});}
+  api.registerService({id:'loops-poc-store',async start(){
+    const existing=engines.get(stateFile);if(existing)return existing.ready;
+    const engine=new EngineService({file:join(api.runtime.state.resolveStateDir(),'loops-poc','loops.sqlite'),legacyFile:stateFile,budgets,concurrency:config.maxConcurrentRuns??1},bridge.host,()=>events.emit('changed',{}));
+    engines.set(stateFile,engine);
+    try{await engine.ready;}catch(error){try{await engine.close();}catch{/* Readiness already carries the startup failure. */}finally{if(engines.get(stateFile)===engine)engines.delete(stateFile);}throw error;}
   },async stop(){
     const engine=engines.get(stateFile);
     try{await engine?.close();}finally{if(engines.get(stateFile)===engine)engines.delete(stateFile);}
@@ -48,17 +48,17 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     }catch(error){const detail=errorDetail(error,{phase:'operation'});return {text:`Loops [${detail.code}]: ${detail.message}\n${detail.recovery}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
-    browse:(p,c)=>service().browse(bridge.actor(c),p),
-    retention:(p,c)=>service().retention(bridge.actor(c),p.policy,p.applyPlanId),
-    test:async(p,c)=>receipt(await service().test(bridge.actor(c),p.definition,p.input,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),retry:async(p,c)=>receipt(await service().retry(bridge.actor(c),p.runId,p.mode,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),
-    draft:(p,c)=>service().draft(bridge.actor(c),p.definition,p.expectedRevision),versions:(p,c)=>service().versions(bridge.actor(c),p.id),publish:(p,c)=>service().publish(bridge.actor(c),p.id,p.revision,p.expectedRevision),restore:(p,c)=>service().restore(bridge.actor(c),p.id,p.revision,p.expectedRevision),archive:(p,c)=>service().archive(bridge.actor(c),p.id,p.expectedRevision,p.archived),deleted:(_,c)=>service().deleted(bridge.actor(c)),recover:(p,c)=>service().recover(bridge.actor(c),p.id,p.expectedRevision),output:(p,c)=>service().output(bridge.actor(c),p.runId,p.nodeId,p.offset,p.limit),history:(p,c)=>service().history(bridge.actor(c),p.cursor,p.limit),
-    capabilities:(p,c)=>service().capabilities(bridge.actor(c),p),validate:(p,c)=>service().validate(bridge.actor(c),p.definition),
-    list:(_,c)=>service().list(bridge.actor(c)),describe:(p,c)=>describe(service().describe(bridge.actor(c),p.slug)),
-    run:async(p,c)=>{if(p.input!==undefined&&p.text!==undefined)throw requestError('Supply input or the text shortcut, not both.');return receipt(await service().run(bridge.actor(c),p.slug,p.input??(p.text===undefined?{}:{text:p.text}),p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required for UI execution.');})())));},
-    status:(p,c)=>receipt(service().status(bridge.actor(c),p.runId)),resume:async(p,c)=>receipt(await service().resume(bridge.actor(c),p.runId)),cancel:(p,c)=>receipt(service().cancel(bridge.actor(c),p.runId)),
-    library:(_,c)=>service().library(bridge.actor(c)),load:(p,c)=>service().load(bridge.actor(c),p.id),save:(p,c)=>service().save(bridge.actor(c),p.definition,p.expectedRevision,p.enabled),
-    create:(p,c)=>service().create(bridge.actor(c),p.definition,p.enabled),edit:(p,c)=>service().edit(bridge.actor(c),p.id,p.expectedRevision,p.changes,p.enabled),delete:(p,c)=>service().delete(bridge.actor(c),p.id,p.expectedRevision),
-    enable:(p,c)=>service().enable(bridge.actor(c),p.id,p.revision,p.enabled,p.grants),revoke:(p,c)=>service().revoke(bridge.actor(c),p.id),runs:(_,c)=>service().runs(bridge.actor(c)),inspect:(p,c)=>service().status(bridge.actor(c),p.runId),review:async(p,c)=>receipt(await service().review(bridge.actor(c),p.runId,p.decision)),
+    browse:(p,c)=>service().invoke('browse',bridge.actor(c),p),
+    retention:(p,c)=>service().invoke('retention',bridge.actor(c),p.policy,p.applyPlanId),
+    test:async(p,c)=>receipt(await service().invoke('test',bridge.actor(c),p.definition,p.input,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),retry:async(p,c)=>receipt(await service().invoke('retry',bridge.actor(c),p.runId,p.mode,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),
+    draft:(p,c)=>service().invoke('draft',bridge.actor(c),p.definition,p.expectedRevision),versions:(p,c)=>service().invoke('versions',bridge.actor(c),p.id),publish:(p,c)=>service().invoke('publish',bridge.actor(c),p.id,p.revision,p.expectedRevision),restore:(p,c)=>service().invoke('restore',bridge.actor(c),p.id,p.revision,p.expectedRevision),archive:(p,c)=>service().invoke('archive',bridge.actor(c),p.id,p.expectedRevision,p.archived),deleted:(_,c)=>service().invoke('deleted',bridge.actor(c)),recover:(p,c)=>service().invoke('recover',bridge.actor(c),p.id,p.expectedRevision),output:(p,c)=>service().invoke('output',bridge.actor(c),p.runId,p.nodeId,p.offset,p.limit),history:(p,c)=>service().invoke('history',bridge.actor(c),p.cursor,p.limit),
+    capabilities:(p,c)=>service().invoke('capabilities',bridge.actor(c),p),validate:(p,c)=>service().invoke('validate',bridge.actor(c),p.definition),
+    list:(_,c)=>service().invoke('list',bridge.actor(c)),describe:async(p,c)=>describe(await service().invoke('describe',bridge.actor(c),p.slug)),
+    run:async(p,c)=>{if(p.input!==undefined&&p.text!==undefined)throw requestError('Supply input or the text shortcut, not both.');return receipt(await service().invoke('run',bridge.actor(c),p.slug,p.input??(p.text===undefined?{}:{text:p.text}),p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required for UI execution.');})())));},
+    status:async(p,c)=>receipt(await service().invoke('status',bridge.actor(c),p.runId)),resume:async(p,c)=>receipt(await service().invoke('resume',bridge.actor(c),p.runId)),cancel:async(p,c)=>receipt(await service().invoke('cancel',bridge.actor(c),p.runId)),
+    library:(_,c)=>service().invoke('library',bridge.actor(c)),load:(p,c)=>service().invoke('load',bridge.actor(c),p.id),save:(p,c)=>service().invoke('save',bridge.actor(c),p.definition,p.expectedRevision,p.enabled),
+    create:(p,c)=>service().invoke('create',bridge.actor(c),p.definition,p.enabled),edit:(p,c)=>service().invoke('edit',bridge.actor(c),p.id,p.expectedRevision,p.changes,p.enabled),delete:(p,c)=>service().invoke('delete',bridge.actor(c),p.id,p.expectedRevision),
+    enable:(p,c)=>service().invoke('enable',bridge.actor(c),p.id,p.revision,p.enabled,p.grants),revoke:(p,c)=>service().invoke('revoke',bridge.actor(c),p.id),runs:(_,c)=>service().invoke('runs',bridge.actor(c)),inspect:(p,c)=>service().invoke('status',bridge.actor(c),p.runId),review:async(p,c)=>receipt(await service().invoke('review',bridge.actor(c),p.runId,p.decision)),
   };
   const safely=async<T>(name:string,context:FeatureInvocationContext,handler:(actor:Actor)=>T|Promise<T>)=>{
     const actor=bridge.actor(context);
