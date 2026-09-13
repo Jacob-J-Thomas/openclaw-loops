@@ -9,7 +9,7 @@ export const RetentionPolicySchema=Type.Object({
   keepLatest:Type.Optional(Type.Integer({minimum:0,maximum:Number.MAX_SAFE_INTEGER})),
 },strict);
 export type RetentionPolicy=Static<typeof RetentionPolicySchema>;
-export const RetiredAdmissionSchema=Type.Object({runId:Type.String({minLength:1}),fingerprint:Type.String({pattern:'^[a-f0-9]{64}$'}),retiredAt:Type.String({minLength:1}),owner:Type.Object({agentId:Type.String(),sessionKey:Type.String(),sessionId:Type.String()},strict)},strict);
+export const RetiredAdmissionSchema=Type.Object({runId:Type.String({minLength:1}),fingerprint:Type.String({pattern:'^[a-f0-9]{64}$'}),fingerprintVersion:Type.Optional(Type.Literal(2)),canonicalFingerprint:Type.Optional(Type.String({pattern:'^[a-f0-9]{64}$'})),retiredAt:Type.String({minLength:1}),owner:Type.Object({agentId:Type.String(),sessionKey:Type.String(),sessionId:Type.String()},strict)},strict);
 export type RetiredAdmission=Static<typeof RetiredAdmissionSchema>;
 export const RetentionResultSchema=Type.Object({
   planId:Type.String({pattern:'^[a-f0-9]{64}$'}),policy:RetentionPolicySchema,applied:Type.Boolean(),

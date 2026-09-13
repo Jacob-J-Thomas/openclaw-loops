@@ -6,6 +6,7 @@ import {chmodSync,existsSync} from 'node:fs';
 let database;
 let startupError;
 let schemaVersion=0;
+const currentSchemaVersion=3;
 let writable=false;
 try{
 if(existsSync(workerData.file)){
@@ -14,7 +15,7 @@ if(existsSync(workerData.file)){
   // through a read-only connection first; immutable mode would ignore its WAL.
   database=new DatabaseSync(workerData.file,{readOnly:true});
   schemaVersion=database.prepare('PRAGMA user_version').get().user_version;
-  if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
+  if(schemaVersion>currentSchemaVersion)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
   const integrity=database.prepare('PRAGMA quick_check').get().quick_check;
   if(integrity!=='ok')throw new Error(`Loops database integrity check failed: ${integrity}`);
   if(schemaVersion===0){
@@ -41,12 +42,14 @@ database?.close();
 database=new DatabaseSync(workerData.file);
 writable=true;
 database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
-if(schemaVersion===1){
-  const destination=`${workerData.file}.before-schema-2-${Date.now()}.bak`;
+if(schemaVersion>0&&schemaVersion<currentSchemaVersion){
+  const destination=`${workerData.file}.before-schema-${currentSchemaVersion}-${Date.now()}.bak`;
   await backup(database,destination);chmodSync(destination,0o600);
   const snapshot=new DatabaseSync(destination,{readOnly:true});
-  try{if(snapshot.prepare('PRAGMA quick_check').get().quick_check!=='ok'||snapshot.prepare('PRAGMA user_version').get().user_version!==1)throw new Error('Pre-migration backup verification failed. The original schema has not been changed.');}finally{snapshot.close();}
+  try{if(snapshot.prepare('PRAGMA quick_check').get().quick_check!=='ok'||snapshot.prepare('PRAGMA user_version').get().user_version!==schemaVersion)throw new Error('Pre-migration backup verification failed. The original schema has not been changed.');}finally{snapshot.close();}
 }
+// Schema 3 fences the versioned admission contract from older readers even
+// when every run is cold history. Existing records and hashes stay unchanged.
 database.exec(`
   BEGIN IMMEDIATE;
   CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -61,7 +64,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS attempts(run_id TEXT NOT NULL, sequence INTEGER NOT NULL, node_id TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(run_id,sequence));
   CREATE TABLE IF NOT EXISTS outputs(run_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(run_id,node_id));
   CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
-  PRAGMA user_version=2;
+  PRAGMA user_version=${currentSchemaVersion};
   COMMIT;
 `);
 const integrity=database.prepare('PRAGMA quick_check').get().quick_check;
@@ -98,14 +101,17 @@ const history=({owner,cursor,limit})=>{
 const runMetadata=()=>database.prepare(`SELECT id,state,created_at AS createdAt,owner_key AS ownerKey,json_extract(record,'$.id') AS recordId,
   json_extract(record,'$.state') AS recordState,json_extract(record,'$.createdAt') AS recordCreatedAt,
   json_type(record,'$.cleanupPending') AS cleanupType,json_type(record,'$.parentRunId') AS parentType,
+  json_type(record,'$.requestFingerprintVersion') AS fingerprintType,json_extract(record,'$.requestFingerprintVersion') AS requestFingerprintVersion,
   admissions.run_id AS admissionId,admissions.fingerprint AS admissionFingerprint,
   json_extract(record,'$.owner') AS owner,json_extract(record,'$.requestKey') AS requestKey,
   json_extract(record,'$.requestFingerprint') AS requestFingerprint,json_extract(record,'$.updatedAt') AS updatedAt,
   json_extract(record,'$.parentRunId') AS parentRunId,json_extract(record,'$.cleanupPending') AS cleanupPending FROM runs
   LEFT JOIN admissions ON admissions.request_key=json_extract(record,'$.requestKey')`).all().map(row=>{
-    const {ownerKey,recordId,recordState,recordCreatedAt,cleanupType,parentType,admissionId,admissionFingerprint,...record}=row,owner=JSON.parse(record.owner);
+    const {ownerKey,recordId,recordState,recordCreatedAt,cleanupType,parentType,fingerprintType,admissionId,admissionFingerprint,...record}=row,owner=JSON.parse(record.owner);
     if(recordId!==record.id||recordState!==record.state||recordCreatedAt!==record.createdAt||!owner||JSON.stringify([owner.agentId,owner.sessionKey,owner.sessionId])!==ownerKey||admissionId!==record.id||admissionFingerprint!==record.requestFingerprint)throw new Error('Invalid saved history metadata: its identity index is inconsistent.');
     if(cleanupType!==null&&!['true','false'].includes(cleanupType)||parentType!==null&&parentType!=='text')throw new Error('Invalid saved history metadata: recovery and cleanup fields have invalid types.');
+    if(fingerprintType!==null&&(fingerprintType!=='integer'||record.requestFingerprintVersion!==2))throw new Error('Invalid saved history metadata: unsupported admission fingerprint version.');
+    if(fingerprintType===null)delete record.requestFingerprintVersion;
     return {...record,owner,...record.parentRunId===null?{parentRunId:undefined}:{},cleanupPending:record.cleanupPending===1};
   });
 if(startupError){try{database?.close();}catch{/* Preserve the original startup failure. */}}
@@ -134,8 +140,9 @@ function write(next,mode='full'){
     }
     for(const [id,run] of runOnly?[[next.id,next]]:Object.entries(next.runs)){
       const json=JSON.stringify(run);
-      const previous=database.prepare('SELECT state, record=? AS unchanged FROM runs WHERE id=?').get(json,id);
+      const previous=database.prepare("SELECT state, record=? AS unchanged, COALESCE(json_extract(record,'$.requestFingerprintVersion'),1) AS fingerprintVersion FROM runs WHERE id=?").get(json,id);
       if(previous?.unchanged)continue;
+      if(previous&&previous.fingerprintVersion!==(run.requestFingerprintVersion??1))throw new Error('Admission fingerprint contract is immutable.');
       const owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
       database.prepare('INSERT INTO runs VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET owner_key=excluded.owner_key,state=excluded.state,created_at=excluded.created_at,record=excluded.record').run(id,owner,run.state,run.createdAt,json);
       const admission=database.prepare('SELECT run_id,fingerprint FROM admissions WHERE request_key=?').get(run.requestKey);

@@ -11,17 +11,18 @@ import {resolveBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {textPage} from './feature-json.js';
 import {retentionCandidates,type RetentionPolicy,type RetentionResult,type RetiredAdmission} from './retention.js';
 import {DocumentStore} from './document-store.js';
+import {fingerprintJson} from './fingerprint.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string};
-export type Run={id:string;requestKey:string;requestFingerprint:string;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
+export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
 const legacyGrantGeneration='legacy';
 export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
 export type RunSummary=Pick<Run,'id'|'state'|'createdAt'|'updatedAt'|'executions'>&{slug:string;revision:number};
-export type RunMetadata=Pick<Run,'id'|'owner'|'requestKey'|'requestFingerprint'|'state'|'createdAt'|'updatedAt'|'parentRunId'|'cleanupPending'>;
+export type RunMetadata=Pick<Run,'id'|'owner'|'requestKey'|'requestFingerprint'|'requestFingerprintVersion'|'state'|'createdAt'|'updatedAt'|'parentRunId'|'cleanupPending'>;
 // Indexed stores keep historical outputs on disk. The working state is an
 // explicitly partial run set; merging it must never delete omitted history.
 export interface IndexedRunStorage{
@@ -52,6 +53,7 @@ const now=()=>new Date().toISOString();
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const canonical=(value:unknown):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
 const ownerKey=(a:Owner)=>JSON.stringify([a.agentId,a.sessionKey,a.sessionId]);
+const retainedFingerprint=(run:Run)=>run.parentRunId?undefined:fingerprintJson({slug:run.definition.slug,input:run.input,...run.testMode?{draft:run.definition}:{}});
 const terminal=(r:Run)=>['completed','failed','cancelled','interrupted'].includes(r.state);
 export class Engine{
   private documents?:DocumentStore;
@@ -244,17 +246,24 @@ export class Engine{
     if(applyPlanId!==undefined){
       if(applyPlanId!==planId)throw requestError('History cleanup changed since preview. Preview again before applying. No history has been deleted.','LOOPS_RETENTION_CONFLICT');
       if(plan.candidates.length){
-        const retiredAt=now();this.state.retiredAdmissions??={};
+        const retiredAt=now();
         const byId=new Map(all.map(run=>[run.id,run]));
-        for(const {id} of plan.candidates){const run=byId.get(id)!;this.state.retiredAdmissions[run.requestKey]={runId:id,fingerprint:run.requestFingerprint,owner:run.owner,retiredAt};delete this.state.runs[id];}
+        // Resolve legacy comparison evidence before changing working memory.
+        // A failed cold read must leave both history and tombstones untouched.
+        const retired=plan.candidates.map(({id})=>{
+          const run=byId.get(id)!,canonicalFingerprint=run.requestFingerprintVersion===undefined&&!run.parentRunId?retainedFingerprint(this.own(actor,id)):undefined;
+          return {key:run.requestKey,record:{runId:id,fingerprint:run.requestFingerprint,owner:run.owner,retiredAt,...run.requestFingerprintVersion?{fingerprintVersion:run.requestFingerprintVersion}:{},...canonicalFingerprint?{canonicalFingerprint}:{}}};
+        });
+        this.state.retiredAdmissions??={};
+        for(const {key,record} of retired){this.state.retiredAdmissions[key]=record;delete this.state.runs[record.runId];}
         this.persist();
       }
     }
     return {planId,policy:structuredClone(policy),...plan,applied:applyPlanId!==undefined};
   }
-  private rejectRetiredAdmission(key:string,fingerprint:string){
+  private rejectRetiredAdmission(key:string,value:unknown,fingerprint:string){
     const retired=this.state.retiredAdmissions?.[key]??this.storage.indexed?.readRetiredAdmission(key);if(!retired)return;
-    if(retired.fingerprint!==fingerprint)throw requestError('Request ID conflict: this admission belongs to deliberately removed history.');
+    if(retired.fingerprint!==fingerprint&&retired.canonicalFingerprint!==fingerprint&&retired.fingerprint!==fingerprintJson(value,1))throw requestError('Request ID conflict: this admission belongs to deliberately removed history.');
     throw new LoopError({code:'LOOPS_HISTORY_REMOVED',message:`Run ${retired.runId} was deliberately removed from history. This request ID will not execute again.`,phase:'admission',retryable:false,recovery:'Use a new request ID only for an intentional new execution.'});
   }
   runs(actor:Actor){actor.check();if(this.storage.indexed)return this.storage.indexed.runSummaries(ownerKey(actor));return Object.values(this.state.runs).filter(r=>ownerKey(r.owner)===ownerKey(actor)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id)).map(r=>({id:r.id,slug:r.definition.slug,revision:r.definition.revision,state:r.state,createdAt:r.createdAt,updatedAt:r.updatedAt,executions:r.executions}));}
@@ -265,13 +274,18 @@ export class Engine{
   async test(actor:Actor,value:unknown,input:unknown,requestId:string){this.ensureAuthor(actor);const definition=parseDefinition(value,this.budgets);return this.admit(actor,definition.slug,input,requestId,definition);}
   private async admit(actor:Actor,slug:string,input:unknown,requestId:string,draft?:Definition):Promise<Run>{
     actor.check();if(!requestId||requestId.length>200)throw requestError('A stable request ID of at most 200 characters is required.');
-    const requestKey=hash(ownerKey(actor)+':'+requestId);const fingerprint=hash(canonical({slug,input,...draft?{draft}:{}}));
-    this.rejectRetiredAdmission(requestKey,fingerprint);
+    const requestKey=hash(ownerKey(actor)+':'+requestId),value={slug,input,...draft?{draft}:{}},fingerprint=fingerprintJson(value);
+    this.rejectRetiredAdmission(requestKey,value,fingerprint);
     const prior=this.admission(requestKey);
-    if(prior){if(prior.fingerprint!==fingerprint)throw requestError('Request ID conflict: input changed.');return this.status(actor,prior.id);}
+    if(prior){
+      const run=this.status(actor,prior.id);
+      if(prior.fingerprint!==fingerprint&&prior.fingerprint!==fingerprintJson(value,1)&&
+        (run.requestFingerprintVersion!==undefined||retainedFingerprint(run)!==fingerprint))throw requestError('Request ID conflict: input changed.');
+      return run;
+    }
     const definition=draft??this.describe(actor,slug);const issues=this.validate(actor,definition).issues;if(issues.length)throw requestError(issues.map(i=>i.message).join(' '));
     const checkedInput=validateInput(definition,input,this.budgets);
-    const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
+    const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,requestFingerprintVersion:2,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
     if(draft)run.testMode=true;else run.grantGeneration=this.state.loops[definition.id].grantGeneration??legacyGrantGeneration;
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
@@ -282,10 +296,10 @@ export class Engine{
     // authority without reviving the original run's revoked generation.
     if(previous.testMode)this.allowedRun(actor,previous);else this.allowed(actor,previous.definition,this.state.loops[previous.definition.id]);
     if(!requestId||requestId.length>200)throw requestError('Recovery requires an admission request ID of at most 200 characters.');
-    const key=hash(ownerKey(actor)+':'+requestId),fingerprint=hash(canonical({parentRunId:id,mode}));this.rejectRetiredAdmission(key,fingerprint);const prior=this.admission(key);
-    if(prior){if(prior.fingerprint!==fingerprint)throw requestError('Request ID conflict.');return this.status(actor,prior.id);}
+    const key=hash(ownerKey(actor)+':'+requestId),value={parentRunId:id,mode},fingerprint=fingerprintJson(value);this.rejectRetiredAdmission(key,value,fingerprint);const prior=this.admission(key);
+    if(prior){if(prior.fingerprint!==fingerprint&&prior.fingerprint!==fingerprintJson(value,1))throw requestError('Request ID conflict.');return this.status(actor,prior.id);}
     if(mode==='checkpoint'&&(previous.uncertainty||previous.trace.some(t=>['running','interrupted','cancelled','failed'].includes(t.state))))throw requestError('The current attempt is not a committed checkpoint. Inspect its outcome, then explicitly retry the node or restart.');
-    const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
+    const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,requestFingerprintVersion:2,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
     if(!run.testMode)run.grantGeneration=this.state.loops[run.definition.id].grantGeneration??legacyGrantGeneration;
     delete run.error;delete run.errorDetail;delete run.uncertainty;delete run.pending;delete run.result;delete run.cleanupPending;
     if(mode==='restart'){run.outputs={};run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;}else delete run.outputs[run.cursor];

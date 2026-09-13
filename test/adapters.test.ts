@@ -66,6 +66,23 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it.each(['ui','command','tool'] as const)('deduplicates equivalent nested Unicode object payloads through %s without conflating distinct keys',async surface=>{
+    const s=await setup();Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});let call=0;
+    const invoke=async(input:Record<string,unknown>)=>{
+      if(surface==='ui'){const response=await s.action('run',input);if(!response?.ok)throw Error('Feature request failed.');return response.result;}
+      if(surface==='tool')return toolJson(s,'run',input,`unicode-${++call}`);
+      const text=(await s.commands.get('loops')!.handler({...s.commandContext,args:'run --json-base64 '+Buffer.from(JSON.stringify(input)).toString('base64')})).text!;
+      return text.startsWith('Loops [')?{kind:'loops-error',display:text}:JSON.parse(text);
+    };
+    const definition={slug:`unicode-identity-${surface}`,name:'Unicode identity',description:'Equivalent JSON objects preserve admission identity.',inputSchema:[{name:'data',label:'Data',type:'json',required:true}],capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'infer',kind:'inference',label:'Inference',prompt:'Read this JSON: {{input.data}}',output:'text'},{id:'return',kind:'return',label:'Return',value:'{{nodes.infer.text}}'}],edges:[{id:'a',source:'input',target:'infer',port:'next'},{id:'b',source:'infer',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    expect(await s.action('create',{definition})).toMatchObject({ok:true,result:{record:{enabledRevision:1}}});
+    const first=await invoke({slug:definition.slug,input:{data:[{'é':0,'e\u0301':false}]},requestId:'unicode-order'});
+    expect(first).toMatchObject({state:'completed'});
+    const second=await invoke({requestId:'unicode-order',input:{data:[{'e\u0301':false,'é':0}]},slug:definition.slug});
+    expect(second).toMatchObject({id:first.id,state:'completed'});expect(s.complete).toHaveBeenCalledOnce();
+    const changed=await invoke({slug:definition.slug,input:{data:[{'é':false,'e\u0301':0}]},requestId:'unicode-order'});
+    expect(changed).toMatchObject({kind:'loops-error'});expect(s.complete).toHaveBeenCalledOnce();
+  });
   it.each(['ui','command','tool'] as const)('retains revoked parked grants through %s reactivation and SQLite restart while allowing explicit new admissions',async surface=>{
     let s=await setup();let sequence=0;
     const invoke=async(op:string,input:Record<string,unknown>={})=>{
