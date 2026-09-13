@@ -4,6 +4,8 @@ Follow the repository's [Loops AIDLC process](https://github.com/Jacob-J-Thomas/
 
 Use Node 24.16.0 or supported Node 26 and the exact OpenClaw peer version in package.json. Run `npm ci`, then `npm run check`. `node scripts/verify-package.mjs` verifies the extracted archive against the actual feature SDK with fake model transport. It does not replace live acceptance.
 
+Type checking uses TypeScript 7.0.2 (`tsc` from the `@typescript/native` npm alias). ESLint uses the TypeScript 6 compatibility API (`typescript` aliases `@typescript/typescript6@6.0.2`), following [Microsoft's side-by-side installation guidance](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/). Both versions are locked; ordinary `npm ci` must resolve them without peer-dependency bypasses. The plugin runtime does not include either compiler.
+
 Keep `.dev-profile` private. Never commit credentials, personal history, model files or host state. Use dedicated synthetic chats for live evidence. Do not modify a personal assistant or EmbodySense project as part of this plugin.
 
 Preserve public SDK APIs and host authority. Version semantic changes, test regressions and document migration/rollback. Execution adapters must explain side effects, permission, cancellation and uncertain outcomes. Full agent control over the loop lifecycle is required; actual human review stays explicit.
