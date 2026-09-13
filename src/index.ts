@@ -9,7 +9,7 @@ import { EngineService } from './engine-service.js';
 import { createBridge } from './openclaw.js';
 import {commandHelp,parseCommandInvocation,commandReply,commandPage} from './commands.js';
 import {receipt,describe} from './receipts.js';
-import {LoopError,requestError,errorDetail,safeFailure} from './errors.js';
+import {LoopError,requestError,errorDetail,safeFailure,formatFailure} from './errors.js';
 import {outputs} from './output-schemas.js';
 import {fitsToolReply,toolPage} from './tool-replies.js';
 
@@ -51,7 +51,7 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
         parsed.operation==='output'&&Value.Check(outputs.output,result)?commandPage(result):result;
       const text=await commandReply(value,value=>service().invoke('documentSnapshot',actor,value),parsed.format);
       actor.check();return {text};
-    }catch(error){const detail=errorDetail(error,{phase:'operation'});return {text:`Loops [${detail.code}]: ${detail.message}\n${detail.recovery}`};}}
+    }catch(error){return {text:`Loops ${formatFailure(errorDetail(error,{phase:'operation'}))}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
     browse:(p,c)=>service().invoke('browse',bridge.actor(c),p),

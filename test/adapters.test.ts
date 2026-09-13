@@ -14,6 +14,9 @@ const plugin:typeof sourcePlugin=process.env.LOOPS_TEST_PLUGIN?(await import(/* 
 import {parseCommand} from '../src/openclaw.js';
 import {examples} from '../src/examples.js';
 import {createLoopsClient} from '../src/feature-client.js';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {FailureNotice,displayFailure} from '../src/failure-notice.js';
 import {fitsFeatureJson} from '../src/feature-json.js';
 import {createFeatureClient,type FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
 import {wireContract,DocumentReferenceSchema} from '../src/wire-contract.js';
@@ -91,6 +94,29 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await invoke('resume',{runId:recovery.id})).state).toBe('completed');expect((await invoke('inspect',{runId:parked.id})).grantGeneration).toBe(original.grantGeneration);
     expect(await failure('edit',{id,expectedRevision:1,changes:{grantGeneration:original.grantGeneration}})).toMatch(/schema/i);
     expect((await invoke('load',{id})).grantGeneration).toBe(current.grantGeneration);expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('shows safe failed-inference location and recovery in legacy commands, UI inspection and actual agent receipts',async()=>{
+    const s=await setup(),secret='SYNTHETIC_PRIVATE_DIAGNOSTIC',nodeId=examples[0].nodes.find(node=>node.kind==='inference')!.id;
+    Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});
+    await s.action('enable',{id:'summarize-text',revision:1,enabled:true});
+    s.complete.mockRejectedValueOnce(Object.assign(new Error(`Request https://user:${secret}@example.test/private and /private/${secret}/request.json with body ${secret}`),{status:401}));
+    const command=await s.commands.get('loops')!.handler({...s.commandContext,args:'run summarize-text Synthetic source'}),history=await s.action('runs',{});
+    if(!history?.ok)throw Error('Run history was unavailable.');
+    const runId=(history.result as Array<{id:string}>)[0].id,inspection=await s.action('inspect',{runId}),tool=await toolJson(s,'status',{runId});
+    expect(inspection).toMatchObject({result:{state:'failed',errorDetail:{code:'HOST_AUTHENTICATION_FAILED',phase:'inference',nodeId,model:'fake/test-only',retryable:false,recovery:expect.any(String)}}});
+    expect(tool).toMatchObject({state:'failed',errorDetail:{code:'HOST_AUTHENTICATION_FAILED',phase:'inference',nodeId,model:'fake/test-only',retryable:false}});
+    for(const value of ['HOST_AUTHENTICATION_FAILED','Phase: inference','Node: '+nodeId,'Model: fake/test-only','Retryable: Resolve the failure first','Next step:'])expect(command.text).toContain(value);
+    expect(JSON.stringify([command,inspection,tool])).not.toContain(secret);expect(JSON.stringify([command,inspection,tool])).not.toContain('example.test');expect(JSON.stringify([command,inspection,tool])).not.toContain('/private/');
+    expect(command.text).not.toContain(' · completed');expect(s.complete).toHaveBeenCalledOnce();
+  });
+  it('keeps handler-level validation diagnostics visible and renders the shared client error without executing a failed request',async()=>{
+    const s=await setup(),command=await s.commands.get('loops')!.handler({...s.commandContext,args:'missing-operation'});
+    expect(command.text).toContain('Phase: operation');expect(command.text).toContain('Retryable: Resolve the failure first');expect(command.text).toContain('Next step:');
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),failure=await client.invoke('run',{slug:'summarize-text',input:{text:'Not submitted'},requestId:'disabled'}).then(()=>{throw Error('Disabled run unexpectedly succeeded');},error=>error);
+    const presented=displayFailure(failure),html=renderToStaticMarkup(React.createElement(FailureNotice,{failure:presented}));
+    expect(presented).toMatchObject({code:'LOOPS_INVALID_REQUEST',phase:'operation',retryable:false,recovery:expect.any(String)});
+    expect(html).toContain('LOOPS_INVALID_REQUEST');expect(html).toContain('<dd>operation</dd>');expect(html).toContain('Next step:');expect(await s.action('runs',{})).toMatchObject({result:[]});expect(s.complete).not.toHaveBeenCalled();
   });
   it.each(['ui','command','tool'] as const)('qualifies every lifecycle operation and common negative boundaries through %s',async surface=>{
     const s=await setup();
@@ -525,7 +551,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       const command=await s.commands.get('loops')!.handler({...s.commandContext,args:'run summarize-text Command input'});
       expect(ui).toMatchObject({result:{kind:'loops-error',error:{code:'LOOPS_STORAGE_CONFLICT',phase:'storage',retryable:false,recovery:expect.stringMatching(/Reload/)}}});
       expect(tool.details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_STORAGE_CONFLICT'}});
-      expect(command.text).toContain('LOOPS_STORAGE_CONFLICT');expect(command.text).toContain('Reload');
+      expect(command.text).toContain('LOOPS_STORAGE_CONFLICT');expect(command.text).toContain('Reload');expect(command.text).toContain('Phase: storage');expect(command.text).toContain('Retryable: Resolve the failure first');
       expect(JSON.stringify([ui,tool,command])).not.toContain(privateText);
       expect(await s.action('runs',{})).toEqual(before);expect(s.complete).not.toHaveBeenCalled();
       fault.exec('DROP TRIGGER reject_admission');
