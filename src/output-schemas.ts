@@ -20,11 +20,13 @@ const error=LoopErrorSchema;
 const review=Type.Object({decision:enums(['approve','reject']),at:text,requester:text},strict);
 const summary=Type.Object({id:text,slug:text,name:text,revision:Type.Integer({minimum:0})},strict);
 const issues=Type.Array(Type.Object({nodeId:Type.Optional(text),message:text},strict));
+const grantGeneration=Type.String({minLength:1,maxLength:64});
 const runRow=Type.Object({id:text,slug:text,revision:integer,state:runState,createdAt:text,updatedAt:text,executions:integer},strict);
 const loopRecord=Type.Object({
   definition:DefinitionSchema,enabledRevision:nullableRevision,grants:DefinitionFields.capabilities,
   revisions:Type.Optional(Type.Record(text,DefinitionSchema)),publishedRevision:Type.Optional(nullableRevision),
   revoked:Type.Optional(Type.Boolean()),archived:Type.Optional(Type.Boolean()),deletedAt:Type.Optional(text),
+  grantGeneration:Type.Optional(grantGeneration),
 },strict);
 const record=Type.Unsafe<LoopRecord>(loopRecord);
 const receipt=Type.Unsafe<RunReceipt>(Type.Object({
@@ -39,6 +41,7 @@ const runData=Type.Object({
   id:text,requestKey:text,requestFingerprint:text,owner,source:enums(['command','tool','session-action']),requester:Type.Optional(text),
   executionSettings:Type.Optional(Type.Object({model:Type.Optional(text),reasoning:Type.Optional(text),authProfileId:Type.Optional(text)},strict)),
   cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),
+  grantGeneration:Type.Optional(grantGeneration),
   definition:DefinitionSchema,input:Type.Record(text,Type.Unknown()),state:runState,cursor:text,outputs:Type.Record(text,Type.Unknown()),
   trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text)},strict)),
   executions:integer,activeMs:Type.Number({minimum:0}),createdAt:text,updatedAt:text,result:Type.Optional(Type.Unknown()),error:Type.Optional(text),

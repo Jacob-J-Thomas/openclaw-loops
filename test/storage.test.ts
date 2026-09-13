@@ -164,6 +164,8 @@ describe('plugin-owned SQLite worker',()=>{
     "UPDATE metadata SET value='99' WHERE key='version'",
     "DELETE FROM metadata WHERE key='version'",
     "UPDATE loops SET record='{}' WHERE id='summarize-text'",
+    "UPDATE loops SET record=json_set(record,'$.grantGeneration',0) WHERE id='summarize-text'",
+    "UPDATE loops SET record=json_set(record,'$.grantGeneration','') WHERE id='summarize-text'",
     "DROP TABLE outputs",
   ])('preserves a physically healthy restore rejected by startup record/schema validation (%#)',async damage=>{
     const {filename}=setup(),store=new SqliteStorage(filename);store.write(initial());await store.close();

@@ -66,6 +66,24 @@ The command surface renders operation errors as `Loops [code]: ...` plus recover
 text; feature/tool callers receive typed errors. Large success responses use the
 [complete transport protocol](TRANSPORT.md).
 
+Published runs pin an opaque `grantGeneration` from their loop record. Explicit
+revoke rotates that generation, so re-enabling or republishing cannot restore an
+older admission's revoked authority. Ordinary draft/save/edit/publication and
+disable operations preserve existing grants. These fields are runtime metadata;
+definition authoring cannot set them. Every dispatch still checks current host
+and conversation authority. An already dispatched host call may finish after
+revocation; its completion does not authorize another node to dispatch.
+
+To recover explicitly, cancel a revoked parked run and use `loops_retry` with a
+new request ID, or start a new run, after current loop and host permissions allow
+it. Recovery creates a separately authorized admission linked to the original;
+it never revives the original grant. Agents retain those controls. Unpublished
+tests keep their existing author-authority path, and Human review decisions
+remain separately authenticated. See [upgrade and rollback](DEPLOYMENT.md) for
+the legacy grant migration and matching-backup requirement.
+
+`scripts/verify-grant-lifecycle.mjs <disposable-profile> feature|command|agent prepare|finish <evidence-directory>` qualifies this lifecycle through an ordinarily installed Gateway. Run `prepare`, stop and restart that dedicated Gateway with a matching stopped-state backup, then run `finish` against the same evidence directory. Feature and command journeys cover Wait and Human review through publication, disable, revoke, new admission and explicit recovery. The agent journey uses actual requested tool calls on a revoked Wait; it does not synthesize human decisions. The script preserves operation/chat receipts and never automatically retries a failed mutation. Record the external Gateway restart and installed artifact separately. These nodes read configured-model metadata; they do not prove inference transport or provider cancellation.
+
 The adapter inventory exercises every operation through actual registrations
 from the public OpenClaw feature SDK: successful lifecycle transitions, identity
 injection, plugin revocation and service unavailability. It checks disabled-run
