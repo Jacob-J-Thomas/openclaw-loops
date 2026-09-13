@@ -7,7 +7,7 @@ import {fitsFeatureJson, textPage} from './feature-json.js';
 import type {DocumentReference, UploadReference} from './wire-contract.js';
 import {LoopError, requestError, storageError} from './errors.js';
 import {documentLinks} from './document-links.js';
-import {DocumentLinksSchema, MaintenancePolicySchema, TransportReleaseSchema, emptyDocumentLinks, mergeDocumentLinks, validLifetime, validUploadLifetime,
+import {DocumentLinksSchema, MaintenancePolicySchema, TransportReleaseSchema, emptyDocumentLinks, maintenancePreviewPlanId, mergeDocumentLinks, validLifetime, validUploadLifetime,
   type DocumentLifetime, type DocumentLinks, type UploadLifetime, type MaintenancePolicy, type MaintenanceResult, type MaintenanceFile, type ReferenceInventory, type TransportRelease} from './document-maintenance.js';
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -71,17 +71,19 @@ export class DocumentStore {
   }
   snapshot(actor: Actor, value: unknown, links?: DocumentLinks, reserveReader = true): DocumentReference {
     actor.check();
-    const text = JSON.stringify(value), sha256 = hash(text), owner = scope(actor), documentId = hash(owner + sha256);
+    const text = JSON.stringify(value), sha256 = hash(text), owner = scope(actor), documentId = hash(owner + sha256), previewPlanId = maintenancePreviewPlanId(value);
     if (links && !Value.Check(DocumentLinksSchema, links)) throw requestError('Invalid document reference metadata.');
     const saved = this.storedDocument(actor, documentId);
     let readerId: string | undefined;
-    if (!saved && !links) this.write(`document-${documentId}.json`, {owner, sha256, text});
-    else if (links && (!saved || saved.lifecycle !== undefined)) {
+    if (!saved && !links && !previewPlanId) this.write(`document-${documentId}.json`, {owner, sha256, text});
+    else if ((links || previewPlanId) && (!saved || saved.lifecycle !== undefined)) {
       if (saved && (!validLifetime(saved.lifecycle) || saved.lifecycle.owner !== owner)) throw corrupt();
       const at = new Date().toISOString();
       const lifecycle: DocumentLifetime = saved ? structuredClone(saved.lifecycle as DocumentLifetime) :
         {version: 1, owner, createdAt: at, updatedAt: at, links: emptyDocumentLinks(), readers: [], legacyReader: false};
-      lifecycle.links = mergeDocumentLinks(lifecycle.links, links); lifecycle.updatedAt = at;
+      lifecycle.links = mergeDocumentLinks(lifecycle.links, links ?? emptyDocumentLinks());
+      if (previewPlanId) lifecycle.maintenancePreviewPlanId = previewPlanId;
+      lifecycle.updatedAt = at;
       if (reserveReader) { readerId = randomUUID(); lifecycle.readers.push({id: readerId, createdAt: at}); }
       this.write(`document-${documentId}.json`, {owner, sha256, text, lifecycle}, owner);
     }
@@ -216,6 +218,7 @@ export class DocumentStore {
           else if (lifetime === undefined) entry.protection = 'legacy';
           else if (!validLifetime(lifetime) || lifetime.owner !== owner) entry.protection = 'corrupt';
           else {
+            if (applyPlanId !== undefined && lifetime.maintenancePreviewPlanId === applyPlanId) continue;
             entry.lifecycle = lifetime; entry.updatedAt = lifetime.updatedAt;
             for (const document of lifetime.links.documents) linked.add(document);
             for (const reader of lifetime.readers) readers.push({documentId: id, readerId: reader.id, createdAt: reader.createdAt});

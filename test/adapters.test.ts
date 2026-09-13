@@ -18,6 +18,8 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {FailureNotice,displayFailure} from '../src/failure-notice.js';
 import {fitsFeatureJson} from '../src/feature-json.js';
+import {DocumentStore} from '../src/document-store.js';
+import {emptyDocumentLinks} from '../src/document-maintenance.js';
 import {createFeatureClient,type FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
 import {wireContract,DocumentReferenceSchema} from '../src/wire-contract.js';
 import type {LoopRecord,Run} from '../src/engine.js';
@@ -144,6 +146,18 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const directory=join(s.root,'loops-poc','documents'),bytes=()=>readdirSync(directory).reduce((sum,name)=>sum+readFileSync(join(directory,name)).length,0),before=bytes();
     expect((await invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId}) as typeof preview).applied).toBe(true);expect(before-bytes()).toBe(preview.bytes);
     expect(readdirSync(directory)).toEqual([]);expect(await invoke('runs')).toEqual([]);
+  },30000);
+  it.each(['ui','command','tool'] as const)('applies a large %s maintenance preview after its native reader is released',async surface=>{
+    const s=await setup(),directory=join(s.root,'loops-poc','documents'),store=new DocumentStore(directory);
+    const actor={agentId:'main',sessionKey:s.key,sessionId:s.sessionId,source:'tool' as const,human:false,check:()=>{}};
+    for(let i=0;i<820;i++)store.snapshot(actor,{candidate:i},emptyDocumentLinks(),false);
+    let sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op,input,`preview-${++sequence}`):client.invoke(op,input as never);
+    const preview=await invoke('maintenance',{policy:{keepLatest:0}}) as import('../src/document-maintenance.js').MaintenanceResult;
+    expect(fitsFeatureJson(preview)).toBe(false);expect(readdirSync(directory)).toHaveLength(821);
+    expect(await invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId})).toMatchObject({applied:true,candidates:preview.candidates});
+    expect((await invoke('maintenance',{policy:{keepLatest:0}}) as import('../src/document-maintenance.js').MaintenanceResult).candidates).toHaveLength(2);
   },30000);
   it.each(['ui','command','tool'] as const)('keeps %s queued work behind cancellation cleanup and preserves the completed queue after restart',async surface=>{
     let s=await setup(),sequence=0,release!:()=>void,physical=0,maximum=0;const entered:Array<AbortSignal|undefined>=[];

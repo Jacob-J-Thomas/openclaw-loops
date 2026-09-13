@@ -75,6 +75,22 @@ describe('explicit transport maintenance', () => {
     reopened.release(actor, {kind: 'reader', ...second});
     expect(reopened.maintenance(actor, all, references()).candidates).toHaveLength(1);
   });
+  it('applies a preview after its released managed response is created, then reclaims that response on the next preview', () => {
+    const {store} = setup(), original = store.snapshot(actor, {eligible: true}, emptyDocumentLinks(), false);
+    const preview = store.maintenance(actor, all, references()), response = store.snapshot(actor, preview, emptyDocumentLinks());
+    expect(response.readerId).toBeTruthy();
+    expect(store.release(actor, {kind: 'reader', documentId: response.documentId, readerId: response.readerId!})).toEqual({released: true});
+    expect(store.maintenance(actor, all, references(), preview.planId)).toMatchObject({applied: true, candidates: [{id: original.documentId}]});
+    expect(store.maintenance(actor, all, references()).candidates.map(file => file.id)).toEqual([response.documentId]);
+  });
+  it('does not let a released preview response displace a retained count group while applying', () => {
+    const {store} = setup();
+    store.snapshot(actor, {eligible: 'first'}, emptyDocumentLinks(), false);
+    store.snapshot(actor, {eligible: 'second'}, emptyDocumentLinks(), false);
+    const policy = {keepLatest: 1}, preview = store.maintenance(actor, policy, references()), response = store.snapshot(actor, preview, emptyDocumentLinks());
+    store.release(actor, {kind: 'reader', documentId: response.documentId, readerId: response.readerId!});
+    expect(store.maintenance(actor, policy, references(), preview.planId)).toMatchObject({applied: true, candidates: preview.candidates});
+  });
   it('keeps untracked compatibility readers protected after a tracked reader is released', () => {
     const {root, store} = setup(), reference = store.snapshot(actor, {large: 'x'.repeat(100000)}, emptyDocumentLinks());
     expect(store.read(actor, reference.documentId, 0, 100).nextOffset).not.toBeNull();

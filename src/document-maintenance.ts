@@ -19,6 +19,7 @@ export const DocumentLifetimeSchema = Type.Object({
   links: DocumentLinksSchema,
   readers: Type.Array(Type.Object({id: readerId, createdAt: timestamp}, strict)),
   legacyReader: Type.Boolean(),
+  maintenancePreviewPlanId: Type.Optional(digest),
 }, strict);
 export type DocumentLifetime = Static<typeof DocumentLifetimeSchema>;
 export const UploadLifetimeSchema = Type.Object({
@@ -49,6 +50,13 @@ export const MaintenanceResultSchema = Type.Object({
 }, strict);
 export type MaintenanceResult = Static<typeof MaintenanceResultSchema>;
 export type ReferenceInventory = {runs: ReadonlySet<string>; loops: ReadonlySet<string>};
+
+// A large preview may need a managed response document. It is created only
+// after this plan ID is calculated, so applying that exact preview ignores the
+// response document itself. A later preview includes it for normal cleanup.
+export function maintenancePreviewPlanId(value: unknown): string | undefined {
+  return Value.Check(MaintenanceResultSchema, value) && !value.applied ? value.planId : undefined;
+}
 
 export function validLifetime(value: unknown): value is DocumentLifetime {
   return Value.Check(DocumentLifetimeSchema, value) && Number.isFinite(Date.parse(value.createdAt)) &&
