@@ -1,4 +1,5 @@
 import {outputFields,type Definition,type GraphNode} from './graph.js';
+import {requestError} from './errors.js';
 
 export function copyDefinition(definition:Definition,id:string,templateDefaults?:Pick<Definition['limits'],'maxExecutions'|'maxOutputBytes'>):Definition{
   const copy={...structuredClone(definition),id,slug:id,revision:0};
@@ -15,6 +16,13 @@ export function autoLayout(definition:Definition):Definition{
   }
   const rows=new Map<number,number>();const layout:Definition['layout']={};
   for(const node of definition.nodes){const column=depth.get(node.id)??0,row=rows.get(column)??0;rows.set(column,row+1);layout[node.id]={x:40+column*265,y:60+row*180};}
+  if(definition.schemaVersion!==1)return {...definition,layout};
+  const legacyLayout=Object.fromEntries((['x','y'] as const).map(axis=>{
+    const values=Object.values(layout).map(position=>position[axis]);const minimum=Math.min(...values),maximum=Math.max(...values);
+    if(maximum-minimum>20000)throw requestError('This version 1 draft cannot fit its layout within the legacy coordinate range. Use version 2 in this draft, then Arrange again.');
+    return [axis,minimum<-10000?-10000-minimum:maximum>10000?10000-maximum:0];
+  })) as Record<'x'|'y',number>;
+  for(const position of Object.values(layout)){position.x+=legacyLayout.x;position.y+=legacyLayout.y;}
   return {...definition,layout};
 }
 export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:string)=>string):Definition{
