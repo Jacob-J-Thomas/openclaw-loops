@@ -1,11 +1,21 @@
 import {describe,expect,it,vi} from 'vitest';
 import {createHash} from 'node:crypto';
-import {commandReply,commandPage,commandReplyLimit,formatCommandResult} from '../src/commands.js';
+import {commandReply,commandPage,commandReplyLimit,formatCommandResult,parseCommandInvocation} from '../src/commands.js';
+import type {PluginCommandContext} from 'openclaw/plugin-sdk/plugin-entry';
 import {textPage} from '../src/feature-json.js';
 import type {DocumentReference} from '../src/wire-contract.js';
 
 const reference:DocumentReference={kind:'loops-document',documentId:'a'.repeat(64),sha256:'b'.repeat(64),bytes:1,read:'loops_document',description:'Immutable result'};
 describe('conversation reply envelope',()=>{
+  it('decodes lossless command arguments before the unchanged operation schema',()=>{
+    const input={uploadId:'escaped',offset:0,text:JSON.stringify({text:'🙂\u0000"\\\n\\n'})},args='upload --json-base64 '+Buffer.from(JSON.stringify(input)).toString('base64');
+    // The pinned host normalizes literal backslash-n before plugin dispatch.
+    expect(args.replace(/\\n/g,' ')).toBe(args);
+    expect(parseCommandInvocation({args,commandBody:'/loops '+args} as PluginCommandContext,100000)).toEqual({kind:'invoke',operation:'upload',input,format:'json'});
+    const invoke=(encoded:string)=>parseCommandInvocation({args:'upload --json-base64 '+encoded} as PluginCommandContext,100000);
+    for(const encoded of ['!',Buffer.from([0xff]).toString('base64'),Buffer.from('{').toString('base64'),'e30','e30=!',Buffer.from(JSON.stringify({...input,human:true})).toString('base64'),Buffer.from('[]').toString('base64')])expect(()=>invoke(encoded)).toThrow();
+    expect(()=>parseCommandInvocation({args,commandBody:'/loops '+args+'changed'} as PluginCommandContext,100000)).toThrow('changed this command');
+  });
   it('measures the complete formatted reply, preserves the boundary and snapshots once above it',async()=>{
     const snapshot=vi.fn(async()=>reference);
     for(const size of [7999,8000])expect(await commandReply('x'.repeat(size),snapshot)).toBe('x'.repeat(size));

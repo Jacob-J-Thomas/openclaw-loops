@@ -262,6 +262,22 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     let output='';offset=0;while(true){const page=await command('output',{runId:run.id,offset});output+=page.text;if(page.nextOffset===null)break;offset=page.nextOffset;}
     expect(output).toBe(text);expect(s.complete).not.toHaveBeenCalled();
   });
+  it('stages exact newline and Unicode input through encoded commands without bypassing authority',async()=>{
+    const s=await setup(),handler=s.commands.get('loops')!.handler;
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='encoded-command';definition.capabilities=[];
+    definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];definition.edges=[{id:'edge',source:'input',target:'return',port:'next'}];definition.limits.maxOutputBytes=100000;
+    await commandJson(s,'create',{definition});
+    const text='完整 🙂\u0000"\\\n\\n'.repeat(500),json=JSON.stringify({text}),characters=Array.from(json);let reference;
+    for(let offset=0;offset<characters.length;offset+=200){
+      const input={uploadId:'encoded-upload',offset,text:characters.slice(offset,offset+200).join(''),complete:offset+200>=characters.length,sha256:createHash('sha256').update(json).digest('hex')};
+      const args='upload --json-base64 '+Buffer.from(JSON.stringify(input)).toString('base64');expect(args.length).toBeLessThan(4096);expect(args.replace(/\\n/g,' ')).toBe(args);
+      reference=JSON.parse((await handler({...s.commandContext,args,commandBody:'/loops '+args})).text!).reference;
+    }
+    const args='run --json-base64 '+Buffer.from(JSON.stringify({slug:definition.slug,input:reference,requestId:'encoded-run'})).toString('base64');
+    expect((await handler({...s.commandContext,isAuthorizedSender:false,args})).text).toContain('Unauthorized');
+    const run=JSON.parse((await handler({...s.commandContext,args})).text!);expect(run).toMatchObject({state:'completed',resultTruncated:true});
+    expect(await commandJson(s,'inspect',{runId:run.id})).toMatchObject({input:{text},result:text});expect(s.complete).not.toHaveBeenCalled();
+  });
   it('snapshots formatted command results and help, preserving pages through edits and restart',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler;
     const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='command-envelope';definition.capabilities=[];definition.inputSchema=[];

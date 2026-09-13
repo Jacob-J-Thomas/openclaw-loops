@@ -33,8 +33,14 @@ export function parseCommandInvocation(context:PluginCommandContext,maxBytes:num
   if(name==='help')return {kind:'help',...rest?{operation:operationName(rest)}:{}};
   const operation=operationName(name);
   let input:Record<string,unknown>,format:Invocation['format']='json';
-  if(rest.trimStart().startsWith('{')){
-    try{input=JSON.parse(rest) as Record<string,unknown>;}catch{throw requestError('Command arguments must contain a valid JSON object.');}
+  if(rest.startsWith('--json-base64 ')){
+    const encoded=rest.slice('--json-base64 '.length),bytes=Buffer.from(encoded,'base64');
+    try{
+      if(!encoded||bytes.toString('base64')!==encoded)throw new Error('Noncanonical Base64');
+      input=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as Record<string,unknown>;
+    }catch{throw requestError('Encoded command arguments must be canonical Base64 of a valid UTF-8 JSON object.');}
+  }else if(rest.trimStart().startsWith('{')){
+    try{input=JSON.parse(rest) as Record<string,unknown>;}catch{throw requestError('Command arguments must contain a valid JSON object.','LOOPS_INVALID_REQUEST','OpenClaw can normalize newline escapes before dispatch. Use --json-base64 with Base64 of the UTF-8 JSON, or the editor or agent tools, to preserve those characters.');}
   }else if(['run','status','resume','cancel','review'].includes(operation)){
     const {op,...legacy}=parseCommand(context,maxBytes);
     if(op==='list')throw requestError('Invalid execution shortcut.');
@@ -53,10 +59,10 @@ export function parseCommandInvocation(context:PluginCommandContext,maxBytes:num
 export function commandHelp(operation?:Operation):string{
   if(operation){
     const contract=wireContract.operations[operation];
-    return `/loops ${operation==='load'?'read':operation} <JSON object>\n${contract.description}\n\nInput schema:\n${JSON.stringify(contract.input,null,2)}`;
+    return `/loops ${operation==='load'?'read':operation} <JSON object>\n${contract.description}\nUse --json-base64 <Base64 of UTF-8 JSON> when command normalization would alter the input.\n\nInput schema:\n${JSON.stringify(contract.input,null,2)}`;
   }
   const names=Object.keys(wireContract.operations).map(name=>name==='load'?'read':name).sort();
-  return `Use /loops <operation> <JSON object>, or /loops help <operation> for its exact input schema. Omit the JSON object when no arguments are required.\n\nOperations: ${names.join(', ')}.\n\nText shortcuts: /loops run <slug> [text or JSON input] [--request-id <id>], /loops status|resume|cancel <run-id>, /loops review <run-id> approve|reject, /loops read|versions <loop-id>, /loops describe <slug>.\n\nRun, test and retry start a new admission when requestId is omitted; supply the same explicit requestId only to retry that admission. Human review requires an authenticated human. Large results return a document reference; retrieve it with /loops document {"documentId":"…","offset":0}.\n\nOpenClaw 2026.9.3 limits inline command arguments to 4,096 UTF-16 units. For larger input fields, use upload in smaller chunks whose complete JSON arguments fit that limit, then pass its reference. Loops rejects arguments changed by the host.`;
+  return `Use /loops <operation> <JSON object>, or /loops help <operation> for its exact input schema. Omit the JSON object when no arguments are required.\n\nOperations: ${names.join(', ')}.\n\nText shortcuts: /loops run <slug> [text or JSON input] [--request-id <id>], /loops status|resume|cancel <run-id>, /loops review <run-id> approve|reject, /loops read|versions <loop-id>, /loops describe <slug>.\n\nRun, test and retry start a new admission when requestId is omitted; supply the same explicit requestId only to retry that admission. Human review requires an authenticated human. Large results return a document reference; retrieve it with /loops document {"documentId":"…","offset":0}.\n\nOpenClaw 2026.9.3 limits inline command arguments to 4,096 UTF-16 units and can normalize newline escapes before dispatch. Use /loops <operation> --json-base64 <Base64 of UTF-8 JSON> for lossless arguments. For larger input fields, use upload in smaller chunks whose complete encoded command fits that limit, then pass its reference. Loops rejects detectable host changes; use the encoded form to preserve escaped text.`;
 }
 
 export function formatCommandResult(value:unknown,format:Invocation['format']='json'):string{
