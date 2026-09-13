@@ -1,5 +1,7 @@
 # Contributing
 
+Follow the repository's [Loops AIDLC process](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/docs/AIDLC.md): one scoped Bolt issue per ready PR, every PR based on main, at most three Codex review requests, exact-head verification and evidence-based merge/closure. The roadmap is tracked with native GitHub sub-issues. Changes to the plugin use this process; historical direct-push alpha commits remain preserved.
+
 Use Node 24.16.0 or supported Node 26 and the exact OpenClaw peer version in package.json. Run `npm ci`, then `npm run check`. `node scripts/verify-package.mjs` verifies the extracted archive against the actual feature SDK with fake model transport. It does not replace live acceptance.
 
 Type checking uses TypeScript 7.0.2 (`tsc` from the `@typescript/native` npm alias). ESLint uses the TypeScript 6 compatibility API (`typescript` aliases `@typescript/typescript6@6.0.2`), following [Microsoft's side-by-side installation guidance](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/). Both versions are locked; ordinary `npm ci` must resolve them without peer-dependency bypasses. The plugin runtime does not include either compiler.
