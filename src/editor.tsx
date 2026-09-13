@@ -13,6 +13,7 @@ import {LibraryBrowser} from './library-browser.js';
 import {FailureNotice,displayFailure,type DisplayFailure} from './failure-notice.js';
 import {ValueEditor} from './value-editor.js';
 import {RunLauncher,publishedDefinition} from './run-launcher.js';
+import {RunInspection} from './run-inspection.js';
 import type {InferenceCapabilities,InferenceSettings} from './inference-settings.js';
 import {autoLayout,bindingChoices,copyDefinition,duplicateNode,insertBinding,revisionChanges,mergeDefinitions} from './editor-operations.js';
 import {defaultBudgets} from './budgets.js';
@@ -127,6 +128,7 @@ export function Editor({host}:{host:ControlUiHost}){
   const publishVersion=(revision:number,expectedRevision=publication?.definition.revision)=>perform(async()=>{if(!definition||expectedRevision===undefined)return;setBusy(true);try{acceptPublication(await feature.invoke('publish',{id:definition.id,revision,expectedRevision},options));await refresh();setNotice(`Revision ${revision} published and enabled. Draft edits are preserved.`);}finally{setBusy(false);}});
   const togglePublication=()=>perform(async()=>{if(!publication||!published)return;setBusy(true);try{const record=enabledRevision!==null?await feature.invoke('enable',{id:publication.definition.id,revision:publication.definition.revision,enabled:false},options):await feature.invoke('publish',{id:publication.definition.id,revision:published.revision,expectedRevision:publication.definition.revision},options);acceptPublication(record);await refresh();setNotice(enabledRevision!==null?'New runs are disabled. Draft edits and parked runs are preserved.':`Published revision ${published.revision} enabled. Draft edits are preserved.`);}finally{setBusy(false);}});
   const exportDefinition=()=>{if(!definition)return;const blob=new Blob([JSON.stringify(definition,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${definition.slug}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+  const exportRunEvidence=(value:Run)=>{const blob=new Blob([JSON.stringify(value,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${value.definition.slug}-run-${value.id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   const onImport=async(file:File)=>perform(async()=>{if(file.size>budgets.definitionBytes)throw new Error('Definition exceeds the import transport budget.');const d=parseDefinition(JSON.parse(await file.text()),budgets);newDefinition(d);});
   const selectNode=definition?.nodes.find(n=>n.id===selected);const edge=definition?.edges.find(e=>e.id===selectedEdge);
   const deleteNode=(id:string)=>{if(!definition)return;const layout={...definition.layout};delete layout[id];change({...definition,nodes:definition.nodes.filter(n=>n.id!==id),edges:definition.edges.filter(e=>e.source!==id&&e.target!==id),layout});setSelected(null);};
@@ -164,6 +166,7 @@ export function Editor({host}:{host:ControlUiHost}){
         <HistoryCleanup key={draftScope} disabled={!sessionKey||busy} invoke={(policy,applyPlanId)=>feature.invoke('retention',{policy,...applyPlanId?{applyPlanId}:{}},options)} onApplied={ids=>{if(ids.includes(activeId)){setActiveId('');setRun(null);}void perform(refresh);}}/>
         <TransportCleanup key={`transport:${draftScope}`} disabled={!sessionKey||busy} invoke={(policy,applyPlanId)=>feature.invoke('maintenance',{policy,...applyPlanId?{applyPlanId}:{}},options)} release={input=>feature.invoke('transport_release',input,options)}/>
         {run?<><div className="lp-run-meta"><span className={`lp-badge ${run.state}`}>{run.state}</span><code>{run.id}</code><span>r{run.definition.revision}</span><span>{run.executions} node executions</span><span>{run.source}</span></div><div className="lp-run-meta lp-muted"><span>{run.owner.agentId} · {run.owner.sessionId.slice(0,8)}</span><span>{new Date(run.createdAt).toLocaleString()}</span><span>Updated {new Date(run.updatedAt).toLocaleTimeString()}</span></div>
+        <RunInspection key={run.id} run={run} onSelectRun={id=>{setActiveId(id);setRun(null);}} onExport={exportRunEvidence}/>
         {run.cleanupPending&&<p role="status">Cancellation is recorded. Waiting for the host call to finish cleanup; its execution slot remains occupied.</p>}
         <FailureNotice failure={run.errorDetail??run.error??''} label="Run failure"/>
         {run.uncertainty&&<p className="lp-uncertainty">{run.uncertainty}</p>}

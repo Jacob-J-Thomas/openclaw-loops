@@ -1,0 +1,25 @@
+import {describe,expect,it} from 'vitest';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {inspectionOutput,RunInspection} from '../src/run-inspection.js';
+import {parseDefinition} from '../src/graph.js';
+import type {Run} from '../src/engine.js';
+
+const pinned=parseDefinition({schemaVersion:2,id:'published-loop',revision:3,slug:'pinned-loop',name:'Pinned published workflow',description:'immutable',inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input',label:'Pinned input'},{id:'repeat',kind:'repeat',label:'Pinned repeat',maxIterations:2,body:[{id:'body',kind:'inference',label:'Pinned body',prompt:'write',output:'text'},{id:'check',kind:'condition',label:'Pinned check',predicate:{left:'true',op:'truthy',right:''}}]},{id:'wait',kind:'wait',label:'Pinned wait',message:'wait'},{id:'return',kind:'return',label:'Pinned return',value:'{{nodes.repeat.text}}'}],edges:[{id:'a',source:'input',target:'repeat',port:'next'},{id:'b',source:'repeat',target:'wait',port:'next'},{id:'c',source:'wait',target:'return',port:'next'}],layout:{input:{x:0,y:0},repeat:{x:240,y:0},wait:{x:480,y:0},return:{x:720,y:0}},limits:{maxExecutions:20,maxOutputBytes:1048576}});
+const run:Run={id:'child-run',requestKey:'request',requestFingerprint:'fingerprint',owner:{agentId:'agent',sessionKey:'session',sessionId:'session-id'},source:'session-action',parentRunId:'parent-run',definition:pinned,input:{},state:'waiting',cursor:'repeat',outputs:{repeat:{iterations:0,succeeded:false,value:null},wait:0},trace:[{nodeId:'input',kind:'input',state:'completed',startedAt:'2026-01-01T00:00:00.000Z',output:'{}'},{nodeId:'repeat',kind:'repeat',state:'completed',startedAt:'2026-01-01T00:00:01.000Z',output:'false'}],executions:2,activeMs:0,createdAt:'2026-01-01T00:00:00.000Z',updatedAt:'2026-01-01T00:00:02.000Z'};
+const render=(value=run)=>renderToStaticMarkup(React.createElement(RunInspection,{run:value,onSelectRun:()=>{},onExport:()=>{}}));
+
+describe('run inspection',()=>{
+  it('renders the pinned definition, Repeat body settings, and readonly graph handles',()=>{
+    const html=render();expect(html).toContain('Pinned published workflow');expect(html).toContain('Pinned repeat');expect(html).toContain('Pinned body');expect(html).toContain('read-only');expect(html).toContain('data-handleid="next"');
+  });
+  it.each([0,false,null])('keeps recorded scalar output %j distinct from missing evidence',value=>{
+    const recorded={...run,outputs:{repeat:value}};expect(inspectionOutput(recorded,'repeat')).toEqual({label:'Recorded output',value});const html=render(recorded);expect(html).toContain('Recorded output');expect(html).toContain(String(value));
+  });
+  it('keeps a trace output distinct from missing and unstarted evidence',()=>{
+    const withoutOutputs={...run,outputs:{}};expect(inspectionOutput(withoutOutputs,'repeat')).toEqual({label:'Recorded trace output',value:'false'});expect(inspectionOutput(withoutOutputs,'wait')).toEqual({label:'Node was not started'});
+  });
+  it('renders parent inspection, export, and keyboard node selection controls',()=>{
+    const html=render();expect(html).toContain('Inspect parent run');expect(html).toContain('Export run evidence');expect(html).toContain('Select executed node');expect(html).toContain('parent-run');
+  });
+});
