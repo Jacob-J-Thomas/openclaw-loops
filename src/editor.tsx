@@ -14,7 +14,7 @@ import {FailureNotice,displayFailure,type DisplayFailure} from './failure-notice
 import {ValueEditor} from './value-editor.js';
 import {RunLauncher,publishedDefinition} from './run-launcher.js';
 import type {InferenceCapabilities,InferenceSettings} from './inference-settings.js';
-import {autoLayout,bindingChoices,copyDefinition,duplicateNode,revisionChanges,mergeDefinitions} from './editor-operations.js';
+import {autoLayout,bindingChoices,copyDefinition,duplicateNode,insertBinding,revisionChanges,mergeDefinitions} from './editor-operations.js';
 import {defaultBudgets} from './budgets.js';
 import {nodeKinds as kinds,nodeContract,requiredCapabilities} from './node-contracts.js';
 import {listLocalDrafts,saveLocalDraft,removeLocalDraft,definitionHasChanges,sameDefinition,syncLocalDraft,type LocalDraft,type LocalDraftReceipt} from './local-drafts.js';
@@ -58,7 +58,7 @@ function NodeInspector({node,definition,update,editDefinition,remove,loadCapabil
     {node.kind==='review'&&<ValueEditor label="Actual proposal to review" rows={6} value={node.proposal} literals={literals} onChange={proposal=>update({...node,proposal})}/>}
     {node.kind==='return'&&<ValueEditor label="Return value or binding" rows={5} value={node.value} literals={literals} onChange={value=>update({...node,value})}/>}
     {node.kind==='fail'&&<ValueEditor label="Failure reason" rows={5} value={node.reason} literals={literals} onChange={reason=>update({...node,reason})}/>}
-    <label className="lp-field"><span>Insert available binding</span><select value="" onChange={e=>{const value=e.target.value;if(node.kind==='inference')update({...node,prompt:typeof node.prompt==='string'?node.prompt+value:value});else if(node.kind==='return')update({...node,value});else if(node.kind==='condition')update({...node,predicate:{...node.predicate,left:value}});else if(node.kind==='wait')update({...node,message:value});else if(node.kind==='review')update({...node,proposal:value});else if(node.kind==='fail')update({...node,reason:value});}}><option value="">Choose a binding…</option>{bindingChoices(definition,node).map(value=><option key={value}>{value}</option>)}</select></label><details className="lp-bindings"><summary>Available binding syntax</summary><p>Use a whole binding to preserve its type, or insert it into text.</p>{definition.inputSchema.map(f=><code key={f.name}>{`{{input.${f.name}}}`}</code>)}{definition.nodes.filter(n=>n.kind==='inference'||n.kind==='repeat').map(n=><code key={n.id}>{`{{nodes.${n.id}.text}}`}</code>)}{node.kind==='repeat'&&<code>{'{{repeat.index}}'}</code>}<p>Only outputs guaranteed to run before this node are valid.</p></details>
+    <label className="lp-field"><span>Insert available binding</span><select value="" onChange={e=>{if(e.target.value)update(insertBinding(node,e.target.value));}}><option value="">Choose a binding…</option>{bindingChoices(definition,node).map(value=><option key={value}>{value}</option>)}</select></label><details className="lp-bindings"><summary>Available binding syntax</summary><p>Use a whole binding to preserve its type, or insert it into text.</p>{definition.inputSchema.map(f=><code key={f.name}>{`{{input.${f.name}}}`}</code>)}{definition.nodes.filter(n=>n.kind==='inference'||n.kind==='repeat').map(n=><code key={n.id}>{`{{nodes.${n.id}.text}}`}</code>)}{node.kind==='repeat'&&<code>{'{{repeat.index}}'}</code>}<p>Only outputs guaranteed to run before this node are valid.</p></details>
   </>;
 }
 
