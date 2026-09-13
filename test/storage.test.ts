@@ -137,6 +137,15 @@ describe('plugin-owned SQLite worker',()=>{
     try{expect(inspect.prepare('PRAGMA user_version').get()).toEqual({user_version:99});expect(inspect.prepare('SELECT * FROM future_evidence').all()).toEqual([{value:'Committed future WAL evidence'}]);}finally{inspect.close();}
     expect(readFileSync(filename)).toEqual(original);expect(readFileSync(filename+'-wal')).toEqual(wal);
   });
+  it('preserves a supported-schema backup with a readable header but corrupt later B-tree page',async()=>{
+    const {filename}=setup(),store=new SqliteStorage(filename);store.write(initial());await store.close();
+    const database=new DatabaseSync(filename);database.exec('PRAGMA journal_mode=DELETE;');
+    const page=Number(database.prepare("SELECT rootpage FROM sqlite_schema WHERE name='loops'").get()!.rootpage),size=Number(database.prepare('PRAGMA page_size').get()!.page_size);database.close();
+    expect(page).toBeGreaterThan(1);const damaged=readFileSync(filename);damaged[(page-1)*size]=0xff;writeFileSync(filename,damaged);
+    const header=new DatabaseSync(filename,{readOnly:true});try{expect(header.prepare('PRAGMA user_version').get()).toEqual({user_version:2});}finally{header.close();}
+    expect(()=>new SqliteStorage(filename)).toThrow(/integrity|corrupt|malformed/);await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
+    expect(readFileSync(filename)).toEqual(damaged);expect(existsSync(filename+'-wal')).toBe(false);
+  });
   it('preserves legacy and backup inputs after a rejected import transaction and retries without partial records',async()=>{
     const {directory,filename}=setup(),legacy=join(directory,'state.json'),original=JSON.stringify(initial());writeFileSync(legacy,original);
     const uninitialized=new SqliteStorage(filename);await uninitialized.close();

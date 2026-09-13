@@ -12,7 +12,12 @@ if(existsSync(workerData.file)){
   // admission rejects it before any writer pragma. Read the WAL-aware version
   // through a read-only connection first; immutable mode would ignore its WAL.
   const inspection=new DatabaseSync(workerData.file,{readOnly:true});
-  try{schemaVersion=inspection.prepare('PRAGMA user_version').get().user_version;if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');}
+  try{
+    schemaVersion=inspection.prepare('PRAGMA user_version').get().user_version;
+    if(schemaVersion>2)throw new Error('The Loops database requires a newer plugin; restore a matching app/database backup.');
+    const integrity=inspection.prepare('PRAGMA quick_check').get().quick_check;
+    if(integrity!=='ok')throw new Error(`Loops database integrity check failed: ${integrity}`);
+  }
   finally{inspection.close();}
 }
 database=new DatabaseSync(workerData.file);
