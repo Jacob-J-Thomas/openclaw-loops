@@ -57,6 +57,21 @@ under R19–R23; calling an action handler alone is not browser evidence.
 
 ## Common negative and unavailable cases
 
+Each nondeleted loop reserves its current draft slug and, when enabled, its
+published revision's slug. Saving, publishing a historical revision, enabling
+and recovering use the same reservation check. A conflict returns
+`LOOPS_SLUG_CONFLICT` before changing revisions, activation or saved state. A
+disabled current draft still reserves its name; a disabled historical
+publication does not. Another revision of the same loop may reuse its own slug.
+
+Older artifacts could admit two enabled publications with one slug. Those
+records remain readable by ID; new `describe`/`run` requests for the ambiguous
+slug return `LOOPS_AMBIGUOUS_SLUG` instead of selecting an arbitrary loop. Disable
+one publication or explicitly edit and publish it under an available name, then
+retry. No automatic renaming or history rewriting occurs. Existing run IDs and
+matching admission retries keep their pinned definitions and remain subject to
+current permissions; they do not select a new publication by slug.
+
 `run`, `test` and `retry` share a conversation-scoped request-ID namespace. Reuse
 an ID for a retry of the same request; choose a new ID only for an intentional
 new execution. Duplicate admissions return the original run without dispatching

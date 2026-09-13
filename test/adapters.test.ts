@@ -66,6 +66,39 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it.each(['ui','command','tool'] as const)('preserves current and published slug reservations through %s lifecycle operations',async surface=>{
+    const s=await setup();let sequence=0;
+    const invoke=async(op:string,input:Record<string,unknown>={})=>{
+      if(surface==='tool')return toolJson(s,op==='load'?'read':op,input,`namespace-${++sequence}`);
+      if(surface==='command')return commandJson(s,op,input);
+      const response=await s.action(op,input);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;
+    };
+    const failure=async(op:string,input:Record<string,unknown>)=>surface==='command'?
+      (await s.commands.get('loops')!.handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text:JSON.stringify(await invoke(op,input));
+    const definition=(slug:string)=>({slug,name:slug,description:'Namespace adapter fixture',inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:slug}],edges:[{id:'edge',source:'input',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}});
+    const a=(await invoke('create',{definition:definition('occupied')})).record;
+    await invoke('edit',{id:a.definition.id,expectedRevision:1,changes:{slug:'renamed-a'},enabled:true});const b=(await invoke('create',{definition:definition('occupied')})).record;
+    const before=await invoke('load',{id:a.definition.id});expect(await failure('publish',{id:a.definition.id,revision:1,expectedRevision:2})).toContain('LOOPS_SLUG_CONFLICT');expect(await invoke('load',{id:a.definition.id})).toEqual(before);
+    await invoke('edit',{id:b.definition.id,expectedRevision:1,changes:{slug:'renamed-b'},enabled:true});expect((await invoke('publish',{id:a.definition.id,revision:1,expectedRevision:2})).enabledRevision).toBe(1);
+    const c=(await invoke('create',{definition:definition('recovered')})).record;await invoke('delete',{id:c.definition.id,expectedRevision:1});
+    const d=(await invoke('create',{definition:definition('recovered')})).record;await invoke('draft',{definition:{...d.definition,slug:'renamed-d'},expectedRevision:1});
+    const hidden=await invoke('deleted'),published=await invoke('load',{id:d.definition.id});expect(await failure('recover',{id:c.definition.id,expectedRevision:1})).toContain('LOOPS_SLUG_CONFLICT');expect(await invoke('deleted')).toEqual(hidden);expect(await invoke('load',{id:d.definition.id})).toEqual(published);
+    await invoke('enable',{id:d.definition.id,revision:2,enabled:false});expect((await invoke('recover',{id:c.definition.id,expectedRevision:1})).enabledRevision).toBeNull();expect((await invoke('enable',{id:c.definition.id,revision:1,enabled:true})).enabledRevision).toBe(1);expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('refuses ambiguous legacy publication through registered UI, command and tool paths after restart without any completion',async()=>{
+    let s=await setup();
+    const action=async(op:string,payload:Record<string,unknown>={})=>{const response=await s.action(op,payload);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;};
+    const definition={slug:'occupied',name:'Namespace fixture',description:'Legacy publication fixture',inputSchema:[],capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'infer',kind:'inference',label:'Inference',model:'fake/test-only',prompt:'Count a fixture completion.',output:'text'},{id:'return',kind:'return',label:'Return',value:'{{nodes.infer.text}}'}],edges:[{id:'a',source:'input',target:'infer',port:'next'},{id:'b',source:'infer',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    const a=(await action('create',{definition}) as {record:LoopRecord}).record;await action('edit',{id:a.definition.id,expectedRevision:1,changes:{slug:'renamed'},enabled:true});const b=(await action('create',{definition}) as {record:LoopRecord}).record;
+    for(const shutdown of shutdowns.splice(0))await shutdown();
+    const file=join(s.root,'loops-poc','loops.sqlite'),database=new DatabaseSync(file);
+    try{database.prepare("UPDATE loops SET record=json_set(record,'$.enabledRevision',1,'$.publishedRevision',1) WHERE id=?").run(a.definition.id);}finally{database.close();}
+    s=await setup({root:s.root});const beforeA=await action('load',{id:a.definition.id}),beforeB=await action('load',{id:b.definition.id});
+    expect(await action('run',{slug:'occupied',input:{},requestId:'ui'})).toMatchObject({kind:'loops-error',error:{code:'LOOPS_AMBIGUOUS_SLUG'}});
+    const command=(await s.commands.get('loops')!.handler({...s.commandContext,args:'run {"slug":"occupied","requestId":"command"}'})).text;expect(command).toContain('LOOPS_AMBIGUOUS_SLUG');
+    expect(await toolJson(s,'run',{slug:'occupied',requestId:'tool'})).toMatchObject({kind:'loops-error',error:{code:'LOOPS_AMBIGUOUS_SLUG'}});expect(s.complete).not.toHaveBeenCalled();expect(await action('runs')).toEqual([]);expect(await action('load',{id:a.definition.id})).toEqual(beforeA);expect(await action('load',{id:b.definition.id})).toEqual(beforeB);
+    await action('enable',{id:a.definition.id,revision:2,enabled:false});const run=await toolJson(s,'run',{slug:'occupied',requestId:'tool'});expect(run).toMatchObject({state:'completed',definition:{id:b.definition.id}});expect(s.complete).toHaveBeenCalledOnce();
+  });
   it.each(['ui','command','tool'] as const)('deduplicates equivalent nested Unicode object payloads through %s without conflating distinct keys',async surface=>{
     const s=await setup();Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});let call=0;
     const invoke=async(input:Record<string,unknown>)=>{
