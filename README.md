@@ -39,6 +39,8 @@ Open [the Ollama Loops page](http://127.0.0.1:19491/plugin?plugin=loops-poc&id=l
 
 The development server uses one loaded model and one inference worker, 32K context, flash attention and an 8-bit KV cache. The observed loaded model allocation was about 3.7 GB; total machine memory includes the OS, apps and Gateway. Keep plugin `maxConcurrentRuns` at 1 for the 16 GB local setup. Existing custom profiles are preserved; the initializer repairs only recognizable old generated single-model policies, with a backup.
 
+Profile updates and explicit tool-inventory updates stage complete files before atomic replacement. Each change retains a uniquely named, byte-exact `openclaw.json.before-loops-*.bak` with private permissions. Repeating an unchanged setup creates no new backup. Failures before replacement preserve the active profile; a killed process may leave a private `.tmp` file for diagnosis. A detected concurrent edit aborts the replacement, so rerun setup against the current file. This is not a lock on OpenClaw or other configuration writers; avoid editing the same profile during setup. These checks cover process interruption, not power-loss guarantees.
+
 ## Develop locally with Codex
 
 After building the tarball, initialize the separate Codex test profile:

@@ -1,4 +1,5 @@
-import {copyFileSync, readFileSync, writeFileSync} from 'node:fs';
+import {linkSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
 
 const generatedModels = new Set(['openai/gpt-6-astra', 'ollama/qwen3.5:4b']);
 export function repairGeneratedPolicy(config) {
@@ -23,11 +24,41 @@ export function configureLoopPolicy(config) {
   if (!entry.llm) entry.llm = {allowAgentIdOverride: true, allowModelOverride: true};
   else repairGeneratedPolicy(config);
 }
-export function writeProfileWithBackup(filename, config) {
-  const before = readFileSync(filename, 'utf8');
-  const after = JSON.stringify(config, null, 2) + '\n';
-  if (before === after) return false;
-  copyFileSync(filename, `${filename}.before-loops-${Date.now()}.bak`);
-  writeFileSync(filename, after, {mode: 0o600, flush: true});
-  return true;
+const encode = config => Buffer.from(JSON.stringify(config, null, 2) + '\n');
+function stage(filename, bytes, commit) {
+  const temporary = `${filename}.${randomUUID()}.tmp`;
+  let cleanup = true;
+  try {
+    try { writeFileSync(temporary, bytes, {mode: 0o600, flag: 'wx', flush: true}); }
+    catch (error) { if (error.code === 'EEXIST') cleanup = false; throw error; }
+    return commit(temporary);
+  } finally {
+    // Only this attempt's staging file: interrupted attempts and valid backups
+    // remain available for diagnosis, never mistaken for an active profile.
+    if (cleanup) rmSync(temporary, {force: true});
+  }
+}
+export function createProfile(filename, config) {
+  // Link a complete file with no replacement: another initializer may have
+  // created the profile since its existence check. Never truncate that file.
+  return stage(filename, encode(config), temporary => linkSync(temporary, filename));
+}
+export function writeProfileWithBackup(filename, config, expected) {
+  filename = realpathSync(filename);
+  const before = readFileSync(filename), after = encode(config);
+  const unchanged = () => {
+    if ((expected !== undefined && !before.equals(Buffer.from(expected))) || !readFileSync(filename).equals(before))
+      throw new Error('The profile changed during setup. Read the current profile and retry; no replacement was applied.');
+  };
+  unchanged();
+  if (before.equals(after)) return false;
+  return stage(filename, after, temporary => {
+    // Random names and exclusive linking preserve earlier backups even when
+    // multiple updates occur within the same millisecond.
+    const backup = `${filename}.before-loops-${Date.now()}-${randomUUID()}.bak`;
+    stage(backup, before, stagedBackup => linkSync(stagedBackup, backup));
+    unchanged();
+    renameSync(temporary, filename);
+    return true;
+  });
 }

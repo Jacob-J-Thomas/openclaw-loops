@@ -1,11 +1,11 @@
 import {randomBytes} from 'node:crypto';
-import {existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
-import {repairGeneratedPolicy,writeProfileWithBackup} from './profile-policy.mjs';
+import {createProfile,repairGeneratedPolicy,writeProfileWithBackup} from './profile-policy.mjs';
 const root=resolve('.dev-profile');
 if(existsSync(`${root}/openclaw.json`)){
-  const config=JSON.parse(readFileSync(`${root}/openclaw.json`,'utf8'));
-  if(repairGeneratedPolicy(config))writeProfileWithBackup(`${root}/openclaw.json`,config);
+  const before=readFileSync(`${root}/openclaw.json`),config=JSON.parse(before.toString('utf8'));
+  if(repairGeneratedPolicy(config))writeProfileWithBackup(`${root}/openclaw.json`,config,before);
   console.log('Kept the existing profile and repaired only a recognized generated Loops model policy.');
   process.exit(0);
 }
@@ -20,5 +20,5 @@ const config={
   tools:{profile:'coding',alsoAllow:agentTools},
   plugins:{allow:['loops-poc','ollama'],slots:{memory:'none'},entries:{'loops-poc':{enabled:true,llm:{allowAgentIdOverride:true,allowModelOverride:true}}}},
 };
-writeFileSync(`${root}/openclaw.json`,JSON.stringify(config,null,2),{mode:0o600});
+createProfile(`${root}/openclaw.json`,config);
 console.log(`Created isolated profile for ${model} on http://127.0.0.1:19491. The local token remains in the private config.`);
