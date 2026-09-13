@@ -59,21 +59,38 @@ describe('automatic graph layout',()=>{
     const original=chain(schemaVersion,39),before=structuredClone(original),arranged=autoLayout(original);
     expect(validateGraph(arranged)).toEqual([]);
     expect(parseDefinition(arranged)).toEqual(arranged);
-    expect(arranged.layout.return.x).toBeGreaterThan(10000);
+    expect(arranged.layout.return.x-arranged.layout.input.x).toBe(38*265);
+    if(schemaVersion===1)expect(arranged.layout.return.x).toBe(10000);
+    else expect(arranged.layout.return.x).toBeGreaterThan(10000);
     expect(withoutLayout(arranged)).toEqual(withoutLayout(before));
     expect(original).toEqual(before);
   });
 
   it.each([1,2] as const)('keeps a tall disconnected v%s draft schema-saveable while graph validation remains separate',schemaVersion=>{
-    const draft=chain(schemaVersion,60,false),arranged=autoLayout(draft);
+    const draft=chain(schemaVersion,60,false),before=structuredClone(draft),arranged=autoLayout(draft);
     expect(validateGraph(arranged).length).toBeGreaterThan(0);
     expect(parseDefinition(arranged)).toEqual(arranged);
-    expect(arranged.layout.return.y).toBeGreaterThan(10000);
+    expect(arranged.layout.return.y-arranged.layout.input.y).toBe(59*180);
+    if(schemaVersion===1)expect(arranged.layout.return.y).toBe(10000);
+    else expect(arranged.layout.return.y).toBeGreaterThan(10000);
     expect(withoutLayout(arranged)).toEqual(withoutLayout(draft));
+    expect(draft).toEqual(before);
   });
 
-  it.each([1,2] as const)('accepts only finite JavaScript-safe v%s layout coordinates',schemaVersion=>{
-    const definition=chain(schemaVersion,2),safe={...definition,layout:{input:{x:Number.MAX_SAFE_INTEGER,y:-Number.MAX_SAFE_INTEGER},return:{x:0,y:0}}};
+  it('leaves an unrepresentable v1 draft unchanged until its author explicitly uses version 2',()=>{
+    const original=chain(1,78),before=structuredClone(original);
+    expect(()=>autoLayout(original)).toThrow('Use version 2 in this draft');
+    expect(original).toEqual(before);
+    const v2:Definition={...structuredClone(original),schemaVersion:2};
+    const arranged=autoLayout(v2);
+    expect(parseDefinition(arranged)).toEqual(arranged);
+    expect(arranged.layout.return.x).toBeGreaterThan(10000);
+  });
+
+  it('keeps v1 coordinates within its frozen range while v2 accepts finite JavaScript-safe coordinates',()=>{
+    const legacy=chain(1,2),v2=chain(2,2);
+    expect(()=>parseDefinition({...legacy,layout:{input:{x:Number.MAX_SAFE_INTEGER,y:0},return:{x:0,y:0}}})).toThrow('Definition does not match schemaVersion 1 or 2.');
+    const safe={...v2,layout:{input:{x:Number.MAX_SAFE_INTEGER,y:-Number.MAX_SAFE_INTEGER},return:{x:0,y:0}}};
     expect(parseDefinition(safe)).toEqual(safe);
     for(const value of [Number.MAX_SAFE_INTEGER+1,NaN,Infinity,-Infinity])expect(()=>parseDefinition({...safe,layout:{...safe.layout,input:{x:value,y:0}}})).toThrow('Definition does not match schemaVersion 1 or 2.');
   });
