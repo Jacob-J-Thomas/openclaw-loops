@@ -18,6 +18,10 @@ const branching:Definition={schemaVersion:2,id:'arrange-fixture',slug:'arrange-f
 
 const withoutLayout=(definition:Definition)=>{const copy=structuredClone(definition);delete (copy as Partial<Definition>).layout;return copy;};
 const finiteLayout=(definition:Definition)=>Object.values(definition.layout).every(position=>Number.isFinite(position.x)&&Number.isFinite(position.y));
+const chain=(schemaVersion:1|2,count:number,edges=true):Definition=>{
+  const nodes:Definition['nodes']=[{id:'input',kind:'input',label:'Input'},...Array.from({length:count-2},(_,index)=>({id:`action-${index}`,kind:'action' as const,label:`Action ${index}`,capability:'model-info' as const})),{id:'return',kind:'return',label:'Return',value:'Done'}];
+  return {schemaVersion,id:`chain-${schemaVersion}-${count}`,slug:`chain-${schemaVersion}-${count}`,name:'Layout chain',description:'Coordinate boundary regression.',revision:0,inputSchema:[],capabilities:['model-info'],nodes,edges:edges?nodes.slice(0,-1).map((node,index)=>({id:`edge-${index}`,source:node.id,target:nodes[index+1]!.id,port:'next' as const})):[],layout:Object.fromEntries(nodes.map(node=>[node.id,{x:0,y:0}])),limits:{maxExecutions:count+1,maxOutputBytes:4096,...schemaVersion===1?{timeoutMs:120000}:{}}};
+};
 
 describe('automatic graph layout',()=>{
   it('arranges a valid branching join without changing its authored graph or settings',()=>{
@@ -49,5 +53,28 @@ describe('automatic graph layout',()=>{
       expect(finiteLayout(arranged)).toBe(true);
       expect(Object.keys(arranged.layout)).toEqual(arranged.nodes.map(node=>node.id));
     }
+  });
+
+  it.each([1,2] as const)('keeps a 39-node arranged v%s chain schema-valid without changing its authored graph',schemaVersion=>{
+    const original=chain(schemaVersion,39),before=structuredClone(original),arranged=autoLayout(original);
+    expect(validateGraph(arranged)).toEqual([]);
+    expect(parseDefinition(arranged)).toEqual(arranged);
+    expect(arranged.layout.return.x).toBeGreaterThan(10000);
+    expect(withoutLayout(arranged)).toEqual(withoutLayout(before));
+    expect(original).toEqual(before);
+  });
+
+  it.each([1,2] as const)('keeps a tall disconnected v%s draft schema-saveable while graph validation remains separate',schemaVersion=>{
+    const draft=chain(schemaVersion,60,false),arranged=autoLayout(draft);
+    expect(validateGraph(arranged).length).toBeGreaterThan(0);
+    expect(parseDefinition(arranged)).toEqual(arranged);
+    expect(arranged.layout.return.y).toBeGreaterThan(10000);
+    expect(withoutLayout(arranged)).toEqual(withoutLayout(draft));
+  });
+
+  it.each([1,2] as const)('accepts only finite JavaScript-safe v%s layout coordinates',schemaVersion=>{
+    const definition=chain(schemaVersion,2),safe={...definition,layout:{input:{x:Number.MAX_SAFE_INTEGER,y:-Number.MAX_SAFE_INTEGER},return:{x:0,y:0}}};
+    expect(parseDefinition(safe)).toEqual(safe);
+    for(const value of [Number.MAX_SAFE_INTEGER+1,NaN,Infinity,-Infinity])expect(()=>parseDefinition({...safe,layout:{...safe.layout,input:{x:value,y:0}}})).toThrow('Definition does not match schemaVersion 1 or 2.');
   });
 });
