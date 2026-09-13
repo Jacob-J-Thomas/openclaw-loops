@@ -5,6 +5,7 @@ import type {Actor} from './engine.js';
 import {fitsFeatureJson, textPage} from './feature-json.js';
 import type {DocumentReference, UploadReference} from './wire-contract.js';
 import {LoopError, requestError, storageError} from './errors.js';
+import {uploadChunkCharacters, uploadEncodedLength, type UploadChunkInput} from './upload-input.js';
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const scope = (actor: Actor) => hash(JSON.stringify([actor.agentId, actor.sessionKey, actor.sessionId]));
@@ -15,6 +16,23 @@ const digest = (value: unknown): value is string => typeof value === 'string' &&
 const corrupt = (cause?: unknown) => new LoopError({code: 'LOOPS_DOCUMENT_CORRUPT', message: 'Stored document or upload integrity check failed.', phase: 'storage', retryable: false,
   recovery: 'Preserve the affected transport files for diagnosis. Restore verified document backups, or retry an upload with a fresh uploadId. Do not overwrite damaged evidence.'}, {cause});
 const notFound = () => requestError('Document not found in this conversation.', 'LOOPS_DOCUMENT_NOT_FOUND', 'Use the originating conversation and a valid document reference. If its files were removed, restore the matching profile backup.');
+const encodingError = () => requestError('Supply exactly one text or textBase64 fragment. Encoded fragments must be bounded canonical Base64 containing valid UTF-8.', 'LOOPS_UPLOAD_ENCODING', 'Encode the exact fragment as standard padded Base64 without whitespace, or send plaintext in text. Keep textBase64 within 65,536 characters; split larger fragments. Do not repair or normalize the content.');
+function uploadText(input: UploadChunkInput): string {
+  const plain = input.text !== undefined, encoded = input.textBase64 !== undefined;
+  if (plain === encoded) throw encodingError();
+  if (plain) {
+    if (typeof input.text !== 'string') throw encodingError();
+    return input.text;
+  }
+  const text = input.textBase64;
+  if (typeof text !== 'string' || text.length > uploadEncodedLength || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) throw encodingError();
+  const bytes = Buffer.from(text, 'base64');
+  if (bytes.toString('base64') !== text) throw encodingError();
+  // A fragment can start with a BOM inside the complete JSON string. Preserve
+  // it, and reject malformed UTF-8 rather than silently replacing its bytes.
+  try { return new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes); }
+  catch { throw encodingError(); }
+}
 
 // Files are immutable response snapshots or explicit request staging, never an
 // executable capability. Every read rechecks current host/session authority.
@@ -81,17 +99,18 @@ export class DocumentStore {
     try { return JSON.parse(text); }
     catch (error) { throw corrupt(error); }
   }
-  upload(actor: Actor, input: {uploadId: string; offset: number; text: string; complete?: boolean; sha256?: string}) {
+  upload(actor: Actor, input: UploadChunkInput) {
     actor.check();
+    const text = uploadText(input), chunk = Array.from(text);
+    if (chunk.length > uploadChunkCharacters) throw requestError('Upload chunks must contain at most 16,000 Unicode characters.');
     const name = `upload-${hash(scope(actor) + input.uploadId)}.json`;
     const saved = this.readRecord(name);
     if (saved !== undefined && (!record(saved) || typeof saved.text !== 'string' || typeof saved.completed !== 'boolean' ||
       (saved.completed ? !record(saved.reference) || !digest(saved.reference.$loopsUpload) : saved.reference !== undefined))) throw corrupt();
     const upload: Upload = saved === undefined ? {text: '', completed: false} : saved as Upload;
-    const characters = Array.from(upload.text), chunk = Array.from(input.text);
-    if (chunk.length > 16000) throw requestError('Upload chunks must contain at most 16,000 Unicode characters.');
-    if (input.offset === characters.length && !upload.completed) upload.text += input.text;
-    else if (characters.slice(input.offset, input.offset + chunk.length).join('') !== input.text || input.offset + chunk.length > characters.length) throw requestError('Upload offset conflict. Retry the identical chunk or use a new uploadId.', 'LOOPS_UPLOAD_CONFLICT');
+    const characters = Array.from(upload.text);
+    if (input.offset === characters.length && !upload.completed) upload.text += text;
+    else if (characters.slice(input.offset, input.offset + chunk.length).join('') !== text || input.offset + chunk.length > characters.length) throw requestError('Upload offset conflict. Retry the identical chunk or use a new uploadId.', 'LOOPS_UPLOAD_CONFLICT');
     if (Buffer.byteLength(upload.text) > this.maxUploadBytes) throw requestError(`Upload exceeds the configured ${this.maxUploadBytes}-byte staging budget.`, 'LOOPS_UPLOAD_TOO_LARGE', 'Reduce the upload or ask the operator to adjust the documented staging budget before explicitly retrying.');
     if (input.complete) {
       if (!input.sha256 || hash(upload.text) !== input.sha256) throw requestError('The completed upload does not match its required sha256.', 'LOOPS_UPLOAD_INTEGRITY', 'Verify the complete UTF-8 JSON digest and retry the identical chunk, or start a fresh uploadId.');

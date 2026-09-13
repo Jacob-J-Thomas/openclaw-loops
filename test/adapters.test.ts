@@ -553,6 +553,51 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     }finally{if(filename)writeFileSync(filename,saved);}
     expect((await client.invoke('load',{id:definition.id})).definition.nodes[1]).toMatchObject({value:large});expect(s.complete).not.toHaveBeenCalled();
   });
+  it.each(['ui','command','tool'] as const)('preserves encoded upload fragments through the %s SDK adapter and service restart',async surface=>{
+    let s=await setup();let sequence=0;
+    const invoke=async(op:string,input:Record<string,unknown>)=>{
+      if(surface==='tool')return toolJson(s,op,input,`encoded-${++sequence}`);
+      if(surface==='command'){
+        const args=`${op} --json-base64 ${Buffer.from(JSON.stringify(input)).toString('base64')}`;
+        expect(args.length).toBeLessThan(4096);
+        const text=(await s.commands.get('loops')!.handler({...s.commandContext,args})).text!;
+        return text.startsWith('Loops [')?{failure:text}:JSON.parse(text);
+      }
+      const response=await s.action(op,input);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;
+    };
+    const directory=join(s.root,'loops-poc','documents'),files=()=>readdirSync(directory).map(name=>[name,readFileSync(join(directory,name),'utf8')]);
+    const text='\uFEFF🙂\nquote" and slash\\',json=JSON.stringify({text}),characters=Array.from(json),cut=json.indexOf('\uFEFF');
+    const first=characters.slice(0,cut).join(''),last=characters.slice(cut).join(''),encode=(value:string)=>Buffer.from(value).toString('base64');
+    const uploadId=`encoded-${surface}`,start={uploadId,offset:0,textBase64:encode(first)};
+    expect(await invoke('upload',{uploadId,offset:0,textBase64:''})).toMatchObject({offset:0,completed:false});
+    expect(await invoke('upload',start)).toMatchObject({offset:cut,completed:false});
+    const before=files();
+    for(const fields of [{},{text:'',textBase64:''},{textBase64:'Zh=='},{textBase64:Buffer.from([0xc3,0x28]).toString('base64')}]){
+      expect(JSON.stringify(await invoke('upload',{uploadId,offset:cut,...fields}))).toContain('LOOPS_UPLOAD_ENCODING');expect(files()).toEqual(before);
+    }
+    expect(JSON.stringify(await invoke('upload',{uploadId,offset:cut+1,textBase64:encode(last)}))).toContain('LOOPS_UPLOAD_CONFLICT');expect(files()).toEqual(before);
+    expect(JSON.stringify(await invoke('upload',{uploadId,offset:cut,textBase64:encode(last),complete:true,sha256:'0'.repeat(64)}))).toContain('LOOPS_UPLOAD_INTEGRITY');expect(files()).toEqual(before);
+    await expect(s.action('upload',start,[])).rejects.toMatchObject({detail:{code:'HOST_POLICY_DENIED'}});expect(files()).toEqual(before);
+    s.config.plugins.entries['loops-poc'].enabled=false;
+    const denied=await invoke('upload',start).then(value=>JSON.stringify(value),error=>String(error));expect(denied.toLowerCase()).toContain('disabled');expect(files()).toEqual(before);
+    s.config.plugins.entries['loops-poc'].enabled=true;
+    for(const shutdown of shutdowns.splice(0))await shutdown();
+    s=await setup({root:s.root});
+    expect(await invoke('upload',start)).toMatchObject({offset:cut,completed:false});
+    expect(await invoke('upload',{uploadId,offset:0,text:first})).toMatchObject({offset:cut,completed:false});
+    expect(await invoke('upload',{uploadId,offset:cut,textBase64:encode(last)})).toMatchObject({offset:characters.length,completed:false});
+    const finish={uploadId,offset:characters.length,textBase64:'',complete:true,sha256:createHash('sha256').update(json).digest('hex')};
+    const completed=await invoke('upload',finish);expect(completed).toMatchObject({offset:characters.length,completed:true});
+    expect(await invoke('upload',finish)).toEqual(completed);
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug=`encoded-${surface}`;definition.capabilities=[];
+    definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];definition.edges=[{id:'next',source:'input',target:'return',port:'next'}];
+    await invoke('create',{definition});
+    const run=await invoke('run',{slug:definition.slug,input:completed.reference,requestId:`encoded-${surface}`});
+    expect(run).toMatchObject({state:'completed',result:text});
+    const output=await invoke('output',{runId:run.id});expect(output).toMatchObject({text,nextOffset:null});
+    expect(createHash('sha256').update(output.text).digest('hex')).toBe(createHash('sha256').update(text).digest('hex'));
+    expect(s.complete).not.toHaveBeenCalled();
+  });
   it('reports upload validation conflicts consistently and preserves the previously staged value',async()=>{
     const s=await setup(),input={uploadId:'conflict',offset:0,text:'{}'};await s.action('upload',input);
     const changed={...input,text:'[]'},ui=await s.action('upload',changed),tool=await s.tools.find(tool=>tool.name==='loops_upload')!.execute('upload-conflict',changed);

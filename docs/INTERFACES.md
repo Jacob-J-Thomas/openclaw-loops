@@ -52,7 +52,7 @@ under R19–R23; calling an action handler alone is not browser evidence.
 | `recover` | `loops_recover` | Restore a definition as disabled. |
 | `delete` | `loops_delete` | Delete the requested definition at the expected revision; protect open runs. |
 | `retention` | `loops_retention` | Preview cleanup, then apply that unchanged candidate plan. |
-| `upload` | `loops_upload` | Stage and verify input before an authorized operation consumes it. |
+| `upload` | `loops_upload` | Stage plaintext or explicit Base64 fragments and verify input before an authorized operation consumes it. |
 | `document` | `loops_document` | Retrieve immutable complete results and verify their digest. |
 
 ## Common negative and unavailable cases
@@ -74,6 +74,13 @@ UTF-8 input, complete oversized documents, manual waits, cancellation/retry
 ancestry, Human review separation and archive/recovery/deletion. These automated
 tests use fixture host capabilities and no real model completion; source and
 extracted-package runs remain distinct from installed-runtime evidence.
+
+Encoded-upload adapter tests also preserve incomplete JSON, Unicode, newlines
+and a BOM across fragment boundaries and service restart. They check empty/zero
+values, mixed representations, malformed Base64/UTF-8, offset/digest conflicts,
+current authority, exact replay and complete reference consumption through all
+three surfaces. The [transport contract](TRANSPORT.md) defines decoded budgets
+and offsets; encoding does not grant additional permissions.
 
 Stable principals across conversation reset, account-bound completion,
 unsupported sampling controls, durable requester-bound delivery and durable
@@ -99,12 +106,23 @@ uses the current configured model; it does not replace model/account/tool policy
 model and verifies their recorded tool reports. Loop execution in this lifecycle
 journey uses deterministic echo/Wait/review nodes. Only `agent` invokes a model.
 It does not claim inference-node parameter forwarding or browser interaction.
+The upload steps use explicit Base64 fragments, including the incomplete JSON
+boundary that was altered in actual plaintext Ollama tool calls
+([Finding #130](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/130)).
+Retain exact requested/actual arguments and output digests when qualifying this
+path; successful encoding does not establish the cause of plaintext alteration.
 
 The agent journey expects exactly one recorded result per requested tool. It
 preserves unexpected/missing calls and stops without blindly repeating a
 mutation. Human approval in that journey is a separate authenticated session
 action, explicitly recorded and never attributed to the model. The script
 removes its own synthetic definition after success and preserves run evidence.
+Long Ollama conversations have also failed host compaction or exceeded context
+([Finding #129](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/129)). A
+failed final chat can follow a committed tool operation. Preserve the actual
+tool result and inspect current state before deciding whether an explicit retry
+is needed; do not describe a split-conversation recovery as an uninterrupted
+successful journey.
 
 Private receipts are written under ignored `evidence/interface-parity` by
 default (`LOOPS_EVIDENCE_DIR` can select another private evidence directory).

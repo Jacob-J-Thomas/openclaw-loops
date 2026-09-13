@@ -2,6 +2,7 @@ import {Type, type Static, type TSchema} from 'typebox';
 import {defineFeatureContract} from 'openclaw/plugin-sdk/feature-contract';
 import {contract} from './contract.js';
 import {LoopErrorSchema} from './errors.js';
+import {UploadChunkSchema} from './upload-input.js';
 
 const strict = {additionalProperties: false} as const;
 const digest = Type.String({pattern: '^[a-f0-9]{64}$'});
@@ -34,7 +35,7 @@ export const wireContract = defineFeatureContract({pluginId: contract.pluginId, 
   document: {kind: 'query', description: 'Read an immutable large operation result in Unicode character pages. Concatenate text in order, verify sha256 over UTF-8, then parse the complete JSON. Follow nextOffset until null. Only the originating conversation may read it. A loops-error result means retrieval failed; report its error and recovery and never present partial pages as the complete result.',
     input: Type.Object({documentId: digest, offset: Type.Optional(offset), limit: Type.Optional(Type.Integer({minimum: 1}))}, strict),
     output: Type.Union([DocumentPageSchema, OperationFailureSchema]), tool: {name: 'loops_document'}},
-  upload: {kind: 'action', description: 'Stage a large JSON value without executing it. Use one fresh uploadId and append text chunks of at most 16,000 Unicode characters at the returned offset. Retry an identical chunk at its original offset safely. Set complete:true on the last chunk and supply sha256 of the full UTF-8 JSON. Pass the returned reference only in an upload-capable field of the intended loops tool; its original permissions and validation still apply. A loops-error result means staging failed; report its error and recovery and do not submit the intended operation until the upload completes.',
-    input: Type.Object({uploadId: Type.String({minLength: 1, maxLength: 100, pattern: '^[a-zA-Z0-9_-]+$'}), offset, text: Type.String({maxLength: 32000}), complete: Type.Optional(Type.Boolean()), sha256: Type.Optional(digest)}, strict),
+  upload: {kind: 'action', description: 'Stage a large JSON value without executing it. Use one fresh uploadId and append chunks of at most 16,000 decoded Unicode characters at the returned offset. Supply exactly one of text or textBase64, including for empty fragments. Prefer textBase64 for incomplete JSON fragments in agent calls: encode their exact UTF-8 bytes as standard padded Base64 without whitespace, up to 65,536 encoded characters. Retry an identical decoded chunk at its original offset safely. Set complete:true on the last chunk and supply sha256 of the full decoded UTF-8 JSON, not the Base64. Pass the returned reference only in an upload-capable field of the intended loops tool; its original permissions and validation still apply. A loops-error result means staging failed; report its error and recovery and do not submit the intended operation until the upload completes.',
+    input: UploadChunkSchema,
     output: Type.Union([Type.Object({uploadId: Type.String(), offset, completed: Type.Boolean(), reference: Type.Optional(UploadReferenceSchema)}, strict), OperationFailureSchema]), tool: {name: 'loops_upload'}},
 }});
