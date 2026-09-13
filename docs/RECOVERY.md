@@ -42,6 +42,13 @@ edited publication or another conversation model. A continuation retains an
 already committed human decision; a full restart clears it while preserving the
 original decision in the parent run. Budgets apply afresh to the new admission.
 
+On authorized access, older saved runs pending Human review have inherited
+decision metadata removed if no review node in that run has a committed decision
+output. The repair commits before inspection or an idempotent retry returns.
+Valid decisions from earlier review nodes and terminal historical records remain
+unchanged. A storage failure reports an error instead of claiming the repair
+succeeded; no node or human decision executes during this repair.
+
 ## Verification boundaries
 
 The process-crash tests send SIGKILL at persisted admission, inference, Repeat,

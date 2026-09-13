@@ -79,8 +79,28 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const restarted=await invoke('retry',{runId:first.id,mode:'restart',requestId:'restart-review'}) as RunReceipt;expect(restarted).toMatchObject({state:'review',parentRunId:first.id});
     const pending=await invoke('inspect',{runId:restarted.id}) as Run;expect(pending.review).toBeUndefined();expect(pending.outputs.review).toEqual({});
     expect(await invoke('inspect',{runId:first.id})).toEqual(original);
+    for(const shutdown of shutdowns.splice(0))await shutdown();
+    // Previous releases persisted the parent's attribution on this fresh child.
+    // Exercise the indexed cold-run path, including idempotent admission first.
+    const filename=join(s.root,'loops-poc','loops.sqlite'),store=new SqliteStorage(filename);
+    store.writeRun({...pending,review:original.review});await store.close();s=await setup({root:s.root});
+    const fault=new DatabaseSync(filename);
+    try{
+      fault.exec("CREATE TRIGGER reject_attribution_repair BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'Synthetic attribution repair failure'); END");
+      const request={runId:first.id,mode:'restart',requestId:'restart-review'};
+      if(surface==='ui')await expect(invoke('retry',request)).rejects.toMatchObject({message:'Loops storage rejected a conflicting write.'});
+      else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`retry ${JSON.stringify(request)}`})).text).toContain('Loops storage rejected a conflicting write.');
+      else expect(await invoke('retry',request)).toMatchObject({kind:'loops-error',error:{message:'Loops storage rejected a conflicting write.'}});
+      expect(JSON.parse((fault.prepare('SELECT record FROM runs WHERE id=?').get(restarted.id) as {record:string}).record).review).toEqual(original.review);
+      fault.exec('DROP TRIGGER reject_attribution_repair');
+    }finally{fault.close();}
+    const duplicate=await invoke('retry',{runId:first.id,mode:'restart',requestId:'restart-review'}) as RunReceipt;
+    expect(duplicate).toMatchObject({id:restarted.id,state:'review'});expect(duplicate.review).toBeUndefined();
+    expect(await invoke('inspect',{runId:restarted.id})).toEqual(pending);
+    const database=new DatabaseSync(filename,{readOnly:true});
+    try{expect(JSON.parse((database.prepare('SELECT record FROM runs WHERE id=?').get(restarted.id) as {record:string}).record)).toEqual(pending);}finally{database.close();}
     for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
-    expect(await invoke('inspect',{runId:restarted.id})).toEqual(pending);expect(await invoke('retry',{runId:first.id,mode:'restart',requestId:'restart-review'})).toMatchObject({id:restarted.id,state:'review'});
+    expect(await invoke('inspect',{runId:restarted.id})).toEqual(pending);
     expect(await client.invoke('review',{runId:restarted.id,decision:'reject'})).toMatchObject({state:'failed'});expect((await invoke('inspect',{runId:restarted.id}) as Run).review?.decision).toBe('reject');
     expect(await invoke('inspect',{runId:first.id})).toEqual(original);expect(s.complete).not.toHaveBeenCalled();
   });
