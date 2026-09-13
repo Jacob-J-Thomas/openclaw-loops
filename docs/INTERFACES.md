@@ -62,9 +62,19 @@ recheck current host authority. A revoked plugin cannot continue serving a tool
 factory created earlier. A stopped service returns `LOOPS_SERVICE_UNAVAILABLE`;
 it must not present an empty library or successful mutation. Schema, conflict,
 publication, ownership and transition errors retain their existing contracts.
-The command surface renders operation errors as `Loops [code]: ...` plus recovery
-text; feature/tool callers receive typed errors. Large success responses use the
-[complete transport protocol](TRANSPORT.md).
+The command surface renders operation errors as `Loops [code]: ...`, followed by
+phase, available node/model attribution, retryability and a next recovery step.
+Legacy failed-run shortcuts retain the run's failed state and the same diagnostic
+fields. Feature/tool callers receive the typed error contract. The editor uses
+that contract in operation, library, capability, history-cleanup and run alerts;
+local input errors without host diagnostics remain plain messages. Unavailable
+node/model attribution is omitted, never inferred. Retryability is guidance for
+an explicit recovery request, not an automatic replay of a failed host call.
+
+Only public diagnostic fields are presented. Native causes, provider request
+bodies, credentials, filesystem paths and arbitrary error properties are not
+expanded into alerts or conversation replies. Large replies, including typed
+operation failures, use the [complete transport protocol](TRANSPORT.md).
 
 Published runs pin an opaque `grantGeneration` from their loop record. Explicit
 revoke rotates that generation, so re-enabling or republishing cannot restore an

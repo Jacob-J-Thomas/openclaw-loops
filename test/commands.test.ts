@@ -9,6 +9,12 @@ import {jsonResult} from 'openclaw/plugin-sdk/tool-results';
 
 const reference:DocumentReference={kind:'loops-document',documentId:'a'.repeat(64),sha256:'b'.repeat(64),bytes:1,read:'loops_document',description:'Immutable result'};
 describe('conversation reply envelope',()=>{
+  it.each([false,true])('preserves all public operation diagnostics in a command reply, retryable=%s',retryable=>{
+    const detail={code:'HOST_TIMEOUT',message:'The selected runtime timed out.',phase:'inference',nodeId:'research',model:'fake/selected',retryable,recovery:'Inspect the uncertain attempt before explicitly retrying.'};
+    const text=formatCommandResult({kind:'loops-error',operation:'run',error:detail});
+    expect(text).toMatch(/^Loops \[HOST_TIMEOUT\]/);
+    for(const value of ['Phase: inference','Node: research','Model: fake/selected',retryable?'Retryable: Yes, after the recovery step':'Retryable: Resolve the failure first','Next step: '+detail.recovery])expect(text).toContain(value);
+  });
   it('decodes lossless command arguments before the unchanged operation schema',()=>{
     const input={uploadId:'escaped',offset:0,text:JSON.stringify({text:'🙂\u0000"\\\n\\n'})},args='upload --json-base64 '+Buffer.from(JSON.stringify(input)).toString('base64');
     // The pinned host normalizes literal backslash-n before plugin dispatch.
