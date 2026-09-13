@@ -30,6 +30,7 @@
     "docs/THIRD_PARTY_NOTICES.md",
     "docs/TRANSPORT.md",
     "docs/HISTORY.md",
+    "docs/RECOVERY.md",
     "docs/INTERFACES.md"
   ],
   "scripts": {
