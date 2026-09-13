@@ -159,6 +159,19 @@ describe('plugin-owned SQLite worker',()=>{
     const recovered=new SqliteStorage(filename,legacy);cleanups.push(()=>recovered.close());expect(recovered.read()).toEqual(initial());expect(recovered.integrity()).toEqual([{integrity_check:'ok'}]);
     expect(readFileSync(legacy,'utf8')).toBe(original);expect(readFileSync(backup,'utf8')).toBe(original);
   });
+  it.each([
+    "UPDATE metadata SET value='invalid JSON' WHERE key='version'",
+    "UPDATE metadata SET value='99' WHERE key='version'",
+    "DELETE FROM metadata WHERE key='version'",
+    "UPDATE loops SET record='{}' WHERE id='summarize-text'",
+    "DROP TABLE outputs",
+  ])('preserves a physically healthy restore rejected by startup record/schema validation (%#)',async damage=>{
+    const {filename}=setup(),store=new SqliteStorage(filename);store.write(initial());await store.close();
+    const fault=new DatabaseSync(filename);fault.exec('PRAGMA journal_mode=DELETE;'+damage);expect(fault.prepare('PRAGMA quick_check').get()?.quick_check).toBe('ok');fault.close();
+    const before=readFileSync(filename);
+    expect(()=>{const opened=new SqliteStorage(filename);cleanups.push(()=>opened.close());}).toThrow();await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
+    expect(readFileSync(filename)).toEqual(before);expect(existsSync(filename+'-wal')).toBe(false);
+  });
   it('rejects a corrupt restored copy while preserving the verified backup and source store',async()=>{
     const {directory,filename}=setup(),store=new SqliteStorage(filename);cleanups.push(()=>store.close());store.write(initial());
     const backup=join(directory,'verified.sqlite');store.backup(backup);

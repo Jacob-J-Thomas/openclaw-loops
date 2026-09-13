@@ -96,7 +96,11 @@ export class SqliteStorage implements Storage,IndexedRunStorage{
       this.worker.unref();this.port.unref();
       this.worker.on('error',()=>{this.broken=true;});
       this.worker.on('exit',()=>{this.broken=true;});
-      if(!this.readWorkingState()&&legacyFile&&existsSync(legacyFile)){
+      const existing=this.readWorkingState();
+      // Typed startup state is checked while the worker holds a read-only
+      // connection. Only accepted state can proceed to writable initialization.
+      this.call('initialize');
+      if(!existing&&legacyFile&&existsSync(legacyFile)){
         const legacy=validateState(JSON.parse(readFileSync(legacyFile,'utf8')));
         const backup=`${legacyFile}.before-sqlite-${Date.now()}.bak`;
         copyFileSync(legacyFile,backup);chmodSync(backup,0o600);
