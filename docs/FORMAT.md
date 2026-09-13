@@ -6,6 +6,16 @@ Inference supports optional `model`, `agentId`, `reasoning` and `advanced`. Adva
 
 `loops_draft` preserves publication. `loops_publish` enables an immutable revision. `loops_restore` creates a new draft. Legacy `enabled:false` retains its disabling meaning. `loops_test` executes without publishing. Versions/history/inspect/output operations expose complete evidence. Archive/delete preserve recoverable history.
 
+## Current binding and predicate behavior
+
+An exact binding preserves its JSON type, including zero, false, empty text and null. Embedded bindings render non-string JSON as JSON text. Nested paths traverse existing own properties; missing values and unsafe prototype paths fail with `LOOPS_BINDING_UNAVAILABLE`. A declared optional input can be omitted at admission, but a node that consumes its missing value still fails. Missing is not converted to null, empty text or a false branch.
+
+In version 2, `equals` and `not-equals` compare typed JSON values recursively: object key order is irrelevant and array order matters. `contains` searches array elements using that same equality; other values use case-sensitive displayed-text containment. Numeric comparisons require both resolved operands to be numbers. Predicate fields are templates: literal `"2"` is text, while `{{input.count}}` preserves a numeric input. Version 1 retains displayed-value equality and finite numeric conversion.
+
+`truthy` accepts only boolean true or the exact text `true` in both versions. Its right field is unused, so neither graph validation nor execution resolves bindings in it. Changing to a two-operand predicate makes that field subject to normal validation and missing-value rules.
+
+Bindings may use only fields the selected producer can emit, after that producer is guaranteed on every path to the consumer. Optional host metadata can still be unavailable at execution. Input exposes `fields`; Wait has no output fields; Human review exposes `decision` after a response. Text Inference does not expose JSON `value`. Repeat exposes its last inference's fields and `succeeded`, `iterations` and `exhausted`; its body Condition can consume the preceding body Inference. Other nodes consume the parent Repeat output. Return and Fail terminate their path and cannot produce inputs for later nodes.
+
 ## Historical v1 contract
 
 The text below records original POC behavior. The v2 and new lifecycle behavior above supersede it for new definitions.
