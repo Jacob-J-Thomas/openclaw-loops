@@ -133,6 +133,7 @@ export class Engine{
     return this.documents??=new DocumentStore(this.options.documentDirectory,Math.max(this.budgets.definitionBytes,this.budgets.inputBytes)*2);
   }
   documentWrap(actor:Actor,value:unknown){return this.documentStore(actor).wrap(actor,value);}
+  documentSnapshot(actor:Actor,value:unknown){return this.documentStore(actor).snapshot(actor,value);}
   documentRead(actor:Actor,id:string,offset?:number,limit?:number){return this.documentStore(actor).read(actor,id,offset,limit);}
   documentUpload(actor:Actor,input:Parameters<DocumentStore['upload']>[1]){return this.documentStore(actor).upload(actor,input);}
   documentResolve(actor:Actor,reference:Parameters<DocumentStore['resolve']>[1]){return this.documentStore(actor).resolve(actor,reference);}

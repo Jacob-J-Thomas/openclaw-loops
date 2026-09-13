@@ -2,15 +2,16 @@ import { join } from 'node:path';
 import { defineFeaturePlugin, type FeatureHandlers, type FeatureInvocationContext } from 'openclaw/plugin-sdk/feature-plugin';
 import {Value} from 'typebox/value';
 import { contract } from './contract.js';
-import {wireContract, uploadFields, UploadReferenceSchema} from './wire-contract.js';
+import {wireContract, uploadFields, UploadReferenceSchema,DocumentPageSchema} from './wire-contract.js';
 import {parsePluginConfig,pluginConfigSchema,resolveBudgets} from './budgets.js';
 import type { Actor } from './engine.js';
 import { EngineService } from './engine-service.js';
 import { createBridge } from './openclaw.js';
-import {commandHelp,parseCommandInvocation,formatCommandResult} from './commands.js';
+import {commandHelp,parseCommandInvocation,commandReply,commandPage} from './commands.js';
 import {receipt,describe} from './receipts.js';
 import {LoopError,requestError,errorDetail,safeFailure} from './errors.js';
-import {fitsFeatureJson} from './feature-json.js';
+import {outputs} from './output-schemas.js';
+import {fitsToolReply,toolPage} from './tool-replies.js';
 
 // OpenClaw may evaluate the external plugin for more than one registry scope.
 // Keep one plugin-owned executor per state directory in this Gateway process.
@@ -38,14 +39,18 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
       const parsed=parseCommandInvocation(command,Math.max(budgets.definitionBytes,budgets.inputBytes)*2);
       if(parsed.kind==='help'){
         const help=commandHelp(parsed.operation);
-        return {text:formatCommandResult(fitsFeatureJson(help)?help:await service().invoke('documentWrap',actor,help))};
+        const text=await commandReply(help,value=>service().invoke('documentSnapshot',actor,value));
+        actor.check();return {text};
       }
       const operation=wireContract.operations[parsed.operation];
       if(operation.kind==='action'&&!actor.canManage)throw requestError('This command requires an operator with write access.','HOST_POLICY_DENIED');
       const handler=wireHandlers[parsed.operation] as (input:unknown,context:FeatureInvocationContext)=>unknown;
       const result=await handler(parsed.input,context);
       if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
-      actor.check();return {text:formatCommandResult(result,parsed.format)};
+      const value=parsed.operation==='document'&&Value.Check(DocumentPageSchema,result)?commandPage(result):
+        parsed.operation==='output'&&Value.Check(outputs.output,result)?commandPage(result):result;
+      const text=await commandReply(value,value=>service().invoke('documentSnapshot',actor,value),parsed.format);
+      actor.check();return {text};
     }catch(error){const detail=errorDetail(error,{phase:'operation'});return {text:`Loops [${detail.code}]: ${detail.message}\n${detail.recovery}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
@@ -78,10 +83,14 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     if(!Value.Check(operation.input,payload))throw requestError('Uploaded or inline input does not match the operation schema.');
     const result=await (handler as (input:unknown,context:FeatureInvocationContext)=>unknown)(payload,context);
     if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
-    actor.check();return service().invoke('documentWrap',actor,result);
+    actor.check();
+    const tool='tool' in operation?operation.tool.name:undefined;
+    const value=context.source==='tool'&&tool&&name==='output'&&Value.Check(outputs.output,result)?toolPage(result,tool):result;
+    const output=await service().invoke('documentWrap',actor,value);
+    return context.source==='tool'&&tool&&!fitsToolReply(output,tool)?service().invoke('documentSnapshot',actor,output):output;
   })])) as FeatureHandlers<typeof wireContract>;
   const wireHandlers:FeatureHandlers<typeof wireContract>={...wrapped,
-    document:(p,c)=>safely('document',c,actor=>service().invoke('documentRead',actor,p.documentId,p.offset,p.limit)),
+    document:(p,c)=>safely('document',c,async actor=>{const page=await service().invoke('documentRead',actor,p.documentId,p.offset,p.limit);return c.source==='tool'?toolPage(page,'loops_document'):page;}),
     upload:(p,c)=>safely('upload',c,actor=>service().invoke('documentUpload',actor,p)),
   };
   return wireHandlers;

@@ -28,3 +28,15 @@ export function textPage(text: string, offset = 0, limit = 16000) {
   const end = Math.min(characters.length, offset + Math.min(limit, 16000));
   return {text: characters.slice(offset, end).join(''), offset, nextOffset: end < characters.length ? end : null, totalCharacters: characters.length};
 }
+
+// Fit the complete transport envelope while retaining the original document's
+// continuation. The predicate measures formatting, escaping and metadata.
+export function fitTextPage<T extends ReturnType<typeof textPage>>(page:T,fits:(page:T)=>boolean):T{
+  if(fits(page))return page;
+  const characters=Array.from(page.text);
+  const take=(count:number):T=>({...page,text:characters.slice(0,count).join(''),nextOffset:count<characters.length?page.offset+count:page.nextOffset});
+  let low=0,high=characters.length;
+  while(low<high){const middle=Math.ceil((low+high)/2);if(fits(take(middle)))low=middle;else high=middle-1;}
+  if(low===0)throw new Error('Page metadata cannot fit the reply envelope.');
+  return take(low);
+}
