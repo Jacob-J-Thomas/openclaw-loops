@@ -3,9 +3,10 @@ import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
+import {Value} from 'typebox/value';
 import {Engine,type Actor,type HostCapabilities} from '../src/engine.js';
 import {SqliteStorage} from '../src/storage.js';
-import {bind,compare,parseDefinition,validateGraph,type Definition,type GraphNode} from '../src/graph.js';
+import {bind,compare,parseDefinition,validateGraph,DefinitionSchema,type Definition,type GraphNode} from '../src/graph.js';
 import {literalValue,type Json,type NodeValue} from '../src/node-values.js';
 import {nodeContract,nodeKinds,requiredCapabilities} from '../src/node-contracts.js';
 import {duplicateNode,revisionChanges} from '../src/editor-operations.js';
@@ -42,7 +43,16 @@ describe('explicit JSON node values',()=>{
     const source='['.repeat(100)+'0'+']'.repeat(100);expect(JSON.stringify(literalValue(source))).toBe(source);
     expect(createHash('sha256').update(readFileSync('examples/schema-v1.json')).digest('hex')).toBe('5c390b84f114329b893e93c15ee218323752fb0ad547dd2b2616c80fffec62d9');
     for(const legacy of examples)expect(parseDefinition(legacy)).toEqual(legacy);
-    expect(()=>parseDefinition({...definition(),schemaVersion:1,limits:{...definition().limits,timeoutMs:1000}})).toThrow('Version 1 nodes accept text templates only');
+    expect(()=>parseDefinition({...definition(),schemaVersion:1,limits:{...definition().limits,timeoutMs:1000}})).toThrow('Definition does not match schemaVersion 1 or 2');
+  });
+  it('encodes the version relationship in the public schema before invoking an operation',()=>{
+    const d=definition();d.limits.timeoutMs=1000;
+    expect(Value.Check(DefinitionSchema,d)).toBe(true);expect(Value.Check(DefinitionSchema,{...d,schemaVersion:1})).toBe(false);
+    const legacy={...definition('0'),schemaVersion:1,limits:{...d.limits}};expect(Value.Check(DefinitionSchema,legacy)).toBe(true);
+    for(const schemaVersion of [1,2])expect(Value.Check(DefinitionSchema,{...legacy,schemaVersion,limits:{...legacy.limits,unknown:0}})).toBe(false);
+    delete legacy.limits.timeoutMs;expect(Value.Check(DefinitionSchema,legacy)).toBe(false);expect(Value.Check(DefinitionSchema,{...legacy,schemaVersion:2})).toBe(true);
+    const repeated=structuredClone(examples[1]);repeated.schemaVersion=2;const body=repeated.nodes.find(n=>n.kind==='repeat');if(body?.kind!=='repeat')throw Error();body.body[1].predicate.right=literal(5);
+    expect(Value.Check(DefinitionSchema,repeated)).toBe(true);expect(Value.Check(DefinitionSchema,{...repeated,schemaVersion:1})).toBe(false);
   });
   it('validates every consumed field through the registry, including Repeat, but ignores truthy right JSON',()=>{
     const bad={literalJson:'{'},entries:Array<GraphNode>=[

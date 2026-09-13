@@ -1,14 +1,13 @@
 import {requestError,executionError} from './errors.js';
-import { Type, type Static } from 'typebox';
+import { Type, type Static, type TObject } from 'typebox';
 import { Value } from 'typebox/value';
 import {defaultBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {identifierSchema as key,NodeSchema,LegacyNodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 import {isJson,literalValue,type NodeValue} from './node-values.js';
 export {isJson} from './node-values.js';
-export {LegacyNodeSchema} from './node-contracts.js';
 export {NodeSchema,PredicateSchema,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 const obj={additionalProperties:false} as const;
-export const DefinitionSchema = Type.Object({
+export const DefinitionFields = {
   schemaVersion:Type.Union([Type.Literal(1),Type.Literal(2)]), id:key, slug:key, name:Type.String({minLength:1,maxLength:100}),
   description:Type.String({maxLength:500}), revision:Type.Integer({minimum:0}),
   inputSchema:Type.Array(Type.Object({name:key,label:Type.String({minLength:1,maxLength:100}),type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json')]),required:Type.Boolean()},obj)),
@@ -17,11 +16,18 @@ export const DefinitionSchema = Type.Object({
   layout:Type.Record(key,Type.Object({x:Type.Number({minimum:-10000,maximum:10000}),y:Type.Number({minimum:-10000,maximum:10000})},obj)),
   capabilities:Type.Array(Type.Union([Type.Literal('llm'),Type.Literal('model-info')]),{maxItems:2,uniqueItems:true}),
   limits:Type.Object({maxExecutions:Type.Integer({minimum:2}),timeoutMs:Type.Optional(Type.Integer({minimum:1000})),maxOutputBytes:Type.Integer({minimum:128})},obj),
-},obj);
-export type Definition = Static<typeof DefinitionSchema>;
+};
+export const DefinitionVersionSchemas={
+  1:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(1),nodes:Type.Array(LegacyNodeSchema,{minItems:2}),limits:Type.Required(DefinitionFields.limits,obj)},obj),
+  2:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(2)},obj),
+};
+// Editable state can be temporarily inconsistent while a user changes format.
+// Public validation still enforces the discriminated version schemas below.
+export type Definition=Static<TObject<typeof DefinitionFields>>;
+export const DefinitionSchema=Type.Unsafe<Definition>(Type.Union([DefinitionVersionSchemas[1],DefinitionVersionSchemas[2]]));
 // Portable graph content excludes server identity and runtime state. Authoring
 // operations take activation as a separate enabled flag, not an imported grant.
-export const DefinitionContentSchema=Type.Omit(DefinitionSchema,['schemaVersion','id','revision'],obj);
+export const DefinitionContentSchema=Type.Omit(DefinitionVersionSchemas[2],['schemaVersion','id','revision'],obj);
 export const DefinitionPatchSchema=Type.Partial(DefinitionContentSchema,{...obj,minProperties:1});
 export type DefinitionContent=Static<typeof DefinitionContentSchema>;
 export type DefinitionPatch=Static<typeof DefinitionPatchSchema>;
@@ -38,8 +44,6 @@ export type Issue = {nodeId?:string;message:string};
 export const ports=(node:GraphNode):string[]=>[...nodeContract(node.kind).ports];
 export function parseDefinition(value:unknown,budgets:Budgets=defaultBudgets):Definition {
   if (!Value.Check(DefinitionSchema,value)) throw requestError('Definition does not match schemaVersion 1 or 2.');
-  if(value.schemaVersion===1&&value.limits.timeoutMs===undefined)throw requestError('Version 1 definitions require their original explicit timeout.');
-  if(value.schemaVersion===1&&value.nodes.some(node=>!Value.Check(LegacyNodeSchema,node)))throw requestError('Version 1 nodes accept text templates only. Convert the draft to version 2 to use literal JSON values.');
   const budget=value.schemaVersion===1?legacyBudgets.definitionBytes:budgets.definitionBytes;
   if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw requestError(`Definition exceeds its ${budget}-byte transport budget.`);
   return structuredClone(value);

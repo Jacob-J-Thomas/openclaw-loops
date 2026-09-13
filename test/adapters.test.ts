@@ -6,6 +6,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
 import {createHash} from 'node:crypto';
+import {Value} from 'typebox/value';
 import {SqliteStorage} from '../src/storage.js';
 import type {OpenClawPluginApi,OpenClawPluginToolContext,PluginCommandContext,PluginSessionActionRegistration,OpenClawPluginService,OpenClawPluginCommandDefinition} from 'openclaw/plugin-sdk/plugin-entry';
 import sourcePlugin from '../src/index.js';
@@ -63,6 +64,13 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await client.invoke('run',{slug:content.slug,requestId:'editor-json'})).toMatchObject({state:'completed',result:[0,false,null],source:'session-action'});
     const restored=await command('restore',{id,revision:2,expectedRevision:3});expect(restored).toMatchObject({record:{enabledRevision:3,definition:{revision:4,nodes:draft.nodes}}});
     const test=await tool('test',{definition:{...record.definition,nodes:repaired},input:{},requestId:'unpublished-json'});expect(test).toMatchObject({state:'completed',result:[0,false,null]});
+    // Actual registered public tool schemas reject v1 literals before dispatch.
+    for(const operation of ['draft','test','validate']){
+      const schema=s.tools.find(t=>t.name===`loops_${operation}`)!.parameters;
+      const args={definition:record.definition,...operation==='draft'?{expectedRevision:1}:operation==='test'?{input:{},requestId:'schema-only'}:{}};
+      expect(Value.Check(schema,args),operation).toBe(true);expect(Value.Check(schema,{...args,definition:{...record.definition,schemaVersion:1}}),operation).toBe(false);
+    }
+    await expect(client.invoke('test',{definition:{...record.definition,schemaVersion:1},input:{},requestId:'invalid-version'})).rejects.toThrow();
     const versions=await client.invoke('versions',{id});expect(versions.map(v=>v.revision)).toEqual([4,3,2,1]);
     for(const service of s.services)await service.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);
     const reopened=await setup({root:s.root});const read=(await reopened.tools.find(t=>t.name==='loops_read')!.execute('read-json',{id})).details;
