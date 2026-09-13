@@ -1,5 +1,6 @@
 import {MessageChannel,receiveMessageOnPort,parentPort,workerData} from 'node:worker_threads';
 import {randomUUID} from 'node:crypto';
+import {dirname,join} from 'node:path';
 import {Engine,type Actor,type HostCapabilities} from './engine.js';
 import {SqliteStorage} from './storage.js';
 import {requestError} from './errors.js';
@@ -47,7 +48,7 @@ let engine:Engine|undefined,storage:SqliteStorage|undefined,closing=false;
 try{
   const {file,legacyFile,...options}=workerData as ServiceOptions;
   storage=new SqliteStorage(file,legacyFile);
-  engine=new Engine(storage,host,{...options,onChange:()=>send({type:'changed'}),retainActor:actor=>send({type:'retain',actorId:(actor as WorkerActor)[actorIdentity]}),releaseActor:actor=>send({type:'release',actorId:(actor as WorkerActor)[actorIdentity]})});
+  engine=new Engine(storage,host,{...options,documentDirectory:join(dirname(file),'documents'),onChange:()=>send({type:'changed'}),retainActor:actor=>send({type:'retain',actorId:(actor as WorkerActor)[actorIdentity]}),releaseActor:actor=>send({type:'release',actorId:(actor as WorkerActor)[actorIdentity]})});
   send({type:'ready',reply:{ok:true,value:undefined}});
 }catch(error){
   try{await storage?.close();}catch{/* Preserve the startup error; parent termination still joins the worker tree. */}

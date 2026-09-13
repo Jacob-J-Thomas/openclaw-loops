@@ -39,6 +39,14 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('rejects transport before service startup without creating files through any adapter',async()=>{
+    const s=await setup({start:false}),input={uploadId:'not-started',offset:0,text:'{}'};
+    expect((await s.commands.get('loops')!.handler({...s.commandContext,args:'help'})).text).toContain('Operations:');
+    expect(await s.action('upload',input)).toMatchObject({result:{kind:'loops-error',error:{code:'LOOPS_SERVICE_UNAVAILABLE'}}});
+    expect((await s.tools.find(tool=>tool.name==='loops_upload')!.execute('not-started',input)).details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_SERVICE_UNAVAILABLE'}});
+    expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`upload ${JSON.stringify(input)}`})).text).toContain('LOOPS_SERVICE_UNAVAILABLE');
+    expect(existsSync(join(s.root,'loops-poc'))).toBe(false);
+  });
   it('restores a matched application, database and document snapshot without changing the backup',async()=>{
     mkdirSync('.dev-profile',{recursive:true});const root=mkdtempSync(resolve('.dev-profile/backup-qualification-'));directories.push(root);
     const original=await setup({root:join(root,'original')}),backup=join(root,'backup'),restoration=join(root,'restoration');

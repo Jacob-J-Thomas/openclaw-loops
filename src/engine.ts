@@ -10,6 +10,7 @@ import {LoopError,requestError,executionError,errorDetail,type LoopErrorData} fr
 import {resolveBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {textPage} from './feature-json.js';
 import {retentionCandidates,type RetentionPolicy,type RetentionResult,type RetiredAdmission} from './retention.js';
+import {DocumentStore} from './document-store.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
@@ -52,6 +53,7 @@ const canonical=(value:unknown):string=>JSON.stringify(value,(_key,item)=>item&&
 const ownerKey=(a:Owner)=>JSON.stringify([a.agentId,a.sessionKey,a.sessionId]);
 const terminal=(r:Run)=>['completed','failed','cancelled','interrupted'].includes(r.state);
 export class Engine{
+  private documents?:DocumentStore;
   private cachedState!:State;
   private storageFailure?:LoopError;
   private get state(){if(this.storageFailure)throw this.storageFailure;return this.cachedState;}
@@ -62,7 +64,7 @@ export class Engine{
   private closing=false;
   private deadlines=new Map<string,number>();
   private active=new Map<string,{controller:AbortController;promise:Promise<Run>}>();
-  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>;retainActor?:(actor:Actor)=>void;releaseActor?:(actor:Actor)=>void}={}){
+  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>;documentDirectory?:string;retainActor?:(actor:Actor)=>void;releaseActor?:(actor:Actor)=>void}={}){
     this.budgets=resolveBudgets(options.budgets);
     this.state=(storage.indexed?storage.indexed.readWorkingState():storage.read())??{version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}};
     if(this.state.version!==1)throw new Error('Unsupported state store version.');
@@ -125,6 +127,15 @@ export class Engine{
     try{this.options.onChange?.();}catch{/* A disconnected subscriber cannot roll back a committed write. */}
   }
   private ensureHuman(actor:Actor){actor.check();if(!actor.human||actor.source==='tool')throw requestError('This operation requires an authenticated human in the Loops UI or an authorized human command.');}
+  private documentStore(actor:Actor){
+    actor.check();
+    if(!this.options.documentDirectory)throw requestError('Loops document storage is unavailable.','LOOPS_SERVICE_UNAVAILABLE');
+    return this.documents??=new DocumentStore(this.options.documentDirectory,Math.max(this.budgets.definitionBytes,this.budgets.inputBytes)*2);
+  }
+  documentWrap(actor:Actor,value:unknown){return this.documentStore(actor).wrap(actor,value);}
+  documentRead(actor:Actor,id:string,offset?:number,limit?:number){return this.documentStore(actor).read(actor,id,offset,limit);}
+  documentUpload(actor:Actor,input:Parameters<DocumentStore['upload']>[1]){return this.documentStore(actor).upload(actor,input);}
+  documentResolve(actor:Actor,reference:Parameters<DocumentStore['resolve']>[1]){return this.documentStore(actor).resolve(actor,reference);}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}
   private own(actor:Actor,id:string){actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');return run;}
   private allowed(actor:Actor,d:Definition,record:LoopRecord|undefined){actor.check();if(!record||record.revoked)throw requestError('Loop permission revoked.');for(const c of d.capabilities){if(!record.grants.includes(c))throw requestError(`Loop permission revoked: ${c}`);this.host.check(actor,c);}}

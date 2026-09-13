@@ -6,6 +6,10 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
+import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {writeFileSync} from 'node:fs';
+import type {DocumentReference} from '../src/wire-contract.js';
 import type {EngineService} from '../src/engine-service.js';
 import type {Actor,HostCapabilities,Run} from '../src/engine.js';
 import {examples} from '../src/examples.js';
@@ -47,6 +51,35 @@ async function blockWriter(file:string,duration=350){
 const references=(service:EngineService)=>(service as unknown as {actors:Map<string,unknown>}).actors.size;
 
 describe('asynchronous committed-state service (real SQLite, synthetic host)',()=>{
+  it('keeps the Gateway responsive while an actual transport file read is blocked',async()=>{
+    const {service,file}=setup();await service.ready;const a=actor(),value={result:'Transport evidence '.repeat(5000)};
+    const hash=(text:string)=>createHash('sha256').update(text).digest('hex'),text=JSON.stringify(value),sha256=hash(text),owner=hash(JSON.stringify([a.agentId,a.sessionKey,a.sessionId])),documentId=hash(owner+sha256);
+    const directory=join(file,'..','documents');mkdirSync(directory);const fifo=join(directory,`document-${documentId}.json`);execFileSync('mkfifo',[fifo]);
+    const record=JSON.stringify({owner,sha256,text}),writer=new Worker(`const {parentPort,workerData}=require('node:worker_threads');const {writeFileSync}=require('node:fs');parentPort.postMessage('ready');parentPort.on('message',()=>setTimeout(()=>{writeFileSync(workerData.file,workerData.record);parentPort.close();},350));`,{eval:true,execArgv:[],workerData:{file:fifo,record}});workers.push(writer);
+    await new Promise<void>((resolve,reject)=>{writer.once('message',()=>resolve());writer.once('error',reject);});
+    let ticks=0,settled=false;const timer=setInterval(()=>ticks++,10),start=performance.now();
+    try{
+      writer.postMessage('release after delay');const pending=service.invoke('documentWrap',a,value).then(value=>{settled=true;return value;});
+      await sleep(50);expect(settled).toBe(false);expect(ticks).toBeGreaterThan(1);
+      expect(await pending).toMatchObject({kind:'loops-document',documentId,sha256});expect(performance.now()-start).toBeGreaterThan(250);expect(ticks).toBeGreaterThan(10);
+    }finally{clearInterval(timer);rmSync(fifo);}
+    writeFileSync(fifo,record);
+    expect(await service.invoke('documentRead',a,documentId,0,10)).toMatchObject({documentId,sha256,text:text.slice(0,10),nextOffset:10});
+  });
+  it('keeps documents and partial uploads across service restart under the original conversation authority',async()=>{
+    const {service,file,complete}=setup();await service.ready;const a=actor(),value={result:'Preserved Unicode 🙂 '.repeat(4000)};
+    const reference=await service.invoke('documentWrap',a,value) as DocumentReference;
+    expect(reference.kind).toBe('loops-document');await service.invoke('documentUpload',a,{uploadId:'resumable',offset:0,text:'{"value":"'});await service.close();
+    await expect(service.invoke('documentUpload',a,{uploadId:'after-stop',offset:0,text:'{}'})).rejects.toMatchObject({detail:{code:'LOOPS_SERVICE_UNAVAILABLE'}});
+    const reopened=setup({file}).service;await reopened.ready;
+    for(const other of [actor({sessionId:'other'}),actor({agentId:'other'}),actor({sessionKey:'other'})])await expect(reopened.invoke('documentRead',other,reference.documentId)).rejects.toMatchObject({detail:{code:'LOOPS_DOCUMENT_NOT_FOUND'}});
+    await expect(reopened.invoke('documentRead',actor({check:()=>{throw requestError('Revoked','HOST_POLICY_DENIED');}}),reference.documentId)).rejects.toMatchObject({detail:{code:'HOST_POLICY_DENIED'}});
+    let text='',offset=0;while(true){const page=await reopened.invoke('documentRead',a,reference.documentId,offset);text+=page.text;if(page.nextOffset===null)break;offset=page.nextOffset;}
+    expect(JSON.parse(text)).toEqual(value);expect(createHash('sha256').update(text).digest('hex')).toBe(reference.sha256);
+    const full='{"value":"restored"}',finish={uploadId:'resumable',offset:10,text:'restored"}',complete:true,sha256:createHash('sha256').update(full).digest('hex')};
+    const result=await reopened.invoke('documentUpload',a,finish);expect(await reopened.invoke('documentUpload',a,finish)).toEqual(result);expect(await reopened.invoke('documentResolve',a,result.reference!)).toEqual({value:'restored'});
+    expect(complete).not.toHaveBeenCalled();
+  });
   it('keeps the Gateway thread responsive during a blocked commit and serializes competing edits and reads',async()=>{
     const {service,file}=setup();await service.ready;await blockWriter(file);
     let ticks=0,acknowledged=false;const timer=setInterval(()=>ticks++,10),started=performance.now();
