@@ -51,6 +51,76 @@ async function blockWriter(file:string,duration=350){
 const references=(service:EngineService)=>(service as unknown as {actors:Map<string,unknown>}).actors.size;
 
 describe('asynchronous committed-state service (real SQLite, synthetic host)',()=>{
+  it.each([1,2,3])('bounds a mixed FIFO queue at configured capacity %i through cancellation and settlement races',async capacity=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-mixed-queue-'));dirs.push(root);
+    type Call={prompt:string;signal:AbortSignal;finish:(reject?:boolean)=>void;settled:boolean};
+    const calls:Call[]=[];let physical=0,maximum=0,permitted=true;
+    const {service,file}=setup({file:join(root,'loops.sqlite'),concurrency:capacity,replyTimeoutMs:1},{complete:async(_actor,prompt,signal)=>{
+      physical++;maximum=Math.max(maximum,physical);expect(physical).toBeLessThanOrEqual(capacity);
+      try{return await new Promise<{text:string}>((resolve,reject)=>{const call:Call={prompt,signal,settled:false,finish:(failed=false)=>{
+        if(call.settled)return;call.settled=true;if(failed)reject(Object.assign(new Error('Synthetic provider rejection'),{status:429}));else resolve({text:prompt});
+      }};calls.push(call);});}finally{physical--;}
+    }});
+    const controller=new AbortController(),runs:Run[]=[];
+    try{
+      await service.ready;const definition=structuredClone(examples[0]);definition.revision=1;
+      const inference=definition.nodes.find(node=>node.kind==='inference')!;if(inference.kind==='inference')inference.prompt='{{input.text}}';
+      await service.invoke('save',actor(),definition,1,true);
+      for(let i=0;i<capacity;i++)runs.push(await service.invoke('run',actor(),'summarize-text',{text:`active-${i}`},`active-${i}`));
+      await vi.waitFor(()=>expect(calls).toHaveLength(capacity));
+      const labels=['cancel-queued','ready-0','abort-queued','revoke-queued',...Array.from({length:capacity+1},(_,i)=>`ready-${i+1}`)];
+      for(const label of labels){
+        const origin=label==='abort-queued'?actor({signal:controller.signal}):label==='revoke-queued'?actor({check:()=>{if(!permitted)throw Object.assign(new Error('Synthetic queued revocation'),{status:403});}}):actor();
+        const run=await service.invoke('run',origin,'summarize-text',{text:label},label);expect(run).toMatchObject({state:'queued',executions:0,trace:[]});runs.push(run);
+      }
+      const queued=Object.fromEntries(runs.slice(capacity).map(run=>[run.input.text as string,run]));
+      expect(await service.invoke('cancel',actor(),queued['cancel-queued'].id)).toMatchObject({state:'cancelled',executions:0,trace:[]});
+      controller.abort(new Error('Queued request aborted'));permitted=false;
+      expect(await service.invoke('cancel',actor(),runs[0].id)).toMatchObject({state:'cancelled',cleanupPending:true});
+      await vi.waitFor(()=>expect(calls[0].signal.aborted).toBe(true));
+      expect(calls).toHaveLength(capacity);expect(physical).toBe(capacity);
+      expect((await service.invoke('status',actor(),queued['ready-0'].id)).state).toBe('queued');
+      const initial=[...calls];initial.forEach((call,i)=>call.finish(i===1));
+      const expectedReady=labels.filter(label=>label.startsWith('ready-'));
+      for(const label of expectedReady){
+        await vi.waitFor(()=>expect(calls.some(call=>call.prompt===label)).toBe(true));
+        calls.find(call=>call.prompt===label)!.finish();
+        expect(await status(service,queued[label].id,'completed')).toMatchObject({result:label});
+      }
+      await vi.waitFor(()=>{expect(references(service)).toBe(0);expect(physical).toBe(0);});
+      expect(maximum).toBe(capacity);expect(calls.map(call=>call.prompt)).toEqual([...Array.from({length:capacity},(_,i)=>`active-${i}`),...expectedReady]);
+      expect(await service.invoke('status',actor(),queued['cancel-queued'].id)).toMatchObject({state:'cancelled',executions:0,trace:[]});
+      for(const [label,code] of [['abort-queued','HOST_ABORTED'],['revoke-queued','HOST_POLICY_DENIED']])expect(await service.invoke('status',actor(),queued[label].id)).toMatchObject({state:'failed',executions:0,trace:[],errorDetail:{code}});
+      const cancelled=await service.invoke('status',actor(),runs[0].id);expect(cancelled).toMatchObject({state:'cancelled',cleanupPending:false});expect(cancelled.result).toBeUndefined();expect(cancelled.outputs.summary).toBeUndefined();expect(cancelled.trace.some(node=>node.nodeId==='return')).toBe(false);
+      if(capacity>1)expect(await service.invoke('status',actor(),runs[1].id)).toMatchObject({state:'failed',errorDetail:{code:'HOST_RATE_LIMITED'}});
+      const committed=await Promise.all(runs.map(run=>service.invoke('status',actor(),run.id)));await service.close();
+      const reopened=setup({file,concurrency:capacity}).service;await reopened.ready;
+      expect(await Promise.all(runs.map(run=>reopened.invoke('status',actor(),run.id)))).toEqual(committed);expect(calls).toHaveLength(capacity+expectedReady.length);
+    }finally{for(const call of calls)call.finish();}
+  },30000);
+  it.each(['resolve','reject'] as const)('holds capacity after timeout until the host promise can %s and excludes queue time from the next budget',async settlement=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-timeout-queue-'));dirs.push(root);
+    const calls:Array<{signal:AbortSignal;timeout:number|undefined;finish:(reject?:boolean)=>void}>=[];let physical=0,maximum=0;
+    const {service}=setup({file:join(root,'loops.sqlite'),replyTimeoutMs:1},{complete:async(_actor,prompt,signal,timeout)=>{
+      physical++;maximum=Math.max(maximum,physical);
+      try{return await new Promise<{text:string}>((resolve,reject)=>{calls.push({signal,timeout,finish:(failed=false)=>failed?reject(new Error('Late synthetic rejection')):resolve({text:prompt})});});}finally{physical--;}
+    }});
+    try{
+      await service.ready;const definition=structuredClone(examples[0]);definition.revision=1;definition.limits.timeoutMs=1000;
+      const inference=definition.nodes.find(node=>node.kind==='inference')!;if(inference.kind==='inference')inference.prompt='{{input.text}}';
+      await service.invoke('save',actor(),definition,1,true);
+      const first=await service.invoke('run',actor(),'summarize-text',{text:'Timed out'},'timeout');await vi.waitFor(()=>expect(calls).toHaveLength(1));
+      const queued=await service.invoke('run',actor(),'summarize-text',{text:'Fresh active budget'},'queued');expect(queued.state).toBe('queued');
+      const failed=await status(service,first.id,'failed');expect(failed).toMatchObject({cleanupPending:true,errorDetail:{code:'LOOPS_TIMEOUT'}});
+      await vi.waitFor(()=>expect(calls[0].signal.aborted).toBe(true));await sleep(1100);
+      expect(Date.now()-Date.parse(queued.createdAt)).toBeGreaterThan(1000);expect((await service.invoke('status',actor(),queued.id))).toMatchObject({state:'queued',executions:0,activeMs:0});
+      expect(calls).toHaveLength(1);expect(physical).toBe(1);calls[0].finish(settlement==='reject');
+      await vi.waitFor(()=>expect(calls).toHaveLength(2));expect(calls[1].signal.aborted).toBe(false);expect(calls[1].timeout).toBeGreaterThan(0);expect(calls[1].timeout).toBeLessThanOrEqual(1000);calls[1].finish();
+      expect(await status(service,queued.id,'completed')).toMatchObject({result:'Fresh active budget'});
+      await vi.waitFor(()=>{expect(references(service)).toBe(0);expect(physical).toBe(0);});expect(maximum).toBe(1);
+      const after=await service.invoke('status',actor(),first.id);expect(after).toMatchObject({state:'failed',cleanupPending:false,errorDetail:failed.errorDetail,trace:failed.trace,outputs:failed.outputs});expect(after.result).toBeUndefined();expect(after.trace.some(node=>node.nodeId==='return')).toBe(false);
+    }finally{for(const call of calls)call.finish();}
+  },30000);
   it('keeps the Gateway responsive while an actual transport file read is blocked',async()=>{
     const {service,file}=setup();await service.ready;const a=actor(),value={result:'Transport evidence '.repeat(5000)};
     const hash=(text:string)=>createHash('sha256').update(text).digest('hex'),text=JSON.stringify(value),sha256=hash(text),owner=hash(JSON.stringify([a.agentId,a.sessionKey,a.sessionId])),documentId=hash(owner+sha256);

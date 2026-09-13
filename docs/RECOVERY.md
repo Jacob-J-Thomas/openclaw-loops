@@ -49,6 +49,45 @@ Valid decisions from earlier review nodes and terminal historical records remain
 unchanged. A storage failure reports an error instead of claiming the repair
 succeeded; no node or human decision executes during this repair.
 
+## Queue capacity and cancellation
+
+`maxConcurrentRuns` controls the plugin executor's capacity for the whole
+Gateway state directory. Its default is one. Additional admissions queue in
+arrival order; there is no two-run rejection ceiling. Use one for the documented
+16 GB Ollama setup. Raising this value changes the permitted number of active
+host promises and must fit the operator's model and machine resources.
+
+A parked Wait or Human review releases execution capacity. Continue or a human
+decision commits the next cursor and queues that continuation if capacity is
+full. Queue dispatch rechecks the retained invocation's current permissions and
+signal. A revoked or aborted invocation cannot dispatch another node. Only an
+explicitly authored Human review requires a human decision; agents can manage
+activation, invocation, cancellation and recovery through the ordinary tools.
+
+Cancellation of a queued start prevents its first node from executing.
+Cancellation during inference records the cancelled state and forwards the
+abort signal. The run keeps its capacity while the original host promise is
+unsettled, even after a cancelled or timed-out handle has been returned. Inspection
+shows `cleanupPending` during this period. Late success or rejection cannot
+complete that cancelled/timed-out run or dispatch its downstream nodes. Other
+queued work can proceed when the held promise settles.
+
+An explicit loop timeout measures active execution segments. Time spent in the
+queue or parked at a manual checkpoint does not consume it. If a timed-out host
+promise remains unsettled, it still holds capacity; the next queued run receives
+its own remaining active budget when it starts. An omitted timeout inherits the
+host policy. Recovery starts a new run budget as described above.
+
+Use the run inspector, `loops_status`/`loops_inspect`, or their `/loops` command
+equivalents to distinguish queued, cancelled and settling states. Repeating an
+admission ID returns the existing run. Recovery is rejected while that run's
+execution is physically settling in this plugin process. If the Gateway stops,
+the local promise and original invocation cannot be reconstructed; restart
+preserves the uncertain evidence and requires the explicit recovery described
+above. A local promise settling or a worker exiting is not proof that a remote
+provider stopped. Observable durable host ownership and settlement remain the
+separate SDK02/06 qualification boundary.
+
 ## Verification boundaries
 
 The process-crash tests send SIGKILL at persisted admission, inference, Repeat,
@@ -62,6 +101,14 @@ Registered public SDK tests exercise UI, command and tool recovery operations,
 including a fresh review after restart and preserved approval after retry-node.
 Installed browser, conversation and real-agent receipts are recorded separately
 on the delivery Bolt. Package and platform results qualify their exact artifact.
+
+Controlled service tests use real SQLite and synthetic host promises at
+capacities one, two and three. They measure concurrent calls, mixed FIFO dispatch,
+queued cancellation/revocation/abort, late success/rejection, timeout cleanup,
+invocation release and restart preservation. Registered SDK tests repeat the
+queue/cancellation/idempotency journey through UI, command and tool adapters.
+These synthetic capacity tests do not start additional local models or prove
+provider-side cancellation.
 
 OpenClaw's durable host-call ownership, retained request authority, cancellation
 settlement and asynchronous delivery contracts remain separate dependencies
