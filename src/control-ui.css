@@ -75,7 +75,7 @@ button.danger,.danger{color:var(--lp-danger)}
 .lp-node[data-kind=action] .lp-node-icon{background:light-dark(#eef4fc,#29374d);color:light-dark(#37608d,#afcfff)}
 .lp-node[data-kind=review] .lp-node-icon,.lp-node[data-kind=wait] .lp-node-icon{background:light-dark(#fff6e7,#363022);color:var(--lp-warning)}
 .lp-node.selected{outline-color:var(--lp-accent)}
-.react-flow__node:focus-visible,.react-flow__edge:focus-visible{outline:2px solid var(--lp-accent);outline-offset:3px}
+.loops-poc .react-flow__node:focus-visible,.loops-poc .react-flow__edge:focus-visible{outline:2px solid var(--lp-accent);outline-offset:3px}
 .lp-connection-controls{display:flex;align-items:end;gap:8px;flex-wrap:wrap;padding:10px 15px;border:0;border-bottom:1px solid var(--lp-border);margin:0;background:var(--lp-subtle)}.lp-connection-controls legend{font-size:11px;font-weight:650;padding:0}.lp-connection-controls .lp-hint{width:100%;margin:0}.lp-connection-controls label{display:grid;gap:4px;font-size:10px;color:var(--lp-muted)}.lp-connection-controls select,.lp-connection-controls button{font-size:11px;padding:5px 8px}
 .lp-node.invalid{border-color:var(--lp-danger)}
 .lp-node-error{color:var(--lp-danger)}
