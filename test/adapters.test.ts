@@ -30,21 +30,24 @@ beforeAll(()=>{if(!process.env.LOOPS_TEST_PLUGIN)execFileSync(process.execPath,[
 const directories:string[]=[];
 const shutdowns:Array<()=>Promise<void>>=[];
 afterEach(async()=>{for(const shutdown of shutdowns.splice(0))await shutdown();for(const dir of directories.splice(0))rmSync(dir,{recursive:true,force:true});});
-async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin;maxConcurrentRuns?:number;onComplete?:OpenClawPluginApi['runtime']['llm']['complete']}){
+type AdapterActor={agentId:string;sessionKey:string;sessionId:string};
+async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin;maxConcurrentRuns?:number;onComplete?:OpenClawPluginApi['runtime']['llm']['complete'];actor?:AdapterActor;additionalActors?:readonly AdapterActor[]}){
   const root=options?.root??mkdtempSync(join(tmpdir(),'loops-adapters-'));if(!options?.root)directories.push(root);
   const commands=new Map<string,OpenClawPluginCommandDefinition>(),actions=new Map<string,PluginSessionActionRegistration>(),registered:ToolRegistration[]=[];const services:OpenClawPluginService[]=[];
-  const key='agent:main:adapter-test',sessionId='adapter-session';
+  const selected=options?.actor??{agentId:'main',sessionKey:'agent:main:adapter-test',sessionId:'adapter-session'};
+  const {agentId,key,sessionId}={agentId:selected.agentId,key:selected.sessionKey,sessionId:selected.sessionId};
+  const sessions=new Map<string,{sessionId:string}>([selected,...options?.additionalActors??[]].map(actor=>[`${actor.agentId}:${actor.sessionKey}`,{sessionId:actor.sessionId}]));
   // The real published feature SDK registers these adapters. Only host capabilities are faked.
   const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async request=>options?.onComplete?options.onComplete(request):({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
   const config={plugins:{entries:{'loops-poc':{enabled:true}}}};
-  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>agentId==='main'&&sessionKey===key?{sessionId}:undefined}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
+  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>sessions.get(`${agentId}:${sessionKey}`)}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
   (options?.plugin??plugin).register(api);
   if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
-  const toolContext:OpenClawPluginToolContext={agentId:'main',sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
+  const toolContext:OpenClawPluginToolContext={agentId,sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
   const tools=registered.flatMap(t=>{const value=typeof t==='function'?t(toolContext):t;return Array.isArray(value)?value:value?[value]:[];});
-  const commandContext={agentId:'main',sessionKey:key,sessionId,senderId:'host-sender',channel:'webchat',isAuthorizedSender:true,gatewayClientScopes:['operator.admin','operator.write'],config} as unknown as PluginCommandContext;
-  const action=(id:string,payload:Record<string,unknown>,scopes=['operator.admin','operator.write','operator.read'])=>actions.get(id)!.handler({pluginId:'loops-poc',actionId:id,agentId:'main',sessionKey:key,payload:payload as never,client:{connId:'human',scopes}});
-  return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
+  const commandContext={agentId,sessionKey:key,sessionId,senderId:'host-sender',channel:'webchat',isAuthorizedSender:true,gatewayClientScopes:['operator.admin','operator.write'],config} as unknown as PluginCommandContext;
+  const action=(id:string,payload:Record<string,unknown>,scopes=['operator.admin','operator.write','operator.read'])=>actions.get(id)!.handler({pluginId:'loops-poc',actionId:id,agentId,sessionKey:key,payload:payload as never,client:{connId:'human',scopes}});
+  return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,agentId,services,sessions};
 }
 // Conversation consumers follow the same documented reference protocol. Check
 // each formatted reply, not only the larger feature-SDK envelope.
@@ -68,6 +71,30 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('keeps a host-selected non-main current session usable while rejecting foreign, replaced, and read-only writes at registered adapters',async()=>{
+    const current={agentId:'worker',sessionKey:'agent:worker:authority-current',sessionId:'authority-current'};
+    const foreignActor={agentId:'worker',sessionKey:'agent:worker:authority-foreign',sessionId:'authority-foreign'};
+    const owner=await setup({actor:current,additionalActors:[foreignActor]});
+    const definition={slug:'authority-fixture',name:'Authority fixture',description:'No provider calls.',inputSchema:[],capabilities:[] as const,nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'wait',kind:'wait' as const,label:'Wait',message:'Authority checkpoint'},{id:'return',kind:'return' as const,label:'Return',value:'complete'}],edges:[{id:'input-wait',source:'input',target:'wait',port:'next' as const},{id:'wait-return',source:'wait',target:'return',port:'next' as const}],layout:{},limits:{maxExecutions:2,maxOutputBytes:1024}};
+    const created=await owner.action('create',{definition,enabled:true});expect(created).toMatchObject({ok:true,result:{record:{definition:{slug:definition.slug}}}});
+    const admission=await owner.action('run',{slug:definition.slug,input:{},requestId:'authority-current'}) as {result:{id:string;state:string}};
+    const run=admission.result;expect(run.state).toBe('waiting');
+    expect(await commandJson(owner,'status',{runId:run.id})).toMatchObject({id:run.id,state:'waiting'});
+    expect(await toolJson(owner,'status',{runId:run.id},'authority-current-tool')).toMatchObject({id:run.id,state:'waiting'});
+
+    const foreign=await setup({root:owner.root,start:false,actor:foreignActor,additionalActors:[current]});
+    await expect(foreign.action('status',{runId:run.id})).resolves.toMatchObject({ok:true,result:{kind:'loops-error',error:{message:'Run not found in this session.'}}});
+    const commandFailure=await foreign.commands.get('loops')!.handler({...foreign.commandContext,args:`status ${JSON.stringify({runId:run.id})}`});expect(commandFailure.text).toContain('Run not found in this session.');
+    expect(await foreign.tools.find(tool=>tool.name==='loops_status')!.execute('authority-foreign-tool',{runId:run.id})).toMatchObject({details:{kind:'loops-error',error:{message:'Run not found in this session.'}}});
+
+    await expect(owner.action('create',{definition:{...definition,slug:'authority-read-only'},enabled:true},['operator.read'])).resolves.toMatchObject({ok:true,result:{kind:'loops-error',error:{code:'LOOPS_INVALID_REQUEST'}}});
+    const readOnlyCommand=await owner.commands.get('loops')!.handler({...owner.commandContext,gatewayClientScopes:['operator.read'],args:`create ${JSON.stringify({definition:{...definition,slug:'authority-command-read-only'},enabled:true})}`});expect(readOnlyCommand.text).toContain('HOST_POLICY_DENIED');
+    owner.sessions.set(`${current.agentId}:${current.sessionKey}`,{sessionId:'authority-replaced'});
+    await expect(owner.action('status',{runId:run.id})).resolves.toMatchObject({ok:true,result:{kind:'loops-error',error:{message:'Run not found in this session.'}}});
+    const replacedCommand=await owner.commands.get('loops')!.handler({...owner.commandContext,args:`status ${JSON.stringify({runId:run.id})}`});expect(replacedCommand.text).toContain('LOOPS_SESSION_CHANGED');
+    await expect(owner.tools.find(tool=>tool.name==='loops_status')!.execute('authority-replaced-tool',{runId:run.id})).rejects.toMatchObject({code:'LOOPS_SESSION_CHANGED'});
+    expect(owner.complete).not.toHaveBeenCalled();
+  });
   it('preflights explicit incompatible inference settings through the registered UI adapter without dispatching them',async()=>{
     const s=await setup(),inherited=structuredClone(examples[0]);
     expect(await s.action('test',{definition:inherited,input:{text:'Inherited settings'},requestId:'capability-inherit'})).toMatchObject({ok:true,result:{state:'completed'}});

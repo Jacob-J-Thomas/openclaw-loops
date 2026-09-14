@@ -175,6 +175,71 @@ missing host contracts or all shared-team roles.
 
 ## Installed-runtime qualification
 
+### Current-session authority recipe
+
+On an installed OpenClaw 2026.9.3 Gateway, qualify only the authority that the
+public host contract actually supplies. Prepare a disposable profile with an
+existing non-`main` test agent. The verifier creates and deletes its own two
+synthetic sessions and makes no model call. Run:
+
+```sh
+node scripts/verify-session-authority.mjs \
+  --profile /absolute/path/to/test-profile \
+  --agent-id loops-authority-47
+```
+
+The verifier connects through the public `GatewayClient` and
+`plugins.sessionAction` API. This is Gateway session-action evidence, **not
+native UI evidence**. It creates a UUID-named Input/Wait/Return loop, proves a
+permitted non-main current-session session-action admission, sends the matching
+documented no-model `/loops run --json-base64 <payload>` command, awaits its
+terminal chat event, and correlates the inspected run's source, owner and
+input. It exercises foreign-session and read-only denials through session
+actions and commands, records the actual granted hello scopes, and requires
+the expected structured permission failure. Every command must report zero
+model tokens. It settles both parked runs before using public `sessions.reset`
+on its current synthetic session. If the host preserves `sessionId`, existing
+authorized history must remain accessible; if it replaces that identity,
+old-run access must fail.
+
+For a real replacement check, the verifier deletes only its own synthetic
+conversation, recreates that key through a registered command, and confirms
+the new host session ID differs. Both command and session-action access to the
+old run must fail. It deletes its fixture and synthetic sessions, reporting
+cleanup failures and returning a failing exit status when cleanup fails. The
+mode-0600 receipt is written below ignored `evidence/issue-47/worker/` by default.
+
+The receipt is deliberately narrow. A Gateway operator scope is a
+host-granted connection scope; it is not evidence of an independent person,
+team member role, reassignment right, or durable authority after a reset. The
+2026.9.3 public Gateway API has no supported no-model RPC for directly
+invoking a registered agent tool, so this recipe does not fabricate one or use
+an agent prompt to obtain a tool call. The registered UI, command, and tool
+adapter regressions in `test/adapters.test.ts` cover the plugin-owned
+current-session owner key and denied foreign/replaced reads. A real agent-tool
+authorization exercise requires a serial model-backed host run. SDK03 remains
+unresolved until the required principal, team-role, target-session and recovery
+authorization contracts are available. A missing target can also yield a generic
+host `UNAVAILABLE` response; this verifier does not count an arbitrary host or
+transport error as proof of permission denial.
+
+The September 14, 2026 qualification used OpenClaw 2026.9.3, Node 24.16.0,
+runtime source `d5d6fc2d37910e1fac56af5c0ef436c5aeebcebc`, and ordinarily installed
+archive `a00ae0a9bbbac1e5d30d0af0034bf39ab5425b677744bbd0a6126c99b008c527`.
+The deterministic recipe passed with an operator-created non-main agent and
+actual admin/write/read versus read-only connection grants. This host's reset
+preserved the session ID and changed its lifecycle revision; deletion and
+recreation produced a different session ID. Both behaviors passed their
+respective access checks, and all synthetic parked runs settled before cleanup.
+
+A separate real Codex Sol request in that non-main agent's conversation made
+five recorded Loops tool calls: deny foreign-run status, create an enabled
+definition, run it, inspect its completed run, and delete its definition. The
+actual matching tool results and public inspection confirmed each outcome.
+The loop itself used Input and Return and made no inference call. This proves
+the exercised agent-tool boundary, independently of the deterministic recipe
+and fake adapter regressions; it does not qualify independent team principals.
+
 Run against an explicitly selected **disposable** loopback Gateway profile with
 the candidate installed through ordinary plugin installation:
 
