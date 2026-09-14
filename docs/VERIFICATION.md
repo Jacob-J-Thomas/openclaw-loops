@@ -1,5 +1,11 @@
 # Local verification
 
+## Responsive text and host themes
+
+The responsive-layout check uses the permitted 100-character loop name, node label and input display label, plus a 500-character description, including unbroken text. Reload the saved draft and inspect authoring, run inputs, an existing structured failure and a complete oversized result at 320, 390, 900, 1024 and 1440 pixels. Headings, labels and run panels must stay inside their containers; library and graph scrolling remain intentional. Native text inputs may scroll their values internally.
+
+Use the host's Light and Dark controls with the opposite system preference, then verify that System follows both preferences. Measure rendered text and keyboard focus colors in each resolved scheme, inspect screenshots after transitions settle, and capture console errors. Record the installed package hash and source commit with the receipt. Temporary injected styles are useful for diagnosis but do not qualify the installed artifact. These sampled checks do not establish complete WCAG conformance or screen-reader speech acceptance.
+
 Current scope is the [standalone 1.0 delivery plan](DELIVERY_PLAN.md), revised September 12, 2026. Expansion families are deferred. Public GitHub source/history publication is now authorized; references to pending authorization in older entries describe their historical checkpoint and no longer apply. The [current status](DELIVERY_STATUS.md) records publication and release gates separately.
 
 ## Alpha.17 transport storage hardening
