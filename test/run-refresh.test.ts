@@ -21,6 +21,21 @@ describe('selected run refresh gate',()=>{
   });
 });
 
+describe('selected run mutations',()=>{
+  it('starts a post-action inspection immediately and cannot repaint pre-action controls',async()=>{
+    const gate=new RunRefreshGate(),before=deferred<string>(),after=deferred<string>(),received:string[]=[];
+    const load=vi.fn<()=>Promise<string>>().mockReturnValueOnce(before.promise).mockReturnValueOnce(after.promise);
+    gate.select({agentId:'a',sessionKey:'s',runId:'same-run'});
+    void gate.refresh(load,value=>received.push(value),()=>{});
+    const action=gate.current();expect(gate.completeMutation(action)).toBe(true);
+    gate.select({agentId:'a',sessionKey:'s',runId:'same-run'});
+    void gate.refresh(load,value=>received.push(value),()=>{});expect(load).toHaveBeenCalledTimes(2);
+    before.resolve('review');await Promise.resolve();expect(received).toEqual([]);
+    after.resolve('completed');await Promise.resolve();expect(received).toEqual(['completed']);
+    const newer=gate.current();expect(gate.completeMutation(action)).toBe(false);expect(gate.matches(newer)).toBe(true);
+  });
+});
+
 describe('persisted run view reconciliation',()=>{
   it('restores identifiers only when the current host roster authorizes both agent and session',()=>{
     const values=new Map<string,string>(),storage={getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>values.set(key,value),removeItem:(key:string)=>values.delete(key)};

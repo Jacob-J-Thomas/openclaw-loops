@@ -14,6 +14,7 @@ export class RunRefreshGate{
   invalidate(){this.epoch++;this.inFlight=undefined;this.queued=false;this.followUp=undefined;}
   current(){return this.selection&&{selection:{...this.selection},epoch:this.epoch};}
   matches(ticket:Ticket|undefined){return Boolean(ticket&&this.accepts(ticket));}
+  completeMutation(ticket:Ticket|undefined){if(!this.matches(ticket))return false;this.invalidate();return true;}
   private begin(){
     if(!this.selection?.sessionKey||!this.selection.runId)return;
     if(this.inFlight){this.queued=true;return;}
