@@ -1,5 +1,9 @@
 # Local verification
 
+## Mounted Editor Advanced lifecycle
+
+After `npm ci` and `npx playwright-core install chromium`, `node scripts/verify-editor.mjs` bundles and mounts the production `Editor` in headless Chromium, drives the visible DOM controls, and writes a synthetic-transport receipt. It checks inherited/explicit zero behavior, single and all Advanced resets, model change, published revision preservation through restore, clone, export, and import. The fixture transports editor requests only; it does not invoke an OpenClaw Gateway or provider. CI runs it once on Linux / Node 24.16.0 after installing Chromium.
+
 ## Responsive text and host themes
 
 The responsive-layout check uses the permitted 100-character loop name, node label and input display label, plus a 500-character description, including unbroken text. Reload the saved draft and inspect authoring, run inputs, an existing structured failure and a complete oversized result at 320, 390, 900, 1024 and 1440 pixels. Headings, labels and run panels must stay inside their containers; library and graph scrolling remain intentional. Native text inputs may scroll their values internally.
