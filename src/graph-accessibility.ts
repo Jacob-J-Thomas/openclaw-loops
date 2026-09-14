@@ -2,6 +2,12 @@ import type {Definition,GraphNode,Issue} from './graph.js';
 
 type SelectionChange={id?:string;type:string;selected?:boolean};
 
+export function graphDeleteSelection(key:string,kind:'node'|'edge'|undefined,id:string|null,selectedNode:string|null,selectedEdge:string|null){
+  if(key!=='Delete'&&key!=='Backspace')return;
+  if(kind==='node'&&id&&id===selectedNode)return {nodeId:id};
+  if(kind==='edge'&&id&&id===selectedEdge)return {edgeId:id};
+}
+
 export function selectionChange(changes:readonly SelectionChange[]){
   let changed=false,selectedId:string|undefined;
   for(const change of changes)if(change.type==='select'){changed=true;if(change.selected&&change.id)selectedId=change.id;}

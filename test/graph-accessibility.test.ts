@@ -1,8 +1,15 @@
 import {describe,expect,it} from 'vitest';
-import {graphEdgeLabel,graphNodeLabel,replaceConnection,selectionChange} from '../src/graph-accessibility.js';
+import {graphDeleteSelection,graphEdgeLabel,graphNodeLabel,replaceConnection,selectionChange} from '../src/graph-accessibility.js';
 import {examples} from '../src/examples.js';
 
 describe('graph accessibility and connection controls',()=>{
+  it('deletes only the selected item focused in the authoring graph, never an input or another item',()=>{
+    expect(graphDeleteSelection('Delete','node','input','input',null)).toEqual({nodeId:'input'});
+    expect(graphDeleteSelection('Backspace','edge','a',null,'a')).toEqual({edgeId:'a'});
+    expect(graphDeleteSelection('Delete',undefined,null,'input',null)).toBeUndefined();
+    expect(graphDeleteSelection('Delete','node','wait','input',null)).toBeUndefined();
+    expect(graphDeleteSelection('Enter','node','input','input',null)).toBeUndefined();
+  });
   it('names nodes and connections with their authored meaning and selection action',()=>{
     const definition=examples[0],edge=definition.edges[0]!;
     expect(graphNodeLabel(definition.nodes[0]!)).toContain('Press Enter to select and edit this node.');
