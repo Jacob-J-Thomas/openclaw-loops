@@ -48,12 +48,43 @@ open until a released public contract and actual transport qualification meet
 those requirements. This qualification adds no host patch, provider client,
 shared-configuration change or new compatibility claim.
 
+## SDK02 consumer qualification — September 14, 2026
+
+The [compile-only consumer](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/test/contracts/sdk02-consumer.ts)
+checks `openclaw/plugin-sdk/core` and `feature-plugin` against the pinned
+**2026.9.3** peer without a runtime or provider call. A command context has an
+optional invocation-bound `runtimeContext.llm.complete`; tool and
+session-action types lack those named members. This is a property of those
+named interfaces, not an absence claim for other host APIs. The ordinary
+isolated completion request accepts `execution.authProfileId`, but host policy
+decides whether that requested account binding is authorized. Its result names
+provider/model/agent/runtime owner and caller, without effective-account or
+applied-reasoning attestation.
+
+Accepted [PR #160](https://github.com/Jacob-J-Thomas/openclaw-loops/pull/160)
+retains six actual Codex/Ollama routes for the same inherited node. Its Codex
+agent-tool route first returned `HOST_POLICY_DENIED` after a host session
+account binding; after the dedicated profile explicitly granted
+`plugins.entries.loops-poc.llm.allowAuthProfileOverride`, fresh agent-tool and
+native UI routes completed. The preserved receipt identifies actual
+provider/model/agent/runtime owner and requested reasoning, while effective
+account and applied reasoning remain `unknown`. It proves neither two-account
+isolation nor transparent account inheritance.
+
+Bolt #57's retained ordinary-install evidence records a real post-turn
+`HOST_ABORTED` loop attempt and restart-preserved uncertainty when the public
+invocation signal ended. This is request-lifetime evidence, not durable
+authority. A durable model-only runner remains unadopted until its account,
+authority, cancellation and settlement semantics are qualified under SDK02/06.
+This consumer and reused evidence do not change host policy, credentials,
+profiles, providers or runtime behavior.
+
 ## Required plugin-facing contracts
 
 | ID | 1.0 requirement | Existing issue coverage | Remaining gate |
 |---|---|---|---|
 | SDK01 | Typed per-call inference overrides and runtime/model capability descriptors; inheritance, explicit zero and honest normalization/transport attribution. | #127561 covers one configuration alias. #90193 concerns shared Codex completion behavior. Neither covers the complete parameter/discovery contract. | Agree the residual public completion contract with its owner, implement and release it. Verify real Ollama transport, native Codex reasoning, unsupported/advisory values and concurrent isolation. No global configuration mutation. |
-| SDK02 | Effective model/runtime/account selection and cancellation authority consistently bound to the UI, command or tool invocation. | #122172 provides a model-only durable execution candidate already visible in releases; #90193 is partial transport parity; #141438 is a backend-specific sender-context defect. | Prove or extend request-bound completion for all entry paths, waits and retries, with two distinct accounts on one provider. Do not infer credential ownership from sender IDs or fall back to the operator's credentials. |
+| SDK02 | Effective model/runtime/account selection and cancellation authority consistently bound to the UI, command or tool invocation. | Public command-bound completion and policy-gated isolated `authProfileId` are type-qualified; PR160 supplies six retained routes plus default-policy denial and one explicitly granted-profile success. #122172 remains a model-only durable runner candidate; #90193 is partial transport parity; #141438 is a backend-specific sender-context defect. | Prove or extend request-bound completion for all entry paths, waits and retries, with two distinct accounts on one provider. Do not infer credential ownership from sender IDs or fall back to the operator's credentials. Preserve the post-turn abort boundary and do not adopt durable execution without SDK02/06 authority, cancellation and settlement qualification. |
 | SDK03 | Authenticated initiating principal, current target-session read/control permission, permitted agent inventory and history/recovery across reset. | #115902 originally requests principal exposure, but its accepted scope is approval attribution only. #127977/PR #127982 supplies plugin-scoped session state, not authorization. | Obtain the remaining host authorization contract and test owner/member/read-only/other-session/reset/reassignment cases. Do not build a second identity or team-permission system inside Loops. |
 | SDK04 | Authorized completion after request end and restart; host-selected destination, dedupe, cancellation and permission revalidation. | #145021 addresses per-send cancellation; #117210/PR #117212 adds outbound session correlation. Existing current-requester APIs need context/lifetime qualification. | Prove a supported durable external-plugin route or extend the existing host delivery lifecycle. Persist Loops delivery state, preserve uncertain outcomes and prevent cross-session/duplicate delivery. Correlation metadata is not delivery authority. |
 | SDK06 | Cancellation of a durable host run without deleting its session; observable physical settlement and ownership enforcement. | #120139/PR #120140 is the direct candidate. Ordinary single-completion AbortSignal support already exists. | If the durable runner is selected, adopt the released cancellation contract and verify plugin ownership, completion/cancel races, cleanup, restart and transcript preservation. Do not treat deleting the session as cancellation. |
