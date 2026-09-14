@@ -268,7 +268,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.complete.mock.calls.map(([request])=>({temperature:request.temperature,maxTokens:request.maxTokens}))).toEqual([{temperature:0,maxTokens:128},{temperature:0.5,maxTokens:256},{temperature:0,maxTokens:128}]);
     const completed=await invoke('inspect',{runId:original.id});await invoke('delete',{id,expectedRevision:4});expect(await invoke('recover',{id,expectedRevision:4})).toMatchObject({enabledRevision:null,definition:restored.definition});expect(await invoke('inspect',{runId:original.id})).toEqual(completed);expect(await invoke('versions',{id})).toMatchObject([{revision:4},{revision:3},{revision:2},{revision:1}]);
   },30000);
-  it.each(['ui','command','tool'] as const)('round-trips inherited, reset, switched and unsupported Advanced settings through registered %s adapters',async surface=>{
+  it.each(['session-action','command','tool'] as const)('round-trips inherited, reset, switched and unsupported Advanced settings through registered %s adapters',async surface=>{
     let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),captured:Parameters<OpenClawPluginApi['runtime']['llm']['complete']>[0][]=[];
     const s=await setup({maxConcurrentRuns:2,onComplete:async request=>{
       if(request.maxTokens===96||request.maxTokens===112){captured.push(request);await gate;}
@@ -313,7 +313,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const incompatible=(await invoke('draft',{definition:unsupported,expectedRevision:1}) as {record:LoopRecord}).record;
     expect(await invoke('capabilities',{model:'fake/unsupported'})).toMatchObject({parameters:expect.arrayContaining([expect.objectContaining({key:'temperature',support:'unsupported'})])});
     const unsupportedInput={definition:incompatible.definition,input:{text:'must not dispatch'},requestId:'unsupported'};
-    if(surface==='ui')await expect(invoke('test',unsupportedInput)).rejects.toThrow('Temperature: The host model catalog marks temperature unsupported for this model.');
+    if(surface==='session-action')await expect(invoke('test',unsupportedInput)).rejects.toThrow('Temperature: The host model catalog marks temperature unsupported for this model.');
     else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`test ${JSON.stringify(unsupportedInput)}`})).text).toContain('Temperature: The host model catalog marks temperature unsupported for this model.');
     else expect(await invoke('test',unsupportedInput)).toMatchObject({kind:'loops-error',error:{message:'Temperature: The host model catalog marks temperature unsupported for this model.'}});
     expect(inference(incompatible)).toMatchObject({advanced:{temperature:0,maxTokens:96}});
