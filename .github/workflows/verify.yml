@@ -48,6 +48,12 @@ jobs:
           LOOPS_LIFECYCLE_PREVIOUS_REF="$base_ref" node scripts/verify-package-lifecycle.mjs "$previous_archive" "$current_archive"
         env:
           LOOPS_EVIDENCE_DIR: evidence/ci
+      - name: Verify sustained public Gateway workload
+        run: |
+          current_archive="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("evidence/ci/package.json")).filename)')"
+          node scripts/verify-sustained-workload.mjs "$current_archive"
+        env:
+          LOOPS_EVIDENCE_DIR: evidence/ci
       - name: Verify recovery from a full filesystem
         if: runner.os == 'Linux'
         run: |
@@ -64,4 +70,5 @@ jobs:
             *.tgz
             evidence/ci/*.json
             evidence/ci/package-lifecycle/receipt.json
+            evidence/ci/sustained-workload/receipt.json
           retention-days: 14
