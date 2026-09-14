@@ -30,14 +30,14 @@ beforeAll(()=>{if(!process.env.LOOPS_TEST_PLUGIN)execFileSync(process.execPath,[
 const directories:string[]=[];
 const shutdowns:Array<()=>Promise<void>>=[];
 afterEach(async()=>{for(const shutdown of shutdowns.splice(0))await shutdown();for(const dir of directories.splice(0))rmSync(dir,{recursive:true,force:true});});
-async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin}){
+async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin;maxConcurrentRuns?:number;onComplete?:OpenClawPluginApi['runtime']['llm']['complete']}){
   const root=options?.root??mkdtempSync(join(tmpdir(),'loops-adapters-'));if(!options?.root)directories.push(root);
   const commands=new Map<string,OpenClawPluginCommandDefinition>(),actions=new Map<string,PluginSessionActionRegistration>(),registered:ToolRegistration[]=[];const services:OpenClawPluginService[]=[];
   const key='agent:main:adapter-test',sessionId='adapter-session';
   // The real published feature SDK registers these adapters. Only host capabilities are faked.
-  const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async()=>({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
+  const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async request=>options?.onComplete?options.onComplete(request):({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
   const config={plugins:{entries:{'loops-poc':{enabled:true}}}};
-  const api={id:'loops-poc',config,runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>agentId==='main'&&sessionKey===key?{sessionId}:undefined}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
+  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>agentId==='main'&&sessionKey===key?{sessionId}:undefined}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
   (options?.plugin??plugin).register(api);
   if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
   const toolContext:OpenClawPluginToolContext={agentId:'main',sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
@@ -267,6 +267,57 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     for(const [run,result] of [[original,'Original run'],[tested,'Draft test'],[published,'Published run']] as const)expect(await invoke('resume',{runId:run.id})).toMatchObject({state:'completed',result});
     expect(s.complete.mock.calls.map(([request])=>({temperature:request.temperature,maxTokens:request.maxTokens}))).toEqual([{temperature:0,maxTokens:128},{temperature:0.5,maxTokens:256},{temperature:0,maxTokens:128}]);
     const completed=await invoke('inspect',{runId:original.id});await invoke('delete',{id,expectedRevision:4});expect(await invoke('recover',{id,expectedRevision:4})).toMatchObject({enabledRevision:null,definition:restored.definition});expect(await invoke('inspect',{runId:original.id})).toEqual(completed);expect(await invoke('versions',{id})).toMatchObject([{revision:4},{revision:3},{revision:2},{revision:1}]);
+  },30000);
+  it.each(['ui','command','tool'] as const)('round-trips inherited, reset, switched and unsupported Advanced settings through registered %s adapters',async surface=>{
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),captured:Parameters<OpenClawPluginApi['runtime']['llm']['complete']>[0][]=[];
+    const s=await setup({maxConcurrentRuns:2,onComplete:async request=>{
+      if(request.maxTokens===96||request.maxTokens===112){captured.push(request);await gate;}
+      return {text:`fixture:${request.maxTokens??'inherited'}`,provider:'fake',model:request.model??'inherited',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}};
+    }});let sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport);
+    const invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`advanced-${++sequence}`):client.invoke(op,input as never);
+    const definition={slug:`advanced-${surface}`,name:'Advanced round trip',description:'Deterministic registered-adapter fixture.',inputSchema:[{name:'text',label:'Text',type:'text',required:true}],capabilities:['llm'] as const,nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'infer',kind:'inference' as const,label:'Inference',prompt:'{{input.text}}',output:'text' as const},{id:'return',kind:'return' as const,label:'Return',value:'{{nodes.infer.text}}'}],edges:[{id:'a',source:'input',target:'infer',port:'next' as const},{id:'b',source:'infer',target:'return',port:'next' as const}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    const created=(await invoke('create',{definition}) as {record:LoopRecord}).record,id=created.definition.id;
+    const inference=(value:LoopRecord)=>value.definition.nodes.find(node=>node.kind==='inference');
+    expect(inference(created)).not.toHaveProperty('advanced');
+    const explicit=structuredClone(created.definition);const explicitNode=explicit.nodes.find(node=>node.kind==='inference');if(!explicitNode||explicitNode.kind!=='inference')throw Error('Expected inference fixture.');explicitNode.advanced={temperature:0,maxTokens:64};
+    const drafted=(await invoke('draft',{definition:explicit,expectedRevision:1}) as {record:LoopRecord}).record;
+    expect(inference(drafted)).toMatchObject({advanced:{temperature:0,maxTokens:64}});
+    const resetOne=structuredClone(drafted.definition);const resetOneNode=resetOne.nodes.find(node=>node.kind==='inference');if(!resetOneNode||resetOneNode.kind!=='inference')throw Error('Expected inference fixture.');resetOneNode.advanced={maxTokens:64};
+    const individuallyReset=(await invoke('draft',{definition:resetOne,expectedRevision:2}) as {record:LoopRecord}).record;
+    expect(inference(individuallyReset)).toMatchObject({advanced:{maxTokens:64}});expect(inference(individuallyReset)).not.toHaveProperty('advanced.temperature');
+    const resetAll=structuredClone(individuallyReset.definition);const resetAllNode=resetAll.nodes.find(node=>node.kind==='inference');if(!resetAllNode||resetAllNode.kind!=='inference')throw Error('Expected inference fixture.');delete resetAllNode.advanced;
+    const inherited=(await invoke('draft',{definition:resetAll,expectedRevision:3}) as {record:LoopRecord}).record;
+    expect(inference(inherited)).not.toHaveProperty('advanced');
+    expect(await invoke('test',{definition:inherited.definition,input:{text:'inherit'},requestId:'inherit'})).toMatchObject({state:'completed'});
+    const switched=structuredClone(inherited.definition);const switchedNode=switched.nodes.find(node=>node.kind==='inference');if(!switchedNode||switchedNode.kind!=='inference')throw Error('Expected inference fixture.');switchedNode.model='fake/switched';switchedNode.advanced={temperature:0,maxTokens:96};
+    const switchedRecord=(await invoke('draft',{definition:switched,expectedRevision:4}) as {record:LoopRecord}).record;
+    expect(await invoke('publish',{id,revision:5,expectedRevision:5})).toMatchObject({enabledRevision:5,publishedRevision:5});
+    const exported=JSON.stringify(switchedRecord.definition),{id:_id,schemaVersion:_schemaVersion,revision:_revision,...imported}=JSON.parse(exported) as LoopRecord['definition'];imported.slug=`advanced-import-${surface}`;const importedNode=imported.nodes.find(node=>node.kind==='inference');if(!importedNode||importedNode.kind!=='inference')throw Error('Expected inference fixture.');expect(importedNode).toMatchObject({model:'fake/switched',advanced:{temperature:0,maxTokens:96}});importedNode.advanced={temperature:0,maxTokens:112};
+    const importedRecord=(await invoke('create',{definition:imported}) as {record:LoopRecord}).record;
+    expect(inference(importedRecord)).toMatchObject({model:'fake/switched',advanced:{temperature:0,maxTokens:112}});
+    const restored=(await invoke('restore',{id,revision:1,expectedRevision:5}) as {record:LoopRecord}).record;
+    expect(inference(restored)).not.toHaveProperty('advanced');
+    const concurrent=Promise.all([
+      invoke('run',{slug:definition.slug,input:{text:'published'},requestId:'published'}),
+      invoke('run',{slug:imported.slug,input:{text:'imported'},requestId:'imported'}),
+    ]) as Promise<RunReceipt[]>;
+    try{await vi.waitFor(()=>expect(captured).toHaveLength(2),{timeout:3000});expect(captured.map(request=>({model:request.model,temperature:request.temperature,maxTokens:request.maxTokens})).sort((left,right)=>(left.maxTokens??0)-(right.maxTokens??0))).toEqual([{model:'fake/switched',temperature:0,maxTokens:96},{model:'fake/switched',temperature:0,maxTokens:112}]);}
+    finally{release();}
+    const [publishedRun,importedRun]=await concurrent;
+    expect([publishedRun,importedRun]).toMatchObject([{state:'completed',result:'fixture:96'},{state:'completed',result:'fixture:112'}]);
+    expect(s.complete.mock.calls.map(([request])=>({model:request.model,temperature:request.temperature,maxTokens:request.maxTokens}))).toEqual(expect.arrayContaining([expect.objectContaining({temperature:undefined,maxTokens:undefined}),{model:'fake/switched',temperature:0,maxTokens:96},{model:'fake/switched',temperature:0,maxTokens:112}]));
+    (s.config as Record<string,unknown>).models={providers:{fake:{models:[{id:'unsupported',compat:{supportsTemperature:false}}]}}};
+    const unsupported=structuredClone(importedRecord.definition);const unsupportedNode=unsupported.nodes.find(node=>node.kind==='inference');if(!unsupportedNode||unsupportedNode.kind!=='inference')throw Error('Expected inference fixture.');unsupportedNode.model='fake/unsupported';unsupportedNode.advanced={temperature:0,maxTokens:96};
+    const incompatible=(await invoke('draft',{definition:unsupported,expectedRevision:1}) as {record:LoopRecord}).record;
+    expect(await invoke('capabilities',{model:'fake/unsupported'})).toMatchObject({parameters:expect.arrayContaining([expect.objectContaining({key:'temperature',support:'unsupported'})])});
+    const unsupportedInput={definition:incompatible.definition,input:{text:'must not dispatch'},requestId:'unsupported'};
+    if(surface==='ui')await expect(invoke('test',unsupportedInput)).rejects.toThrow('Temperature: The host model catalog marks temperature unsupported for this model.');
+    else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`test ${JSON.stringify(unsupportedInput)}`})).text).toContain('Temperature: The host model catalog marks temperature unsupported for this model.');
+    else expect(await invoke('test',unsupportedInput)).toMatchObject({kind:'loops-error',error:{message:'Temperature: The host model catalog marks temperature unsupported for this model.'}});
+    expect(inference(incompatible)).toMatchObject({advanced:{temperature:0,maxTokens:96}});
+    expect(s.complete.mock.calls).toHaveLength(3);
   },30000);
   it.each(['ui','command','tool'] as const)('preserves current and published slug reservations through %s lifecycle operations',async surface=>{
     const s=await setup();let sequence=0;
