@@ -1,5 +1,78 @@
 # Local verification
 
+## Selected-model invocation parity
+
+Qualify the same saved definition and revision through the native editor, a real
+`/loops` command, and an actual agent `loops_run` invocation for both Codex and
+Ollama. Use dedicated conversations, select their model and reasoning through
+OpenClaw, and leave the inference node's settings inherited. Keep local inference
+serial. Retain the installed archive hash, runtime hashes, public session-selection
+responses, complete `loops_inspect` records, native UI action/screenshot evidence,
+and public `chat.history` results. A `session-action` record alone does not prove
+that someone clicked the editor's Run button.
+
+`scripts/model-parity-evidence.mjs` exports `verifyModelParityCase` and
+`verifyModelParityMatrix`. A case contains `surface` (`ui`, `command`, or `tool`),
+the full public `run`, and independently recorded `expected` values: `model`,
+`runtimeOwner`, `agentId`, `sessionKey`, `sessionId`, `definitionId`, `revision`,
+`nodeId`, `reasoning`, and exact `input`. Tool cases also require the original
+`requestId` and the public `history` response. The matrix requires six distinct
+runs of one revision, covering all three surfaces for Codex/OpenAI and
+OpenClaw/Ollama. It compares pinned settings with actual inference output
+attribution and matches the assistant's tool arguments to the corresponding
+successful tool result. A model's prose, a mismatched transcript, a failed run,
+or a result from another model cannot qualify a case.
+
+Run the verifier against a locally captured case array without publishing raw
+transcripts or account identifiers:
+
+```sh
+node --input-type=module -e '
+  import {readFileSync} from "node:fs";
+  import {verifyModelParityMatrix} from "./scripts/model-parity-evidence.mjs";
+  console.log(JSON.stringify(verifyModelParityMatrix(
+    JSON.parse(readFileSync(process.argv[1], "utf8"))), null, 2));
+' evidence/model-parity-cases.json
+```
+
+The focused synthetic rejection tests run in the normal Vitest suite. They verify
+the evidence checker; they are separate from the real runtime and browser receipts.
+Neither the checker nor a successful completion establishes the applied reasoning
+level or effective credential owner: OpenClaw 2026.9.3 does not return those
+attestations, so they remain `unknown`.
+
+Account policy matters on this host release. After OpenClaw binds an account to a
+conversation, Loops preserves that selection as `execution.authProfileId`. Isolated
+completion requires the operator's explicit
+`plugins.entries.loops-poc.llm.allowAuthProfileOverride: true` grant. Merge that
+setting into the selected test profile only when that authority is intended;
+preserve existing policy. Loops must not grant it automatically, remove the account
+selection, or choose another account to avoid a denial. A direct command can use
+the host's invocation-bound completer, while tool and UI contexts lack that same
+capability. Default account inheritance and effective-account attestation remain
+[SDK02 requirements](UPSTREAM_REQUIREMENTS.md#required-plugin-facing-contracts).
+
+The September 14, 2026 native qualification used OpenClaw 2026.9.3, Node 24.16.0,
+source `d5d6fc2d37910e1fac56af5c0ef436c5aeebcebc`, and the ordinarily installed
+archive SHA-256 `a00ae0a9bbbac1e5d30d0af0034bf39ab5425b677744bbd0a6126c99b008c527`.
+All six runs completed on saved revision 1:
+
+| Selected target | Requested reasoning | Native UI run | Command run | Agent tool run |
+|---|---|---|---|---|
+| `openai/gpt-5.6-sol`, Codex harness | `low` | `137f2adb` | `17cbaf01` | `c7517b8c` |
+| `ollama/qwen3.5:4b`, OpenClaw harness | `off` | `e1edf081` | `8fd841e2` | `5dd0841a` |
+
+Run identifiers above are abbreviated synthetic evidence references. The Codex
+command succeeded before the account grant; the first real agent invocation was
+correctly retained as a failed `HOST_POLICY_DENIED` case. After the explicit grant
+and test Gateway restart, a fresh agent invocation and the native UI invocation
+completed with the requested account binding preserved. The earlier denial is
+not counted as a passing run. Both model families returned their actual provider,
+model, agent, and runtime owner. These observations qualify model/runtime selection
+and requested reasoning in this environment, not two-account isolation, applied
+reasoning, or complete SDK02 acceptance. The evidence-verifier change does not
+alter the plugin runtime.
+
 ## Mounted Editor Advanced lifecycle
 
 After `npm ci` and `npx playwright-core install chromium`, `node scripts/verify-editor.mjs` bundles and mounts the production `Editor` in headless Chromium, drives the visible DOM controls, and writes a synthetic-transport receipt. It checks inherited/explicit zero behavior, single and all Advanced resets, model change, published revision preservation through restore, clone, export, and import. The fixture transports editor requests only; it does not invoke an OpenClaw Gateway or provider. CI runs it once on Linux / Node 24.16.0 after installing Chromium.
