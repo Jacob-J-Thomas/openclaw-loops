@@ -11,7 +11,9 @@ export class RunRefreshGate{
   private followUp?:()=>void;
   select(selection:RunRefreshSelection){if(!same(this.selection,selection)){this.selection=selection;this.invalidate();}}
   clear(){this.selection=undefined;this.invalidate();}
-  invalidate(){this.epoch++;this.inFlight=undefined;this.queued=false;this.followUp=undefined;}
+  /** Drops an obsolete inspection without revoking an in-flight action for this selection. */
+  invalidateInspection(){this.inFlight=undefined;this.queued=false;this.followUp=undefined;}
+  invalidate(){this.epoch++;this.invalidateInspection();}
   current(){return this.selection&&{selection:{...this.selection},epoch:this.epoch};}
   matches(ticket:Ticket|undefined){return Boolean(ticket&&this.accepts(ticket));}
   completeMutation(ticket:Ticket|undefined){if(!this.matches(ticket))return false;this.invalidate();return true;}
@@ -27,6 +29,6 @@ export class RunRefreshGate{
   }
   async refresh<T>(load:(selection:RunRefreshSelection)=>Promise<T>,receive:(value:T)=>void,fail:(error:unknown)=>void){
     const ticket=this.begin();if(!ticket){this.followUp=()=>void this.refresh(load,receive,fail);return;}
-    try{const value=await load(ticket.selection);if(this.accepts(ticket))receive(value);}catch(error){if(this.accepts(ticket))fail(error);}finally{this.finish(ticket)?.();}
+    try{const value=await load(ticket.selection);if(this.inFlight===ticket&&this.accepts(ticket))receive(value);}catch(error){if(this.inFlight===ticket&&this.accepts(ticket))fail(error);}finally{this.finish(ticket)?.();}
   }
 }

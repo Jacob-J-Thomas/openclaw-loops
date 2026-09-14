@@ -17,7 +17,13 @@ describe('selected run refresh gate',()=>{
   });
   it('starts a reconnected inspection without waiting for the stale host request to settle',async()=>{
     const gate=new RunRefreshGate(),first=deferred<string>(),second=deferred<string>(),load=vi.fn<()=>Promise<string>>().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise),received:string[]=[];gate.select({agentId:'a',sessionKey:'s',runId:'parked'});
-    void gate.refresh(load,value=>received.push(value),()=>{});gate.invalidate();void gate.refresh(load,value=>received.push(value),()=>{});expect(load).toHaveBeenCalledTimes(2);second.resolve('current');await Promise.resolve();expect(received).toEqual(['current']);first.resolve('stale');await Promise.resolve();expect(received).toEqual(['current']);
+    const action=gate.current();void gate.refresh(load,value=>received.push(value),()=>{});gate.invalidate();expect(gate.matches(action)).toBe(false);void gate.refresh(load,value=>received.push(value),()=>{});expect(load).toHaveBeenCalledTimes(2);second.resolve('current');await Promise.resolve();expect(received).toEqual(['current']);first.resolve('stale');await Promise.resolve();expect(received).toEqual(['current']);
+  });
+  it.each(['success','failure'])('drops a changed inspection %s before replacement without revoking its action ticket',async outcome=>{
+    const gate=new RunRefreshGate(),first=deferred<string>(),second=deferred<string>(),received:string[]=[],failed:unknown[]=[];gate.select({agentId:'a',sessionKey:'s',runId:'parked'});
+    const action=gate.current();void gate.refresh(()=>first.promise,value=>received.push(value),error=>failed.push(error));gate.invalidateInspection();expect(gate.matches(action)).toBe(true);
+    if(outcome==='success')first.resolve('stale');else first.reject(Error('obsolete error'));await Promise.resolve();expect(received).toEqual([]);expect(failed).toEqual([]);
+    void gate.refresh(()=>second.promise,value=>received.push(value),error=>failed.push(error));second.resolve('current');await Promise.resolve();expect(received).toEqual(['current']);expect(gate.completeMutation(action)).toBe(true);
   });
 });
 
