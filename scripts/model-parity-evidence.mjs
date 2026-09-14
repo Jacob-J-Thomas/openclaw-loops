@@ -10,7 +10,7 @@ const receiptId=value=>{
   const direct=parse(value);if(direct?.id)return direct.id;
   for(const text of texts(value)){const parsed=parse(text);if(parsed?.id)return parsed.id;if(parsed?.result?.details?.id)return parsed.result.details.id;for(const item of parsed?.result?.content??[])if(parse(item?.text)?.id)return parse(item.text).id;}
 };
-const publicSource={ui:'session-action',command:'command',tool:'tool'};
+const publicSource={'session-action':'session-action',command:'command',tool:'tool'};
 const digest=value=>createHash('sha256').update(value).digest('hex').slice(0,12);
 
 const nonempty=value=>typeof value==='string'&&value.length>0;
@@ -49,7 +49,7 @@ function verifyToolHistory(history,expected,run){
 
 /** Verify a complete public loops_inspect RunRecord against one model-parity case. */
 export function verifyModelParityCase({surface,expected,run,history}={}){
-  if(!Object.hasOwn(publicSource,surface))fail('surface must be ui, command, or tool.');
+  if(!Object.hasOwn(publicSource,surface))fail('surface must be session-action, command, or tool.');
   if(!object(expected)||!object(run)||!object(expected.runtimeOwner))fail('expected and full run evidence are required.');
   if(!['codex','openclaw'].includes(expected.runtimeOwner.id)||expected.runtimeOwner.kind!=='harness')fail('runtime owner must be a supported harness.');
   for(const field of ['model','agentId','sessionKey','sessionId','definitionId','nodeId','reasoning'])if(!nonempty(expected[field]))fail(`expected ${field} is required.`);
@@ -67,7 +67,7 @@ export function verifyModelParityCase({surface,expected,run,history}={}){
   if(output.execution?.owner?.kind!==expected.runtimeOwner.kind||output.execution?.owner?.id!==expected.runtimeOwner.id)fail('inference runtime owner did not match.');
   if(output.settings?.requested?.model!==expected.model||output.settings?.requested?.reasoning!==expected.reasoning||output.settings?.applied!=='unknown')fail('inference settings evidence did not match.');
   if(surface==='tool')verifyToolHistory(history,expected,run);
-  return {surface,model:expected.model,runtimeOwner:expected.runtimeOwner,nodeId:expected.nodeId,definition:{id:digest(expected.definitionId),revision:expected.revision},requested:{model:expected.model,reasoning:expected.reasoning},limits:{appliedReasoning:'unknown',effectiveAccount:'unknown'}};
+  return {surface,evidenceScope:'public-backend-route',model:expected.model,runtimeOwner:expected.runtimeOwner,nodeId:expected.nodeId,definition:{id:digest(expected.definitionId),revision:expected.revision},requested:{model:expected.model,reasoning:expected.reasoning},limits:{nativeEditor:'unverified-separate',appliedReasoning:'unknown',effectiveAccount:'unknown'}};
 }
 
 /** Verify the complete six-route Codex/Ollama model-parity matrix. */
@@ -86,7 +86,7 @@ export function verifyModelParityMatrix(cases){
     if(prior)equal(target,prior,'selected conversation and settings across routes');
     targets.set(item.expected.runtimeOwner.id,target);
   }
-  for(const route of ['codex/ui','codex/command','codex/tool','openclaw/ui','openclaw/command','openclaw/tool'])if(!routes.has(route))fail(`matrix is missing ${route}.`);
+  for(const route of ['codex/session-action','codex/command','codex/tool','openclaw/session-action','openclaw/command','openclaw/tool'])if(!routes.has(route))fail(`matrix is missing ${route}.`);
   if(definitions.size!==1)fail('matrix cases do not use one saved definition and revision.');
-  return {cases:receipts,definition:receipts[0].definition,limits:{appliedReasoning:'unknown',effectiveAccount:'unknown'}};
+  return {evidenceScope:'public-backend-routes',cases:receipts,definition:receipts[0].definition,limits:{nativeEditor:'unverified-separate',appliedReasoning:'unknown',effectiveAccount:'unknown'}};
 }

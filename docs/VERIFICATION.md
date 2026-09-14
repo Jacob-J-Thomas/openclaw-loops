@@ -12,7 +12,8 @@ and public `chat.history` results. A `session-action` record alone does not prov
 that someone clicked the editor's Run button.
 
 `scripts/model-parity-evidence.mjs` exports `verifyModelParityCase` and
-`verifyModelParityMatrix`. A case contains `surface` (`ui`, `command`, or `tool`),
+`verifyModelParityMatrix`. A case contains `surface` (`session-action`, `command`,
+or `tool`),
 the full public `run`, and independently recorded `expected` values: `model`,
 `runtimeOwner`, `agentId`, `sessionKey`, `sessionId`, `definitionId`, `revision`,
 `nodeId`, `reasoning`, and exact `input`. Tool cases also require the original
@@ -22,6 +23,13 @@ OpenClaw/Ollama. It compares pinned settings with actual inference output
 attribution and matches the assistant's tool arguments to the corresponding
 successful tool result. A model's prose, a mismatched transcript, a failed run,
 or a result from another model cannot qualify a case.
+
+This pure record verifier qualifies public backend-route model attribution only.
+Its `session-action` result is not a UI claim and its receipt explicitly marks
+native editor proof `unverified-separate`. Do not pass a caller-asserted browser
+object to upgrade that scope. Independent native editor acceptance requires the
+retained actual Playwright Run-button action plus before/after page capture,
+reviewed separately from this record matrix.
 
 Run the verifier against a locally captured case array without publishing raw
 transcripts or account identifiers:
