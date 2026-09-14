@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import {RunRefreshGate} from '../src/run-refresh.js';
-import {acceptedRunView,readRunView,saveRunView} from '../src/run-view-state.js';
+import {acceptedRunView,clearRunView,readRunView,resolveRunView,saveRunView} from '../src/run-view-state.js';
 
 const deferred=<T>()=>{let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 
@@ -24,10 +24,20 @@ describe('selected run refresh gate',()=>{
 describe('persisted run view reconciliation',()=>{
   it('restores identifiers only when the current host roster authorizes both agent and session',()=>{
     const values=new Map<string,string>(),storage={getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>values.set(key,value),removeItem:(key:string)=>values.delete(key)};
-    saveRunView(storage,{agentId:'qa66',sessionKey:'agent:qa66:approved',runId:'parked'});
-    const saved=readRunView(storage);
+    saveRunView({agentId:'qa66',sessionKey:'agent:qa66:approved',runId:'parked'},()=>storage);
+    const saved=readRunView(()=>storage);
     expect(acceptedRunView(saved,['main','qa66'],['agent:qa66:approved'])).toEqual(saved);
+    expect(resolveRunView(saved,[],['agent:qa66:approved'])).toBe('pending');
+    expect(resolveRunView(saved,['main','qa66'],['agent:qa66:approved'])).toBe('accepted');
+    expect(resolveRunView(saved,['main'],['agent:qa66:approved'])).toBe('rejected');
+    expect(resolveRunView(saved,['main','qa66'],['agent:qa66:denied'])).toBe('rejected');
     expect(acceptedRunView(saved,['main'],['agent:qa66:approved'])).toBeUndefined();
     expect(acceptedRunView(saved,['main','qa66'],['agent:qa66:denied'])).toBeUndefined();
+  });
+  it('contains an unavailable browser storage getter',()=>{
+    const unavailable=()=>{throw Error('storage disabled');};
+    expect(readRunView(unavailable)).toBeUndefined();
+    expect(()=>saveRunView({agentId:'a',sessionKey:'s',runId:'r'},unavailable)).not.toThrow();
+    expect(()=>clearRunView(unavailable)).not.toThrow();
   });
 });
