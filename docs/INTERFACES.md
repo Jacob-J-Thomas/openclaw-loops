@@ -216,12 +216,13 @@ team member role, reassignment right, or durable authority after a reset. The
 invoking a registered agent tool, so this recipe does not fabricate one or use
 an agent prompt to obtain a tool call. The registered UI, command, and tool
 adapter regressions in `test/adapters.test.ts` cover the plugin-owned
-current-session owner key and denied foreign/replaced reads. A real agent-tool
-authorization exercise requires a serial model-backed host run. SDK03 remains
-unresolved until the required principal, team-role, target-session and recovery
-authorization contracts are available. A missing target can also yield a generic
-host `UNAVAILABLE` response; this verifier does not count an arbitrary host or
-transport error as proof of permission denial.
+current-session owner key and denied foreign, replaced and missing-session
+reads. A deleted session-action request must return the classified
+`LOOPS_SESSION_REQUIRED` result before any command recreates that key; a
+generic host `UNAVAILABLE` is a failed transport contract, not a permission
+denial. A real agent-tool authorization exercise requires a serial model-backed
+host run. SDK03 remains unresolved until the required principal, team-role,
+target-session and recovery authorization contracts are available.
 
 The September 14, 2026 qualification used OpenClaw 2026.9.3, Node 24.16.0,
 runtime source `d5d6fc2d37910e1fac56af5c0ef436c5aeebcebc`, and ordinarily installed

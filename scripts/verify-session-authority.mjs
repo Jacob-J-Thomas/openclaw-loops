@@ -58,6 +58,7 @@ try{
   // The command recreates only our deleted synthetic key through the host.
   // This is actual identity replacement; ordinary reset can preserve identity.
   const removed=await request(privileged,'sessions.delete',{key:current.key,agentId});assert.equal(removed.deleted,true);receipt.replacementDeletion=removed;
+  const missing=await action(privileged,'status',current,{runId:direct.id});assert.equal(missing?.kind,'loops-error','Deleted session action unexpectedly succeeded.');assert.equal(missing.error?.code,'LOOPS_SESSION_REQUIRED','Deleted session action did not retain its classified missing-session failure.');receipt.observations.push({label:'session-action-deleted-before-recreate',deniedBy:'plugin',code:missing.error.code,message:missing.error.message});
   await commandDenied(current,`/loops status ${direct.id}`,'command-recreated-session-status');
   const history=await request(privileged,'chat.history',{agentId,sessionKey:current.key,limit:10});assert(history.sessionId&&history.sessionId!==current.sessionId,'Deleted conversation was not recreated with a different host identity.');receipt.replacementHistory=history;current={...current,sessionId:history.sessionId};
   await denied('session-action-recreated-session-status',()=>action(privileged,'status',current,{runId:direct.id}));
