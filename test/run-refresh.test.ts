@@ -1,5 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import {RunRefreshGate} from '../src/run-refresh.js';
+import {acceptedRunView,readRunView,saveRunView} from '../src/run-view-state.js';
 
 const deferred=<T>()=>{let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 
@@ -13,5 +14,20 @@ describe('selected run refresh gate',()=>{
   });
   it('preserves an action result only while its captured selection remains current',()=>{
     const gate=new RunRefreshGate();gate.select({agentId:'a',sessionKey:'s',runId:''});const action=gate.current();gate.select({agentId:'a',sessionKey:'s',runId:'other'});expect(gate.matches(action)).toBe(false);gate.select({agentId:'a',sessionKey:'s',runId:''});expect(gate.matches(action)).toBe(false);expect(gate.matches(gate.current())).toBe(true);gate.clear();expect(gate.matches(action)).toBe(false);
+  });
+  it('starts a reconnected inspection without waiting for the stale host request to settle',async()=>{
+    const gate=new RunRefreshGate(),first=deferred<string>(),second=deferred<string>(),load=vi.fn<()=>Promise<string>>().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise),received:string[]=[];gate.select({agentId:'a',sessionKey:'s',runId:'parked'});
+    void gate.refresh(load,value=>received.push(value),()=>{});gate.invalidate();void gate.refresh(load,value=>received.push(value),()=>{});expect(load).toHaveBeenCalledTimes(2);second.resolve('current');await Promise.resolve();expect(received).toEqual(['current']);first.resolve('stale');await Promise.resolve();expect(received).toEqual(['current']);
+  });
+});
+
+describe('persisted run view reconciliation',()=>{
+  it('restores identifiers only when the current host roster authorizes both agent and session',()=>{
+    const values=new Map<string,string>(),storage={getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>values.set(key,value),removeItem:(key:string)=>values.delete(key)};
+    saveRunView(storage,{agentId:'qa66',sessionKey:'agent:qa66:approved',runId:'parked'});
+    const saved=readRunView(storage);
+    expect(acceptedRunView(saved,['main','qa66'],['agent:qa66:approved'])).toEqual(saved);
+    expect(acceptedRunView(saved,['main'],['agent:qa66:approved'])).toBeUndefined();
+    expect(acceptedRunView(saved,['main','qa66'],['agent:qa66:denied'])).toBeUndefined();
   });
 });
