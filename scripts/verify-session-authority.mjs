@@ -65,7 +65,7 @@ try{
 }finally{
   for(const runId of parked.filter(id=>!receipt.cleanup.parkedRunsSettled?.includes(id)))try{const cancelled=await action(privileged,'cancel',current,{runId});assert(['completed','cancelled'].includes(cancelled?.state));(receipt.cleanup.cancelledOnFailure??=[]).push(runId);}catch(error){receipt.cleanup[`runCancelFailure:${runId}`]=errorText(error);}
   if(definition&&privileged&&current)try{const deleted=await action(privileged,'delete',current,{id:definition.id,expectedRevision:definition.revision});assert.equal(deleted?.deleted,true,`Fixture cleanup failed: ${JSON.stringify(deleted)}`);receipt.cleanup.fixtureDeleted=true;}catch(error){receipt.cleanup.fixtureDeleteFailure=errorText(error);}
-  for(const session of [current,foreign].filter(Boolean))try{const result=await request(privileged,'sessions.delete',{key:session.key,agentId});(receipt.cleanup.sessionDeleteResults??=[]).push(result);assert.equal(result?.ok,true);}catch(error){receipt.cleanup[`sessionDeleteFailure:${session.key}`]=errorText(error);}
+  for(const session of [current,foreign].filter(Boolean))try{const result=await request(privileged,'sessions.delete',{key:session.key,agentId});(receipt.cleanup.sessionDeleteResults??=[]).push(result);assert.equal(result?.ok,true);assert.equal(result?.deleted,true,'Synthetic session cleanup did not delete the session.');}catch(error){receipt.cleanup[`sessionDeleteFailure:${session.key}`]=errorText(error);}
   for(const client of clients)try{await client.stopAndWait({timeoutMs:5000});}catch(error){receipt.cleanup.stopFailure??=errorText(error);}
   if(Object.keys(receipt.cleanup).some(key=>key.includes('Failure'))){receipt.status='failed';process.exitCode=1;}save();
 }
