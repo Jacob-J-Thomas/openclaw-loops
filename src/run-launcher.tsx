@@ -20,7 +20,7 @@ type Target='published'|'draft';
 type InputState={key:string;values:Record<string,Json>};
 export function RunLauncher({draft,published,enabled,dirty,invalid,busy,authorized,onRun,onError}:{
   draft:Definition;published:Definition|null;enabled:boolean;dirty:boolean;invalid:boolean;busy:boolean;authorized:boolean;
-  onRun:(request:{target:Target;definition:Definition;input:Record<string,Json>})=>void;onError:(error:unknown)=>void;
+  onRun:(request:{target:Target;definition:Definition;input:Record<string,Json>},origin?:HTMLElement)=>void;onError:(error:unknown)=>void;
 }){
   const [target,setTarget]=useState<Target>(published?'published':'draft');
   const [inputs,setInputs]=useState<Partial<Record<Target,InputState>>>({});
@@ -32,7 +32,7 @@ export function RunLauncher({draft,published,enabled,dirty,invalid,busy,authoriz
     if(value===undefined)delete values[name];else values[name]=value;
     return {...previous,[target]:{key,values}};
   });
-  const start=()=>{if(!definition)return;try{onRun({target,definition,input:runInput(definition,values)});}catch(error){onError(error);}};
+  const start=(event:React.MouseEvent<HTMLButtonElement>)=>{if(!definition)return;try{onRun({target,definition,input:runInput(definition,values)},event.currentTarget);}catch(error){onError(error);}};
   return <div className="lp-run-input">
     <div className="lp-section-heading"><h2>Run this loop</h2><span>{definition?`r${definition.revision}${target==='draft'&&dirty?' · unsaved':''}`:'—'}</span></div>
     <label className="lp-field"><span>Run target</span><select value={target} onChange={event=>setTarget(event.target.value as Target)}>

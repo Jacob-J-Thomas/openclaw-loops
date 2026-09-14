@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {inspectionOutput,RunInspection} from '../src/run-inspection.js';
+import {inspectionOutput,readOnlyGraphAriaLabelConfig,RunInspection} from '../src/run-inspection.js';
 import {parseDefinition} from '../src/graph.js';
 import type {Run} from '../src/engine.js';
 
@@ -46,6 +46,6 @@ describe('run inspection',()=>{
     expect(inspectionOutput({...run,definition,cursor:'return',outputs:{wait:{decision:'approve'}},trace:[]},'wait')).toEqual({label:'Inherited from parent run',value:{decision:'approve'}});
   });
   it('renders parent inspection, export, and keyboard node selection controls',()=>{
-    const html=render();expect(html).toContain('Inspect parent run');expect(html).toContain('Export run evidence');expect(html).toContain('Select executed node');expect(html).toContain('parent-run');
+    const html=render(),descriptionId='react-flow__node-desc-loops-executed-child-run';expect(html).toContain('Inspect parent run');expect(html).toContain('Export run evidence');expect(html).toContain('Select executed node');expect(html).toContain('parent-run');expect(html).toContain('inspect its pinned evidence.');expect(html).toContain('id="loops-executed-child-run"');expect((html.match(new RegExp(`id="${descriptionId}"`,'g'))??[])).toHaveLength(1);expect((html.match(new RegExp(`aria-describedby="${descriptionId}"`,'g'))??[])).toHaveLength(run.definition.nodes.length);expect(readOnlyGraphAriaLabelConfig['edge.a11yDescription.default']).toContain('Connections cannot be changed here.');expect(readOnlyGraphAriaLabelConfig['node.a11yDescription.keyboardDisabled']).not.toContain('delete');
   });
 });
