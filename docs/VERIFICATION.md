@@ -24,6 +24,11 @@ attribution and matches the assistant's tool arguments to the corresponding
 successful tool result. A model's prose, a mismatched transcript, a failed run,
 or a result from another model cannot qualify a case.
 
+All six cases must check the same inference node. That checked node must inherit
+both model and reasoning: a present `model` or `reasoning` field is rejected,
+even when it matches the selected conversation. Unrelated `advanced` settings
+remain part of the saved graph and are not treated as a model/reasoning override.
+
 This pure record verifier qualifies public backend-route model attribution only.
 Its `session-action` result is not a UI claim and its receipt explicitly marks
 native editor proof `unverified-separate`. Do not pass a caller-asserted browser

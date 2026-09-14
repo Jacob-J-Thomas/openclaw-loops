@@ -64,6 +64,7 @@ export function verifyModelParityCase({surface,expected,run,history}={}){
   const output=node&&run.outputs?.[node.id];
   const [provider,model]=splitModel(expected.model);
   if(!node||!object(output)||output.provider!==provider||output.model!==model||output.agentId!==expected.agentId)fail('inference-node attribution did not match.');
+  if(Object.hasOwn(node,'model')||Object.hasOwn(node,'reasoning'))fail('checked inference node must inherit model and reasoning.');
   if(output.execution?.owner?.kind!==expected.runtimeOwner.kind||output.execution?.owner?.id!==expected.runtimeOwner.id)fail('inference runtime owner did not match.');
   if(output.settings?.requested?.model!==expected.model||output.settings?.requested?.reasoning!==expected.reasoning||output.settings?.applied!=='unknown')fail('inference settings evidence did not match.');
   if(surface==='tool')verifyToolHistory(history,expected,run);
@@ -73,13 +74,14 @@ export function verifyModelParityCase({surface,expected,run,history}={}){
 /** Verify the complete six-route Codex/Ollama model-parity matrix. */
 export function verifyModelParityMatrix(cases){
   if(!Array.isArray(cases)||cases.length!==6)fail('matrix requires exactly six cases.');
-  const receipts=cases.map(verifyModelParityCase),runs=new Set(),routes=new Set(),definitions=new Set(),targets=new Map();
+  const receipts=cases.map(verifyModelParityCase),runs=new Set(),routes=new Set(),definitions=new Set(),targets=new Map(),nodeIds=new Set();
   for(const item of cases){
     const provider=splitModel(item.expected.model)[0];
     if(provider!==(item.expected.runtimeOwner.id==='codex'?'openai':'ollama'))fail('matrix needs Codex/OpenAI and OpenClaw/Ollama targets.');
     if(runs.has(item.run.id))fail('matrix has a duplicate run ID.');runs.add(item.run.id);
     routes.add(`${item.expected.runtimeOwner.id}/${item.surface}`);
     definitions.add(JSON.stringify([item.expected.definitionId,item.expected.revision]));
+    nodeIds.add(item.expected.nodeId);
     equal(item.run.definition,cases[0].run.definition,'pinned definition content across routes');
     const target=Object.fromEntries(['model','reasoning','agentId','sessionKey','sessionId','nodeId'].map(key=>[key,item.expected[key]]));
     const prior=targets.get(item.expected.runtimeOwner.id);
@@ -88,5 +90,6 @@ export function verifyModelParityMatrix(cases){
   }
   for(const route of ['codex/session-action','codex/command','codex/tool','openclaw/session-action','openclaw/command','openclaw/tool'])if(!routes.has(route))fail(`matrix is missing ${route}.`);
   if(definitions.size!==1)fail('matrix cases do not use one saved definition and revision.');
+  if(nodeIds.size!==1)fail('matrix cases do not check one inherited inference node.');
   return {evidenceScope:'public-backend-routes',cases:receipts,definition:receipts[0].definition,limits:{nativeEditor:'unverified-separate',appliedReasoning:'unknown',effectiveAccount:'unknown'}};
 }
