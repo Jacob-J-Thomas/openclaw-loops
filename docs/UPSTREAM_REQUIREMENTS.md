@@ -12,6 +12,42 @@ Reviewed September 12, 2026. The active deliverable is the [standalone 1.0 plugi
 
 Issue state, linked PR state, source behavior and first containing release are separate facts. Recheck them at contribution and adoption time. An open issue may describe already-landed behavior; a related PR may fix only part of the requirement.
 
+## SDK01 consumer qualification — September 14, 2026
+
+The [compile-only consumer](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/test/contracts/sdk01-consumer.ts) imports
+`OpenClawPluginApi` from the supported `openclaw/plugin-sdk/core` export. The
+normal `npm run typecheck` gate checks inherited and explicit-override requests
+against the pinned **2026.9.3** peer. It makes no runtime or provider call.
+Its key assertions deliberately require renewed qualification when the peer
+changes; an absent member assertion describes that named interface only.
+
+| Public contract | Available behavior | Qualification limit |
+|---|---|---|
+| `runtime.llm.complete` isolated request | One fresh user prompt; optional model, temperature, output-token limit, reasoning and cancellation signal. Omitting generation overrides inherits host behavior. Explicit temperature `0` typechecks. | Temperature and `maxTokens` are documented advisory hints. Type acceptance does not establish model validity, normalization or provider enforcement. Loops still requires a positive output-token limit. |
+| Additional sampling overrides | The requested top-p/top-k/min-p/typical-p, penalties, seed and stop keys are absent from this public completion request. | Provider or shared configuration support is not a per-invocation plugin contract. Unset controls do not block inference; incompatible explicit overrides remain preserved and fail preflight with an explanation. |
+| Capability information | Loops can use the host model catalog's temperature compatibility flag. Its other Advanced descriptors identify the pinned completion contract. | `runtime.llm` has no `capabilities` member. This is not a claim that OpenClaw has no other capability APIs. Full selected-runtime sampling ranges, inherited values and support descriptors remain unqualified. |
+| Completion result | Text, actual provider/model/agent, usage, runtime execution owner and caller audit. Loops separately records the settings it submitted to the host. | The result has no normalized/transmitted generation-settings receipt. `transmittedToHost` is plugin submission evidence; it is not provider transport evidence. Applied settings remain `unknown`. |
+
+Accepted [PR #159](https://github.com/Jacob-J-Thomas/openclaw-loops/pull/159)
+provides Advanced lifecycle, zero-value, preflight and concurrent-isolation
+mechanics, including a mounted production editor with synthetic transport.
+Accepted [PR #160](https://github.com/Jacob-J-Thomas/openclaw-loops/pull/160)
+provides six actual Codex/Ollama selected-model journeys on the same inherited
+node through native UI, command and agent tools. Their original source/archive
+receipts remain authoritative for those exercised paths. Neither receipt
+establishes sampling transport, applied reasoning or effective account identity.
+This consumer does not recast fixture output or generated text as such evidence.
+
+Fresh issue readback on September 14 confirmed that
+[#127561](https://github.com/openclaw/openclaw/issues/127561) and
+[#90193](https://github.com/openclaw/openclaw/issues/90193) remain open. The former
+addresses the configured `top_p` alias; the latter covers duplicate Codex
+completion transports. Neither supplies the full per-call forwarding,
+capability discovery or settings-attribution contract. SDK01 adoption remains
+open until a released public contract and actual transport qualification meet
+those requirements. This qualification adds no host patch, provider client,
+shared-configuration change or new compatibility claim.
+
 ## Required plugin-facing contracts
 
 | ID | 1.0 requirement | Existing issue coverage | Remaining gate |
