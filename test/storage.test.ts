@@ -115,7 +115,7 @@ describe('plugin-owned SQLite worker',()=>{
     const snapshot=join(directory,'backup.sqlite');store.backup(snapshot);const restored=new SqliteStorage(snapshot);cleanups.push(()=>restored.close());
     expect(restored.read()).toEqual(store.read());expect(restored.integrity()).toEqual([{integrity_check:'ok'}]);
   });
-  it.each([3,99])('rejects future schema %i without changing database bytes or journal format',async version=>{
+  it.each([4,99])('rejects future schema %i without changing database bytes or journal format',async version=>{
     const {filename}=setup(),database=new DatabaseSync(filename);
     database.exec(`PRAGMA journal_mode=DELETE;CREATE TABLE future_evidence(id TEXT,value TEXT);INSERT INTO future_evidence VALUES ('preserve','Future-format evidence');PRAGMA user_version=${version};`);database.close();
     const original=readFileSync(filename);
@@ -142,7 +142,7 @@ describe('plugin-owned SQLite worker',()=>{
     const database=new DatabaseSync(filename);database.exec('PRAGMA journal_mode=DELETE;');
     const page=Number(database.prepare("SELECT rootpage FROM sqlite_schema WHERE name='loops'").get()!.rootpage),size=Number(database.prepare('PRAGMA page_size').get()!.page_size);database.close();
     expect(page).toBeGreaterThan(1);const damaged=readFileSync(filename);damaged[(page-1)*size]=0xff;writeFileSync(filename,damaged);
-    const header=new DatabaseSync(filename,{readOnly:true});try{expect(header.prepare('PRAGMA user_version').get()).toEqual({user_version:2});}finally{header.close();}
+    const header=new DatabaseSync(filename,{readOnly:true});try{expect(header.prepare('PRAGMA user_version').get()).toEqual({user_version:3});}finally{header.close();}
     expect(()=>new SqliteStorage(filename)).toThrow(/integrity|corrupt|malformed/);await vi.waitFor(()=>expect(existsSync(filename+'.lock')).toBe(false));
     expect(readFileSync(filename)).toEqual(damaged);expect(existsSync(filename+'-wal')).toBe(false);
   });
@@ -164,6 +164,8 @@ describe('plugin-owned SQLite worker',()=>{
     "UPDATE metadata SET value='99' WHERE key='version'",
     "DELETE FROM metadata WHERE key='version'",
     "UPDATE loops SET record='{}' WHERE id='summarize-text'",
+    "UPDATE loops SET record=json_set(record,'$.grantGeneration',0) WHERE id='summarize-text'",
+    "UPDATE loops SET record=json_set(record,'$.grantGeneration','') WHERE id='summarize-text'",
     "DROP TABLE outputs",
   ])('preserves a physically healthy restore rejected by startup record/schema validation (%#)',async damage=>{
     const {filename}=setup(),store=new SqliteStorage(filename);store.write(initial());await store.close();

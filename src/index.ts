@@ -9,9 +9,11 @@ import { EngineService } from './engine-service.js';
 import { createBridge } from './openclaw.js';
 import {commandHelp,parseCommandInvocation,commandReply,commandPage} from './commands.js';
 import {receipt,describe} from './receipts.js';
-import {LoopError,requestError,errorDetail,safeFailure} from './errors.js';
+import {LoopError,requestError,errorDetail,safeFailure,formatFailure} from './errors.js';
 import {outputs} from './output-schemas.js';
 import {fitsToolReply,toolPage} from './tool-replies.js';
+import {documentLinks} from './document-links.js';
+import {emptyDocumentLinks} from './document-maintenance.js';
 
 // OpenClaw may evaluate the external plugin for more than one registry scope.
 // Keep one plugin-owned executor per state directory in this Gateway process.
@@ -39,7 +41,7 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
       const parsed=parseCommandInvocation(command,Math.max(budgets.definitionBytes,budgets.inputBytes)*2);
       if(parsed.kind==='help'){
         const help=commandHelp(parsed.operation);
-        const text=await commandReply(help,value=>service().invoke('documentSnapshot',actor,value));
+        const text=await commandReply(help,value=>service().invoke('documentSnapshot',actor,value,documentLinks('help',{},value)));
         actor.check();return {text};
       }
       const operation=wireContract.operations[parsed.operation];
@@ -49,13 +51,15 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
       if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
       const value=parsed.operation==='document'&&Value.Check(DocumentPageSchema,result)?commandPage(result):
         parsed.operation==='output'&&Value.Check(outputs.output,result)?commandPage(result):result;
-      const text=await commandReply(value,value=>service().invoke('documentSnapshot',actor,value),parsed.format);
+      const text=await commandReply(value,value=>service().invoke('documentSnapshot',actor,value,documentLinks(parsed.operation,parsed.input,value)),parsed.format);
       actor.check();return {text};
-    }catch(error){const detail=errorDetail(error,{phase:'operation'});return {text:`Loops [${detail.code}]: ${detail.message}\n${detail.recovery}`};}}
+    }catch(error){return {text:`Loops ${formatFailure(errorDetail(error,{phase:'operation'}))}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
     browse:(p,c)=>service().invoke('browse',bridge.actor(c),p),
     retention:(p,c)=>service().invoke('retention',bridge.actor(c),p.policy,p.applyPlanId),
+    maintenance:(p,c)=>service().invoke('maintenance',bridge.actor(c),p.policy,p.applyPlanId),
+    transport_release:(p,c)=>service().invoke('transportRelease',bridge.actor(c),p),
     test:async(p,c)=>receipt(await service().invoke('test',bridge.actor(c),p.definition,p.input,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),retry:async(p,c)=>receipt(await service().invoke('retry',bridge.actor(c),p.runId,p.mode,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),
     draft:(p,c)=>service().invoke('draft',bridge.actor(c),p.definition,p.expectedRevision),versions:(p,c)=>service().invoke('versions',bridge.actor(c),p.id),publish:(p,c)=>service().invoke('publish',bridge.actor(c),p.id,p.revision,p.expectedRevision),restore:(p,c)=>service().invoke('restore',bridge.actor(c),p.id,p.revision,p.expectedRevision),archive:(p,c)=>service().invoke('archive',bridge.actor(c),p.id,p.expectedRevision,p.archived),deleted:(_,c)=>service().invoke('deleted',bridge.actor(c)),recover:(p,c)=>service().invoke('recover',bridge.actor(c),p.id,p.expectedRevision),output:(p,c)=>service().invoke('output',bridge.actor(c),p.runId,p.nodeId,p.offset,p.limit),history:(p,c)=>service().invoke('history',bridge.actor(c),p.cursor,p.limit),
     capabilities:(p,c)=>service().invoke('capabilities',bridge.actor(c),p),validate:(p,c)=>service().invoke('validate',bridge.actor(c),p.definition),
@@ -78,19 +82,36 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
   };
   const wrapped=Object.fromEntries(Object.entries(handlers).map(([name,handler])=>[name,(input:unknown,context:FeatureInvocationContext)=>safely(name,context,async actor=>{
     const payload=structuredClone(input) as Record<string,unknown>;
-    for(const field of uploadFields[name as keyof typeof uploadFields]??[])if(Value.Check(UploadReferenceSchema,payload[field]))payload[field]=await service().invoke('documentResolve',actor,payload[field]);
-    const operation=contract.operations[name as keyof typeof contract.operations];
-    if(!Value.Check(operation.input,payload))throw requestError('Uploaded or inline input does not match the operation schema.');
-    const result=await (handler as (input:unknown,context:FeatureInvocationContext)=>unknown)(payload,context);
-    if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
-    actor.check();
-    const tool='tool' in operation?operation.tool.name:undefined;
-    const value=context.source==='tool'&&tool&&name==='output'&&Value.Check(outputs.output,result)?toolPage(result,tool):result;
-    const output=await service().invoke('documentWrap',actor,value);
-    return context.source==='tool'&&tool&&!fitsToolReply(output,tool)?service().invoke('documentSnapshot',actor,output):output;
+    const uses:Array<{documentId:string;readerId?:string}>=[];let dispatched=false,finished=false;
+    try{
+      for(const field of uploadFields[name as keyof typeof uploadFields]??[])if(Value.Check(UploadReferenceSchema,payload[field])){
+        const use=await service().invoke('documentUse',actor,payload[field]);uses.push(use);payload[field]=use.value;
+      }
+      const operation=contract.operations[name as keyof typeof contract.operations];
+      if(!Value.Check(operation.input,payload))throw requestError('Uploaded or inline input does not match the operation schema.');
+      dispatched=true;
+      const result=await (handler as (input:unknown,context:FeatureInvocationContext)=>unknown)(payload,context);
+      if(!Value.Check(operation.output,result))throw new Error('Operation output does not match its Loops schema.');
+      actor.check();
+      const links=documentLinks(name,payload,result);
+      for(const use of uses)await service().invoke('documentFinishUse',actor,use.documentId,use.readerId,links);
+      finished=true;
+      const tool='tool' in operation?operation.tool.name:undefined;
+      const value=context.source==='tool'&&tool&&name==='output'&&Value.Check(outputs.output,result)?toolPage(result,tool):result;
+      const output=await service().invoke('documentWrap',actor,value,links);
+      return context.source==='tool'&&tool&&!fitsToolReply(output,tool)?service().invoke('documentSnapshot',actor,output,documentLinks(name,payload,output)):output;
+    }catch(error){
+      if(!finished)for(const use of uses){
+        try{await service().invoke('documentFinishUse',actor,use.documentId,use.readerId,{...emptyDocumentLinks(),unknown:dispatched});}
+        catch{/* Keep the durable reservation if finalizing its provenance fails. Preserve the original operation error. */}
+      }
+      throw error;
+    }
   })])) as FeatureHandlers<typeof wireContract>;
   const wireHandlers:FeatureHandlers<typeof wireContract>={...wrapped,
-    document:(p,c)=>safely('document',c,async actor=>{const page=await service().invoke('documentRead',actor,p.documentId,p.offset,p.limit);return c.source==='tool'?toolPage(page,'loops_document'):page;}),
+    document:(p,c)=>safely('document',c,async actor=>{const page=await service().invoke('documentRead',actor,p.documentId,p.offset,p.limit,p.readerId);return c.source==='tool'?toolPage(page,'loops_document'):page;}),
+    document_acquire:(p,c)=>safely('document_acquire',c,actor=>service().invoke('documentAcquire',actor,p.documentId)),
+    document_release:(p,c)=>safely('document_release',c,actor=>service().invoke('documentRelease',actor,p.documentId,p.readerId)),
     upload:(p,c)=>safely('upload',c,actor=>service().invoke('documentUpload',actor,p)),
   };
   return wireHandlers;

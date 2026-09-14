@@ -26,14 +26,26 @@ The isolated development profile uses Ollama `qwen3.5:4b`, Q4_K_M, 32,768 contex
 
 `scripts/init-profile.mjs` preserves existing configurations and repairs only the recognizable generated one-model policy. Review custom profiles individually. The dev scripts use dedicated state and config paths; they never initialize the personal assistant profile.
 
+See [queue capacity and cancellation](RECOVERY.md#queue-capacity-and-cancellation)
+for active/settling capacity, queued continuations, timeouts and the difference
+between a settled host promise and a confirmed provider stop.
+
 ## Upgrade
+
+The CI package-lifecycle verifier builds the accepted #63 baseline source `7b2705bc2068f09e68e738ae199889feb69c1680` in a temporary checkout, then installs that distinct archive through the ordinary OpenClaw installer. It creates and runs a deterministic Input-to-Return loop through the public session-action API, stops the Gateway, and takes a matched predecessor profile/configuration and archive backup. It installs the current archive and compares the original loop/run with protected operator settings after upgrade, then verifies uninstall retains the plugin-owned `resolveStateDir()/loops-poc` storage and a clean reinstall can read that state. Finally it restores only the stopped predecessor configuration and plugin-owned data, verifies the still-installed current extension, and uses the ordinary installer to replace it with the predecessor archive before re-reading the original loop and run. The fixture uses a fresh token-authenticated profile and process-scoped public SDK clients; it makes no model calls and is not evidence for provider behavior, shared-team ACLs, or customer provisioning. A lifecycle run fails when its two archive hashes match rather than calling an identical-byte reinstall an upgrade. Raw profiles, logs and backups remain local CI workspace evidence; CI uploads only the sanitized receipt.
 
 1. Keep the previous plugin artifact and stop the affected Gateway so no host calls are active.
 2. Back up the entire profile state and configuration as a matched pair, including `loops-poc/loops.sqlite`, any WAL files and `loops-poc/documents` (immutable large responses and staged requests). A stopped Gateway is required for a raw filesystem copy. The storage adapter's SQLite backup operation snapshots the database alone; it does not coordinate live document/upload files or replace a complete stopped-profile backup.
-3. Install the new artifact through OpenClaw. On first SQLite startup, legacy JSON is validated, copied to a timestamped backup and imported transactionally. The original JSON is retained. Integrity and exact readback are checked. Alpha.6 also backs up a schema 1 SQLite database before transactionally upgrading it to schema 2 for immutable history-removal admission records.
+3. Install the new artifact through OpenClaw. On first SQLite startup, legacy JSON is validated, copied to a timestamped backup and imported transactionally. The original JSON is retained. Integrity and exact readback are checked. Existing schema 1 or 2 SQLite databases receive a verified, private `loops.sqlite.before-schema-3-<timestamp>.bak` backup before the transactional upgrade to schema 3. This version reserves the admission fingerprint contract for compatible readers; existing record bytes, hashes, IDs and outputs are preserved. Schema 1 also gains the retired-admission table originally introduced in schema 2.
 4. Restart, check plugin startup, compare library identities/revisions and run history counts, then run a synthetic command/tool/UI smoke test. Existing runs keep their pinned definitions. Uncertain interrupted effects require an explicit inspected recovery decision.
 
 Do not copy a live SQLite main file without its transactional state. Do not delete the original JSON/backup as part of upgrade acceptance.
+
+The pinned-grant update adds runtime `grantGeneration` metadata to loop records and new published-run admissions. An existing unrevoked loop keeps an implicit legacy grant for its older runs. A loop that is already revoked at upgrade receives a new generation, so subsequently enabling it cannot revive its old admissions. The upgrade preserves those saved run records and definitions. Revocations already cleared by older code cannot be reconstructed from a missing historical record; inspect such runs before deciding whether to revoke or recover them.
+
+The pinned-grant change retained database schema 2 and was qualified against its exact immediately preceding alpha.17 artifact, which rejected the new control metadata during typed read-only startup without changing database or committed WAL bytes. The admission-identity change now uses schema 3: older schema-2 readers refuse it at their version check even when all new runs are cold history. Use the matching application/state backup for rollback, and retain archive hashes because development artifacts may have the same package version. Do not strip grant/fingerprint fields or rewrite version metadata to force a downgrade.
+
+New admissions use locale-independent fingerprint version 2; old run hashes stay unchanged. Retained legacy payloads remain available for canonical retry comparison, and their later retirement preserves that comparison in an immutable tombstone. An already removed legacy payload cannot be recovered from its hash. Such IDs remain reserved, but equivalent retries reordered across Unicode keys/locales can return an identity conflict instead of a removed-history receipt. Both paths refuse execution; start with a new ID only when a separate run is intended. See [the interface contract](INTERFACES.md).
 
 History retention and its explicit UI/agent cleanup policy are documented in [HISTORY.md](HISTORY.md). Cleanup is disabled until requested; no upgrade deletes old history automatically.
 
@@ -71,7 +83,7 @@ The matched-restore regression runs through the published feature SDK against re
 
 ## Disable and uninstall
 
-Disable the plugin through OpenClaw, stop/drain the affected Gateway, and use the host plugin uninstall command. Disable or uninstall must not be treated as consent to erase definitions, history or backups. Keep the plugin-owned state directory for reinstall/recovery. Erasing retained state is a separate deliberate data-deletion operation.
+Disable the plugin through OpenClaw, stop/drain the affected Gateway, and use the host plugin uninstall command. Disable or uninstall must not be treated as consent to erase definitions, history or backups. Keep the plugin-owned state directory for reinstall/recovery. Erasing retained state is a separate deliberate data-deletion operation. The pinned host leaves `plugins.entries.loops-poc.enabled: false` after uninstall. Reinstall the trusted package, explicitly run `openclaw plugins enable loops-poc` in that same profile, then restart the Gateway to reactivate its commands and tools. Reinstallation alone preserves that host disable marker.
 
 ## Release evidence
 

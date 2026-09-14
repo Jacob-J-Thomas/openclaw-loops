@@ -14,10 +14,15 @@ const plugin:typeof sourcePlugin=process.env.LOOPS_TEST_PLUGIN?(await import(/* 
 import {parseCommand} from '../src/openclaw.js';
 import {examples} from '../src/examples.js';
 import {createLoopsClient} from '../src/feature-client.js';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {FailureNotice,displayFailure} from '../src/failure-notice.js';
 import {fitsFeatureJson} from '../src/feature-json.js';
+import {DocumentStore} from '../src/document-store.js';
+import {emptyDocumentLinks} from '../src/document-maintenance.js';
 import {createFeatureClient,type FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
 import {wireContract,DocumentReferenceSchema} from '../src/wire-contract.js';
-import type {LoopRecord} from '../src/engine.js';
+import type {LoopRecord,Run} from '../src/engine.js';
 import type {RunReceipt} from '../src/receipts.js';
 type ToolRegistration=Parameters<OpenClawPluginApi['registerTool']>[0];
 import {execFileSync} from 'node:child_process';
@@ -49,8 +54,8 @@ async function commandJson(s:Awaited<ReturnType<typeof setup>>,op:string,input:u
     expect(text.length).toBeLessThanOrEqual(8000);return JSON.parse(text.split('\n\nRead the full JSON result with ')[0]);
   };
   const value=await invoke(op,input);if(!Value.Check(DocumentReferenceSchema,value))return value;
-  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset});expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
-  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset,...value.readerId?{readerId:value.readerId}:{}});expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
 async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Record<string,unknown>,callId=`fixture-${name}`){
   const invoke=async(name:string,input:Record<string,unknown>)=>{
@@ -59,15 +64,317 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
     expect(JSON.stringify({tool:{id:`openclaw:loops-poc:loops_${name}`,name:`loops_${name}`,source:'openclaw'},result},null,2).length).toBeLessThanOrEqual(16000);return result.details;
   };
   const value=await invoke(name,input);if(!Value.Check(DocumentReferenceSchema,value))return value as Record<string,unknown>;
-  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset}) as {text:string;offset:number;nextOffset:number|null;sha256:string};expect(page.offset).toBe(offset);expect(page.sha256).toBe(value.sha256);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
-  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+  let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset,...value.readerId?{readerId:value.readerId}:{}}) as {text:string;offset:number;nextOffset:number|null;sha256:string};expect(page.offset).toBe(offset);expect(page.sha256).toBe(value.sha256);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+  expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('preflights explicit incompatible inference settings through the registered UI adapter without dispatching them',async()=>{
+    const s=await setup(),inherited=structuredClone(examples[0]);
+    expect(await s.action('test',{definition:inherited,input:{text:'Inherited settings'},requestId:'capability-inherit'})).toMatchObject({ok:true,result:{state:'completed'}});
+    const incompatible=structuredClone(inherited),node=incompatible.nodes.find(candidate=>candidate.kind==='inference');
+    if(!node||node.kind!=='inference')throw Error('Expected inference fixture.');
+    node.advanced={topP:0};
+    expect(await s.action('test',{definition:incompatible,input:{text:'Must not dispatch'},requestId:'capability-unsupported'})).toMatchObject({ok:true,result:{kind:'loops-error',operation:'test',error:{code:'LOOPS_INVALID_REQUEST',message:expect.stringMatching(/public isolated completion/)}}});
+    expect(s.complete).toHaveBeenCalledOnce();
+  });
+  it('protects actual parked, queued and settling run snapshots after reader release, including a parked restart',async()=>{
+    let s=await setup(),release!:()=>void;const entered:AbortSignal[]=[];
+    const implementation=s.complete.getMockImplementation()!;
+    s.complete.mockImplementation(async request=>{entered.push(request.signal!);await new Promise<void>(resolve=>{release=resolve;});return implementation(request);});
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),wire=createFeatureClient(wireContract,transport);
+    const definition:import('../src/graph.js').Definition={...structuredClone(examples[0]),revision:1,schemaVersion:2,limits:{maxExecutions:1000,maxOutputBytes:1048576},nodes:[
+      {id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Keep this evidence'},
+      {id:'summary',kind:'inference',label:'Inference',prompt:'Synthetic completion after waiting',output:'text'},
+      {id:'return',kind:'return',label:'Return',value:'{{nodes.summary.text}}'}],edges:[
+      {id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'summary',port:'next'},{id:'c',source:'summary',target:'return',port:'next'}]};
+    const saved=await client.invoke('save',{definition,expectedRevision:1,enabled:true});expect(saved.record.definition.revision).toBe(2);
+    const input={text:'Large run evidence 🙂 '.repeat(4000)};expect(fitsFeatureJson(input)).toBe(false);
+    const first=await client.invoke('run',{slug:definition.slug,input,requestId:'settling'}),parked=await client.invoke('run',{slug:definition.slug,input,requestId:'parked'});
+    expect(first.state).toBe('waiting');expect(parked.state).toBe('waiting');
+    const pending=client.invoke('resume',{runId:first.id});
+    try{
+      await vi.waitFor(()=>expect(entered).toHaveLength(1));
+      const queued=await client.invoke('run',{slug:definition.slug,input,requestId:'queued'});expect(queued.state).toBe('queued');
+      const references:string[]=[];
+      for(const run of [first,parked,queued]){
+        const reference=await wire.invoke('inspect',{runId:run.id});expect(Value.Check(DocumentReferenceSchema,reference)).toBe(true);
+        const document=reference as {documentId:string;readerId:string};references.push(document.documentId);
+        expect(await wire.invoke('document_release',{documentId:document.documentId,readerId:document.readerId})).toEqual({released:true});
+      }
+      expect(await client.invoke('cancel',{runId:first.id})).toMatchObject({state:'cancelled',cleanupPending:true});await pending;
+      await vi.waitFor(()=>expect(entered[0].aborted).toBe(true));
+      const preview=await client.invoke('maintenance',{policy:{keepLatest:0}});
+      expect(preview.readers).toEqual([]);expect(preview.protected.referenced).toBeGreaterThanOrEqual(3);
+      expect(preview.candidates.every(file=>!references.includes(file.id))).toBe(true);
+      const history=await client.invoke('retention',{policy:{keepLatest:0}});expect(history.candidates).toEqual([]);
+      expect((await client.invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId})).applied).toBe(true);
+      for(const id of references){const acquired=await wire.invoke('document_acquire',{documentId:id}) as {documentId:string;readerId:string};expect(await wire.invoke('document',acquired)).toMatchObject({documentId:id});await wire.invoke('document_release',acquired);}
+      release();await vi.waitFor(async()=>expect(await client.invoke('status',{runId:queued.id})).toMatchObject({state:'waiting'}));
+      await vi.waitFor(async()=>expect((await client.invoke('inspect',{runId:first.id})).cleanupPending).toBe(false));
+      const evidence=await client.invoke('inspect',{runId:parked.id});
+      for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
+      expect(await client.invoke('inspect',{runId:parked.id})).toEqual(evidence);
+      const reopened=await client.invoke('maintenance',{policy:{keepLatest:0}});expect(reopened.readers).toEqual([]);
+      expect(reopened.candidates.every(file=>!references.includes(file.id))).toBe(true);expect(reopened.protected.referenced).toBeGreaterThanOrEqual(3);
+    }finally{release?.();await pending;}
+  },30000);
+  it.each(['ui','command','tool'] as const)('protects readers and run evidence through %s maintenance, then reclaims released files after restart',async surface=>{
+    let s=await setup();let sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),wire=createFeatureClient(wireContract,transport),readOnly=createFeatureClient(wireContract,{...transport,request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>,['operator.read'])} as FeatureTransport);
+    const invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op,input,`maintenance-${++sequence}`):client.invoke(op,input as never);
+    const upload=async(input:Record<string,unknown>)=>surface==='command'?commandJson(s,'upload',input):surface==='tool'?toolJson(s,'upload',input,`upload-${++sequence}`):wire.invoke('upload',input as never);
+    const definition={...structuredClone(examples[0]),schemaVersion:2 as const,inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'Full transport evidence 🙂 '.repeat(3000)}],edges:[{id:'next',source:'input',target:'return',port:'next'}],limits:{maxExecutions:5,maxOutputBytes:200000}};
+    expect(fitsFeatureJson(definition.nodes[1].value)).toBe(false);
+    const encoded=JSON.stringify(definition);let offset=0,reference:unknown;
+    const characters=Array.from(encoded);
+    while(offset<characters.length){const text=characters.slice(offset,offset+1000).join(''),complete=offset+1000>=characters.length;const saved=await upload({uploadId:'definition',offset,text,...complete?{complete:true,sha256:createHash('sha256').update(encoded).digest('hex')}:{}}) as {offset:number;reference?:unknown};offset=saved.offset;reference=saved.reference;}
+    const run=await (surface==='ui'?wire.invoke('test',{definition:reference,input:{},requestId:'maintenance-run'} as never):invoke('test',{definition:reference,input:{},requestId:'maintenance-run'})) as RunReceipt;
+    expect(run).toMatchObject({state:'completed'});expect(s.complete).not.toHaveBeenCalled();
+    const full=await invoke('inspect',{runId:run.id}) as Run;expect(full.result).toBe(definition.nodes[1].value);
+    const held=await wire.invoke('inspect',{runId:run.id});expect(held).toMatchObject({kind:'loops-document'});expect(Value.Check(DocumentReferenceSchema,held)).toBe(true);
+    const doc=held as {documentId:string;readerId:string},second=await readOnly.invoke('document_acquire',{documentId:doc.documentId}) as {readerId:string};
+    expect(second.readerId).not.toBe(doc.readerId);
+    expect(await readOnly.invoke('maintenance',{policy:{keepLatest:0}})).toMatchObject({kind:'loops-error',error:{message:expect.stringContaining('write access')}});
+    expect(await readOnly.invoke('transport_release',{kind:'reader',documentId:doc.documentId,readerId:doc.readerId})).toMatchObject({kind:'loops-error'});
+    await upload({uploadId:'abandoned',offset:0,text:'{"pending":'});
+    let preview=await invoke('maintenance',{policy:{keepLatest:0}}) as import('../src/document-maintenance.js').MaintenanceResult;
+    expect(preview.protected.readers).toBeGreaterThan(0);expect(preview.protected.uploads).toBe(1);
+    expect(preview.uploads[0].uploadId).toBe('abandoned');
+    await invoke('transport_release',{kind:'upload',uploadId:'abandoned',sha256:preview.uploads[0].sha256});
+    await readOnly.invoke('document_release',{documentId:doc.documentId,readerId:doc.readerId});
+    preview=await invoke('maintenance',{policy:{keepLatest:0}}) as typeof preview;expect(preview.readers.some(reader=>reader.readerId===second.readerId)).toBe(true);
+    await readOnly.invoke('document_release',{documentId:doc.documentId,readerId:second.readerId});
+    preview=await invoke('maintenance',{policy:{keepLatest:0}}) as typeof preview;expect(preview.readers).toEqual([]);expect(preview.protected.referenced).toBeGreaterThan(0);
+    expect((await invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId}) as typeof preview).applied).toBe(true);
+    expect(await invoke('inspect',{runId:run.id})).toEqual(full);
+    const retired=await invoke('retention',{policy:{keepLatest:0}}) as {planId:string;policy:Record<string,unknown>};await invoke('retention',{policy:retired.policy,applyPlanId:retired.planId});
+    for(const service of s.services)await service.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);s=await setup({root:s.root});
+    preview=await invoke('maintenance',{policy:{keepLatest:0}}) as typeof preview;expect(preview.candidates.some(file=>file.kind==='document')).toBe(true);expect(preview.protected).toMatchObject({readers:0,referenced:0,uploads:0,legacy:0});
+    const directory=join(s.root,'loops-poc','documents'),bytes=()=>readdirSync(directory).reduce((sum,name)=>sum+readFileSync(join(directory,name)).length,0),before=bytes();
+    expect((await invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId}) as typeof preview).applied).toBe(true);expect(before-bytes()).toBe(preview.bytes);
+    expect(readdirSync(directory)).toEqual([]);expect(await invoke('runs')).toEqual([]);
+  },30000);
+  it.each(['ui','command','tool'] as const)('applies a large %s maintenance preview after its native reader is released',async surface=>{
+    const s=await setup(),directory=join(s.root,'loops-poc','documents'),store=new DocumentStore(directory);
+    const actor={agentId:'main',sessionKey:s.key,sessionId:s.sessionId,source:'tool' as const,human:false,check:()=>{}};
+    for(let i=0;i<820;i++)store.snapshot(actor,{candidate:i},emptyDocumentLinks(),false);
+    let sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op,input,`preview-${++sequence}`):client.invoke(op,input as never);
+    const preview=await invoke('maintenance',{policy:{keepLatest:0}}) as import('../src/document-maintenance.js').MaintenanceResult;
+    expect(fitsFeatureJson(preview)).toBe(false);expect(readdirSync(directory)).toHaveLength(821);
+    expect(await invoke('maintenance',{policy:preview.policy,applyPlanId:preview.planId})).toMatchObject({applied:true,candidates:preview.candidates});
+    expect((await invoke('maintenance',{policy:{keepLatest:0}}) as import('../src/document-maintenance.js').MaintenanceResult).candidates).toHaveLength(2);
+  },30000);
+  it.each(['ui','command','tool'] as const)('keeps %s queued work behind cancellation cleanup and preserves the completed queue after restart',async surface=>{
+    let s=await setup(),sequence=0,release!:()=>void,physical=0,maximum=0;const entered:Array<AbortSignal|undefined>=[];
+    const implementation=s.complete.getMockImplementation()!;
+    s.complete.mockImplementation(async request=>{
+      physical++;maximum=Math.max(maximum,physical);entered.push(request.signal);
+      try{if(entered.length===1)await new Promise<void>(resolve=>{release=resolve;});return await implementation(request);}finally{physical--;}
+    });
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`queue-${++sequence}`):client.invoke(op,input as never);
+    try{
+      await invoke('enable',{id:'summarize-text',revision:1,enabled:true});
+      const running=invoke('run',{slug:'summarize-text',input:{text:'Active'},requestId:'active'});
+      await vi.waitFor(()=>expect(entered).toHaveLength(1));const first=(await invoke('runs') as Array<{id:string}>)[0];
+      const cancelled=await invoke('run',{slug:'summarize-text',input:{text:'Cancel queued'},requestId:'cancel-queued'}) as RunReceipt;
+      const next=await invoke('run',{slug:'summarize-text',input:{text:'Next'},requestId:'next'}) as RunReceipt;
+      expect(cancelled).toMatchObject({state:'queued',executions:0,steps:[]});expect(next).toMatchObject({state:'queued',executions:0,steps:[]});
+      expect(await invoke('cancel',{runId:cancelled.id})).toMatchObject({state:'cancelled',executions:0});
+      expect(await invoke('cancel',{runId:first.id})).toMatchObject({state:'cancelled',cleanupPending:true});expect(await running).toMatchObject({id:first.id,state:'cancelled'});
+      await vi.waitFor(()=>expect(entered[0]?.aborted).toBe(true));expect(entered).toHaveLength(1);expect(physical).toBe(1);
+      expect(await invoke('run',{slug:'summarize-text',input:{text:'Active'},requestId:'active'})).toMatchObject({id:first.id,state:'cancelled',cleanupPending:true});
+      const recovery={runId:first.id,mode:'retry-node',requestId:'premature-recovery'};
+      if(surface==='ui')await expect(invoke('retry',recovery)).rejects.toThrow(/physical execution cleanup/);
+      else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`retry ${JSON.stringify(recovery)}`})).text).toContain('physical execution cleanup');
+      else expect(await invoke('retry',recovery)).toMatchObject({kind:'loops-error',error:{message:expect.stringContaining('physical execution cleanup')}});
+      expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'queued',executions:0,trace:[]});expect(entered).toHaveLength(1);
+      release();await vi.waitFor(async()=>expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'completed',result:'An actual adapter result.'}));
+      await vi.waitFor(async()=>expect((await invoke('inspect',{runId:first.id}) as Run).cleanupPending).not.toBe(true));
+      expect(entered).toHaveLength(2);expect(maximum).toBe(1);expect(physical).toBe(0);
+      const completed=await Promise.all([first.id,cancelled.id,next.id].map(runId=>invoke('inspect',{runId}))) as Run[];
+      expect(completed[0]).toMatchObject({state:'cancelled',cleanupPending:false});expect(completed[0].outputs.summary).toBeUndefined();expect(completed[0].trace.some(node=>node.nodeId==='return')).toBe(false);
+      expect(completed[1]).toMatchObject({state:'cancelled',executions:0,trace:[]});
+      for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
+      expect(await Promise.all(completed.map(run=>invoke('inspect',{runId:run.id})))).toEqual(completed);
+      expect(await invoke('run',{slug:'summarize-text',input:{text:'Active'},requestId:'active'})).toMatchObject({id:first.id,state:'cancelled'});expect(s.complete).not.toHaveBeenCalled();
+    }finally{release?.();}
+  },30000);
+  it.each(['ui','command','tool'] as const)('requires a new human decision after %s restart while retaining approval for retry-node continuation',async surface=>{
+    let s=await setup(),sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport);
+    const invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`recovery-${++sequence}`):client.invoke(op,input as never);
+    const definition={slug:`review-restart-${surface}`,name:'Fresh review on restart',description:'Recovery must distinguish retained and repeated decisions.',inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'review',kind:'review',label:'Review',proposal:'Approve this attempt?'},{id:'wait',kind:'wait',label:'Wait',message:'Hold after approval'},{id:'return',kind:'return',label:'Return',value:'Accepted'},{id:'reject',kind:'fail',label:'Reject',reason:'Rejected'}],edges:[{id:'a',source:'input',target:'review',port:'next'},{id:'b',source:'review',target:'wait',port:'approve'},{id:'c',source:'review',target:'reject',port:'reject'},{id:'d',source:'wait',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    await invoke('create',{definition});const first=await invoke('run',{slug:definition.slug,input:{},requestId:'original'}) as RunReceipt;expect(first.state).toBe('review');
+    await client.invoke('review',{runId:first.id,decision:'approve'});await invoke('cancel',{runId:first.id});const original=await invoke('inspect',{runId:first.id}) as Run;expect(original.review?.decision).toBe('approve');
+    const continuation=await invoke('retry',{runId:first.id,mode:'retry-node',requestId:'continue-approved'}) as RunReceipt;expect(continuation).toMatchObject({state:'waiting',parentRunId:first.id});
+    expect((await invoke('inspect',{runId:continuation.id}) as Run).review).toEqual(original.review);expect(await invoke('resume',{runId:continuation.id})).toMatchObject({state:'completed'});
+    const restarted=await invoke('retry',{runId:first.id,mode:'restart',requestId:'restart-review'}) as RunReceipt;expect(restarted).toMatchObject({state:'review',parentRunId:first.id});
+    const pending=await invoke('inspect',{runId:restarted.id}) as Run;expect(pending.review).toBeUndefined();expect(pending.outputs.review).toEqual({});
+    expect(await invoke('inspect',{runId:first.id})).toEqual(original);
+    for(const shutdown of shutdowns.splice(0))await shutdown();
+    // Previous releases persisted the parent's attribution on this fresh child.
+    // Exercise the indexed cold-run path, including idempotent admission first.
+    const filename=join(s.root,'loops-poc','loops.sqlite'),store=new SqliteStorage(filename);
+    store.writeRun({...pending,review:original.review});await store.close();s=await setup({root:s.root});
+    const fault=new DatabaseSync(filename);
+    try{
+      fault.exec("CREATE TRIGGER reject_attribution_repair BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'Synthetic attribution repair failure'); END");
+      const request={runId:first.id,mode:'restart',requestId:'restart-review'};
+      if(surface==='ui')await expect(invoke('retry',request)).rejects.toMatchObject({message:'Loops storage rejected a conflicting write.'});
+      else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`retry ${JSON.stringify(request)}`})).text).toContain('Loops storage rejected a conflicting write.');
+      else expect(await invoke('retry',request)).toMatchObject({kind:'loops-error',error:{message:'Loops storage rejected a conflicting write.'}});
+      expect(JSON.parse((fault.prepare('SELECT record FROM runs WHERE id=?').get(restarted.id) as {record:string}).record).review).toEqual(original.review);
+      fault.exec('DROP TRIGGER reject_attribution_repair');
+    }finally{fault.close();}
+    const duplicate=await invoke('retry',{runId:first.id,mode:'restart',requestId:'restart-review'}) as RunReceipt;
+    expect(duplicate).toMatchObject({id:restarted.id,state:'review'});expect(duplicate.review).toBeUndefined();
+    expect(await invoke('inspect',{runId:restarted.id})).toEqual(pending);
+    const database=new DatabaseSync(filename,{readOnly:true});
+    try{expect(JSON.parse((database.prepare('SELECT record FROM runs WHERE id=?').get(restarted.id) as {record:string}).record)).toEqual(pending);}finally{database.close();}
+    for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
+    expect(await invoke('inspect',{runId:restarted.id})).toEqual(pending);
+    expect(await client.invoke('review',{runId:restarted.id,decision:'reject'})).toMatchObject({state:'failed'});expect((await invoke('inspect',{runId:restarted.id}) as Run).review?.decision).toBe('reject');
+    expect(await invoke('inspect',{runId:first.id})).toEqual(original);expect(s.complete).not.toHaveBeenCalled();
+  });
+  it.each(['ui','command','tool'] as const)('preserves published inputs, Advanced overrides and pinned waits through the complete %s version lifecycle',async surface=>{
+    let s=await setup(),sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport);
+    const invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`versions-${++sequence}`):client.invoke(op,input as never);
+    const definition={slug:'version-published',name:'Published version',description:'Version lifecycle fixture',inputSchema:[{name:'original',label:'Published input',type:'text',required:true}],capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Hold this version'},{id:'infer',kind:'inference',label:'Inference',model:'fake/test-only',prompt:'{{input.original}}',output:'text',advanced:{temperature:0,maxTokens:128}},{id:'return',kind:'return',label:'Return',value:'{{input.original}}'}],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'infer',port:'next'},{id:'c',source:'infer',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    const created=(await invoke('create',{definition}) as {record:LoopRecord}).record,id=created.definition.id;
+    const original=await invoke('run',{slug:definition.slug,input:{original:'Original run'},requestId:'original'}) as RunReceipt,before=await invoke('inspect',{runId:original.id});expect(original.state).toBe('waiting');
+    const draft={...created.definition,slug:'version-draft',inputSchema:[{name:'replacement',label:'Draft input',type:'text',required:true}],nodes:created.definition.nodes.map(node=>node.kind==='inference'?{...node,prompt:'{{input.replacement}}',advanced:{temperature:0.5,maxTokens:256}}:node.kind==='return'?{...node,value:'{{input.replacement}}'}:node)};
+    const saved=(await invoke('draft',{definition:draft,expectedRevision:1}) as {record:LoopRecord}).record;expect(saved).toMatchObject({enabledRevision:1,publishedRevision:1,definition:{revision:2}});
+    expect(await invoke('describe',{slug:definition.slug})).toMatchObject({revision:1,inputSchema:[{name:'original'}]});
+    const tested=await invoke('test',{definition:saved.definition,input:{replacement:'Draft test'},requestId:'draft'}) as RunReceipt;
+    const published=await invoke('run',{slug:definition.slug,input:{original:'Published run'},requestId:'published'}) as RunReceipt;
+    expect(tested).toMatchObject({state:'waiting',testMode:true,definition:{revision:2}});expect(published).toMatchObject({state:'waiting',definition:{revision:1}});
+    expect(await invoke('enable',{id,revision:2,enabled:false})).toMatchObject({enabledRevision:null,publishedRevision:1});
+    expect(await invoke('save',{definition:saved.definition,expectedRevision:2,enabled:false})).toMatchObject({record:{enabledRevision:null,definition:{revision:3}}});
+    const restored=(await invoke('restore',{id,revision:1,expectedRevision:3}) as {record:LoopRecord}).record;expect(restored.definition.nodes[2]).toMatchObject({advanced:{temperature:0,maxTokens:128}});
+    expect(await invoke('publish',{id,revision:2,expectedRevision:4})).toMatchObject({enabledRevision:2,publishedRevision:2,definition:{revision:4}});
+    expect(await invoke('publish',{id,revision:1,expectedRevision:4})).toMatchObject({enabledRevision:1,publishedRevision:1});
+    expect(await invoke('archive',{id,expectedRevision:4,archived:true})).toMatchObject({archived:true,enabledRevision:null});
+    expect(await invoke('recover',{id,expectedRevision:4})).toMatchObject({archived:false,enabledRevision:null});expect(await invoke('inspect',{runId:original.id})).toEqual(before);expect(s.complete).not.toHaveBeenCalled();
+    for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});expect(await invoke('inspect',{runId:original.id})).toEqual(before);
+    for(const [run,result] of [[original,'Original run'],[tested,'Draft test'],[published,'Published run']] as const)expect(await invoke('resume',{runId:run.id})).toMatchObject({state:'completed',result});
+    expect(s.complete.mock.calls.map(([request])=>({temperature:request.temperature,maxTokens:request.maxTokens}))).toEqual([{temperature:0,maxTokens:128},{temperature:0.5,maxTokens:256},{temperature:0,maxTokens:128}]);
+    const completed=await invoke('inspect',{runId:original.id});await invoke('delete',{id,expectedRevision:4});expect(await invoke('recover',{id,expectedRevision:4})).toMatchObject({enabledRevision:null,definition:restored.definition});expect(await invoke('inspect',{runId:original.id})).toEqual(completed);expect(await invoke('versions',{id})).toMatchObject([{revision:4},{revision:3},{revision:2},{revision:1}]);
+  },30000);
+  it.each(['ui','command','tool'] as const)('preserves current and published slug reservations through %s lifecycle operations',async surface=>{
+    const s=await setup();let sequence=0;
+    const invoke=async(op:string,input:Record<string,unknown>={})=>{
+      if(surface==='tool')return toolJson(s,op==='load'?'read':op,input,`namespace-${++sequence}`);
+      if(surface==='command')return commandJson(s,op,input);
+      const response=await s.action(op,input);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;
+    };
+    const failure=async(op:string,input:Record<string,unknown>)=>surface==='command'?
+      (await s.commands.get('loops')!.handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text:JSON.stringify(await invoke(op,input));
+    const definition=(slug:string)=>({slug,name:slug,description:'Namespace adapter fixture',inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:slug}],edges:[{id:'edge',source:'input',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}});
+    const a=(await invoke('create',{definition:definition('occupied')})).record;
+    await invoke('edit',{id:a.definition.id,expectedRevision:1,changes:{slug:'renamed-a'},enabled:true});const b=(await invoke('create',{definition:definition('occupied')})).record;
+    const before=await invoke('load',{id:a.definition.id});expect(await failure('publish',{id:a.definition.id,revision:1,expectedRevision:2})).toContain('LOOPS_SLUG_CONFLICT');expect(await invoke('load',{id:a.definition.id})).toEqual(before);
+    await invoke('edit',{id:b.definition.id,expectedRevision:1,changes:{slug:'renamed-b'},enabled:true});expect((await invoke('publish',{id:a.definition.id,revision:1,expectedRevision:2})).enabledRevision).toBe(1);
+    const c=(await invoke('create',{definition:definition('recovered')})).record;await invoke('delete',{id:c.definition.id,expectedRevision:1});
+    const d=(await invoke('create',{definition:definition('recovered')})).record;await invoke('draft',{definition:{...d.definition,slug:'renamed-d'},expectedRevision:1});
+    const hidden=await invoke('deleted'),published=await invoke('load',{id:d.definition.id});expect(await failure('recover',{id:c.definition.id,expectedRevision:1})).toContain('LOOPS_SLUG_CONFLICT');expect(await invoke('deleted')).toEqual(hidden);expect(await invoke('load',{id:d.definition.id})).toEqual(published);
+    await invoke('enable',{id:d.definition.id,revision:2,enabled:false});expect((await invoke('recover',{id:c.definition.id,expectedRevision:1})).enabledRevision).toBeNull();expect((await invoke('enable',{id:c.definition.id,revision:1,enabled:true})).enabledRevision).toBe(1);expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('refuses ambiguous legacy publication through registered UI, command and tool paths after restart without any completion',async()=>{
+    let s=await setup();
+    const action=async(op:string,payload:Record<string,unknown>={})=>{const response=await s.action(op,payload);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;};
+    const definition={slug:'occupied',name:'Namespace fixture',description:'Legacy publication fixture',inputSchema:[],capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'infer',kind:'inference',label:'Inference',model:'fake/test-only',prompt:'Count a fixture completion.',output:'text'},{id:'return',kind:'return',label:'Return',value:'{{nodes.infer.text}}'}],edges:[{id:'a',source:'input',target:'infer',port:'next'},{id:'b',source:'infer',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    const a=(await action('create',{definition}) as {record:LoopRecord}).record;await action('edit',{id:a.definition.id,expectedRevision:1,changes:{slug:'renamed'},enabled:true});const b=(await action('create',{definition}) as {record:LoopRecord}).record;
+    for(const shutdown of shutdowns.splice(0))await shutdown();
+    const file=join(s.root,'loops-poc','loops.sqlite'),database=new DatabaseSync(file);
+    try{database.prepare("UPDATE loops SET record=json_set(record,'$.enabledRevision',1,'$.publishedRevision',1) WHERE id=?").run(a.definition.id);}finally{database.close();}
+    s=await setup({root:s.root});const beforeA=await action('load',{id:a.definition.id}),beforeB=await action('load',{id:b.definition.id});
+    expect(await action('run',{slug:'occupied',input:{},requestId:'ui'})).toMatchObject({kind:'loops-error',error:{code:'LOOPS_AMBIGUOUS_SLUG'}});
+    const command=(await s.commands.get('loops')!.handler({...s.commandContext,args:'run {"slug":"occupied","requestId":"command"}'})).text;expect(command).toContain('LOOPS_AMBIGUOUS_SLUG');
+    expect(await toolJson(s,'run',{slug:'occupied',requestId:'tool'})).toMatchObject({kind:'loops-error',error:{code:'LOOPS_AMBIGUOUS_SLUG'}});expect(s.complete).not.toHaveBeenCalled();expect(await action('runs')).toEqual([]);expect(await action('load',{id:a.definition.id})).toEqual(beforeA);expect(await action('load',{id:b.definition.id})).toEqual(beforeB);
+    await action('enable',{id:a.definition.id,revision:2,enabled:false});const run=await toolJson(s,'run',{slug:'occupied',requestId:'tool'});expect(run).toMatchObject({state:'completed',definition:{id:b.definition.id}});expect(s.complete).toHaveBeenCalledOnce();
+  });
+  it.each(['ui','command','tool'] as const)('deduplicates equivalent nested Unicode object payloads through %s without conflating distinct keys',async surface=>{
+    const s=await setup();Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});let call=0;
+    const invoke=async(input:Record<string,unknown>)=>{
+      if(surface==='ui'){const response=await s.action('run',input);if(!response?.ok)throw Error('Feature request failed.');return response.result;}
+      if(surface==='tool')return toolJson(s,'run',input,`unicode-${++call}`);
+      const text=(await s.commands.get('loops')!.handler({...s.commandContext,args:'run --json-base64 '+Buffer.from(JSON.stringify(input)).toString('base64')})).text!;
+      return text.startsWith('Loops [')?{kind:'loops-error',display:text}:JSON.parse(text);
+    };
+    const definition={slug:`unicode-identity-${surface}`,name:'Unicode identity',description:'Equivalent JSON objects preserve admission identity.',inputSchema:[{name:'data',label:'Data',type:'json',required:true}],capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'infer',kind:'inference',label:'Inference',prompt:'Read this JSON: {{input.data}}',output:'text'},{id:'return',kind:'return',label:'Return',value:'{{nodes.infer.text}}'}],edges:[{id:'a',source:'input',target:'infer',port:'next'},{id:'b',source:'infer',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    expect(await s.action('create',{definition})).toMatchObject({ok:true,result:{record:{enabledRevision:1}}});
+    const first=await invoke({slug:definition.slug,input:{data:[{'é':0,'e\u0301':false}]},requestId:'unicode-order'});
+    expect(first).toMatchObject({state:'completed'});
+    const second=await invoke({requestId:'unicode-order',input:{data:[{'e\u0301':false,'é':0}]},slug:definition.slug});
+    expect(second).toMatchObject({id:first.id,state:'completed'});expect(s.complete).toHaveBeenCalledOnce();
+    const changed=await invoke({slug:definition.slug,input:{data:[{'é':false,'e\u0301':0}]},requestId:'unicode-order'});
+    expect(changed).toMatchObject({kind:'loops-error'});expect(s.complete).toHaveBeenCalledOnce();
+  });
+  it.each(['ui','command','tool'] as const)('retains revoked parked grants through %s reactivation and SQLite restart while allowing explicit new admissions',async surface=>{
+    let s=await setup();let sequence=0;
+    const invoke=async(op:string,input:Record<string,unknown>={})=>{
+      if(surface==='tool')return toolJson(s,op==='load'?'read':op,input,`grants-${++sequence}`);
+      if(surface==='command')return commandJson(s,op,input);
+      const response=await s.action(op,input);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;
+    };
+    const failure=async(op:string,input:Record<string,unknown>)=>{
+      if(surface==='command')return (await s.commands.get('loops')!.handler({...s.commandContext,args:`${op} ${JSON.stringify(input)}`})).text;
+      return invoke(op,input).then(value=>JSON.stringify(value),error=>String(error));
+    };
+    const {id:_id,revision:_revision,schemaVersion:_version,...content}=structuredClone(examples[0]);
+    const definition={...content,slug:`grant-adapter-${surface}`,inputSchema:[],capabilities:['model-info'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Hold before host dispatch'},{id:'model',kind:'action',label:'Model',capability:'model-info'},{id:'return',kind:'return',label:'Return',value:'{{nodes.model.model}}'}],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'model',port:'next'},{id:'c',source:'model',target:'return',port:'next'}],layout:{}};
+    const created=await invoke('create',{definition}),id=created.record.definition.id;
+    const parked=await invoke('run',{slug:definition.slug,input:{},requestId:'parked'});expect(parked.state).toBe('waiting');
+    const original=await invoke('inspect',{runId:parked.id});expect(original.grantGeneration).toBe(created.record.grantGeneration);
+    const revoked=await invoke('revoke',{id});expect(revoked.grantGeneration).not.toBe(created.record.grantGeneration);
+    await invoke('enable',{id,revision:1,enabled:true});
+    for(const shutdown of shutdowns.splice(0))await shutdown();s=await setup({root:s.root});
+    expect(await failure('resume',{runId:parked.id})).toContain('LOOPS_RUN_REVOKED');expect(await invoke('inspect',{runId:parked.id})).toEqual(original);
+    const current=await invoke('load',{id});expect(current.grantGeneration).toBe(revoked.grantGeneration);
+    const fresh=await invoke('run',{slug:definition.slug,input:{},requestId:'fresh'});expect((await invoke('resume',{runId:fresh.id})).state).toBe('completed');
+    await invoke('cancel',{runId:parked.id});
+    const recovery=await invoke('retry',{runId:parked.id,mode:'restart',requestId:'explicit-recovery'});expect(recovery.parentRunId).toBe(parked.id);
+    const recovered=await invoke('inspect',{runId:recovery.id});expect(recovered.grantGeneration).toBe(current.grantGeneration);expect(recovered.grantGeneration).not.toBe(original.grantGeneration);
+    expect((await invoke('resume',{runId:recovery.id})).state).toBe('completed');expect((await invoke('inspect',{runId:parked.id})).grantGeneration).toBe(original.grantGeneration);
+    expect(await failure('edit',{id,expectedRevision:1,changes:{grantGeneration:original.grantGeneration}})).toMatch(/schema/i);
+    expect((await invoke('load',{id})).grantGeneration).toBe(current.grantGeneration);expect(s.complete).not.toHaveBeenCalled();
+  });
+  it('shows safe failed-inference location and recovery in legacy commands, UI inspection and actual agent receipts',async()=>{
+    const s=await setup(),secret='SYNTHETIC_PRIVATE_DIAGNOSTIC',nodeId=examples[0].nodes.find(node=>node.kind==='inference')!.id;
+    Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});
+    await s.action('enable',{id:'summarize-text',revision:1,enabled:true});
+    s.complete.mockRejectedValueOnce(Object.assign(new Error(`Request https://user:${secret}@example.test/private and /private/${secret}/request.json with body ${secret}`),{status:401}));
+    const command=await s.commands.get('loops')!.handler({...s.commandContext,args:'run summarize-text Synthetic source'}),history=await s.action('runs',{});
+    if(!history?.ok)throw Error('Run history was unavailable.');
+    const runId=(history.result as Array<{id:string}>)[0].id,inspection=await s.action('inspect',{runId}),tool=await toolJson(s,'status',{runId});
+    expect(inspection).toMatchObject({result:{state:'failed',errorDetail:{code:'HOST_AUTHENTICATION_FAILED',phase:'inference',nodeId,model:'fake/test-only',retryable:false,recovery:expect.any(String)}}});
+    expect(tool).toMatchObject({state:'failed',errorDetail:{code:'HOST_AUTHENTICATION_FAILED',phase:'inference',nodeId,model:'fake/test-only',retryable:false}});
+    for(const value of ['HOST_AUTHENTICATION_FAILED','Phase: inference','Node: '+nodeId,'Model: fake/test-only','Retryable: Resolve the failure first','Next step:'])expect(command.text).toContain(value);
+    expect(JSON.stringify([command,inspection,tool])).not.toContain(secret);expect(JSON.stringify([command,inspection,tool])).not.toContain('example.test');expect(JSON.stringify([command,inspection,tool])).not.toContain('/private/');
+    expect(command.text).not.toContain(' · completed');expect(s.complete).toHaveBeenCalledOnce();
+  });
+  it('keeps handler-level validation diagnostics visible and renders the shared client error without executing a failed request',async()=>{
+    const s=await setup(),command=await s.commands.get('loops')!.handler({...s.commandContext,args:'missing-operation'});
+    expect(command.text).toContain('Phase: operation');expect(command.text).toContain('Retryable: Resolve the failure first');expect(command.text).toContain('Next step:');
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport),failure=await client.invoke('run',{slug:'summarize-text',input:{text:'Not submitted'},requestId:'disabled'}).then(()=>{throw Error('Disabled run unexpectedly succeeded');},error=>error);
+    const presented=displayFailure(failure),html=renderToStaticMarkup(React.createElement(FailureNotice,{failure:presented}));
+    expect(presented).toMatchObject({code:'LOOPS_INVALID_REQUEST',phase:'operation',retryable:false,recovery:expect.any(String)});
+    expect(html).toContain('LOOPS_INVALID_REQUEST');expect(html).toContain('<dd>operation</dd>');expect(html).toContain('Next step:');expect(await s.action('runs',{})).toMatchObject({result:[]});expect(s.complete).not.toHaveBeenCalled();
+  });
   it.each(['ui','command','tool'] as const)('qualifies every lifecycle operation and common negative boundaries through %s',async surface=>{
     const s=await setup();
     Object.assign(s.config,{agents:{defaults:{model:{primary:'fake/test-only'}}}});
     type Operation=keyof typeof wireContract.operations;
-    const inputs=new Map<Operation,Record<string,unknown>>();let sequence=0;
+    const inputs=new Map<Operation,Record<string,unknown>>();let sequence=0,lastDocument:string|undefined;
     const raw=async(op:Operation,input:Record<string,unknown>):Promise<unknown>=>{
       if(surface==='command')return (await s.commands.get('loops')!.handler({...s.commandContext,args:`${op} --json-base64 ${Buffer.from(JSON.stringify(input)).toString('base64')}`})).text;
       if(surface==='tool'){
@@ -82,9 +389,10 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       if(surface==='command'&&(response as string).startsWith('Loops ['))return {kind:'loops-error',display:response};
       const value=surface==='command'?JSON.parse((response as string).split('\n\nRead the full JSON result with ')[0]):response;
       if(!Value.Check(DocumentReferenceSchema,value))return value;
+      lastDocument=value.documentId;
       let text='',offset=0;
-      while(true){const page=await invoke('document',{documentId:value.documentId,offset}) as {text:string;sha256:string;offset:number;nextOffset:number|null};expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
-      expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);return JSON.parse(text);
+      while(true){const page=await invoke('document',{documentId:value.documentId,offset,...value.readerId?{readerId:value.readerId}:{}}) as {text:string;sha256:string;offset:number;nextOffset:number|null};expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
+      expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
     };
     const {id:_id,revision:_revision,schemaVersion:_version,...content}=structuredClone(examples[0]);
     content.slug=`inventory-${surface}`;content.capabilities=[];content.limits.maxOutputBytes=1024*1024;
@@ -149,6 +457,11 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await invoke('delete',{id,expectedRevision:5})).toMatchObject({id,deleted:true});
     const policy={keepLatest:1000},plan=await invoke('retention',{policy}) as {planId:string};
     expect(await invoke('retention',{policy,applyPlanId:plan.planId})).toMatchObject({applied:true,candidates:[]});
+    expect(lastDocument).toBeTypeOf('string');
+    const reader=await invoke('document_acquire',{documentId:lastDocument}) as {documentId:string;readerId:string};
+    expect(await invoke('transport_release',{kind:'reader',...reader})).toEqual({released:true});
+    const cleanup=await invoke('maintenance',{policy}) as {planId:string};
+    expect(await invoke('maintenance',{policy,applyPlanId:cleanup.planId})).toMatchObject({applied:true,candidates:[]});
     expect([...inputs.keys()].sort()).toEqual(Object.keys(wireContract.operations).filter(op=>surface!=='tool'||op!=='review').sort());
     const before=await s.action('history',{});
     // Every operation rejects caller-identity injection before dispatch. This
@@ -496,7 +809,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       const command=await s.commands.get('loops')!.handler({...s.commandContext,args:'run summarize-text Command input'});
       expect(ui).toMatchObject({result:{kind:'loops-error',error:{code:'LOOPS_STORAGE_CONFLICT',phase:'storage',retryable:false,recovery:expect.stringMatching(/Reload/)}}});
       expect(tool.details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_STORAGE_CONFLICT'}});
-      expect(command.text).toContain('LOOPS_STORAGE_CONFLICT');expect(command.text).toContain('Reload');
+      expect(command.text).toContain('LOOPS_STORAGE_CONFLICT');expect(command.text).toContain('Reload');expect(command.text).toContain('Phase: storage');expect(command.text).toContain('Retryable: Resolve the failure first');
       expect(JSON.stringify([ui,tool,command])).not.toContain(privateText);
       expect(await s.action('runs',{})).toEqual(before);expect(s.complete).not.toHaveBeenCalled();
       fault.exec('DROP TRIGGER reject_admission');
@@ -684,7 +997,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=await setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=await setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(34);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(38);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
   it('authors through real SDK tools and shares definitions with the UI across registry scopes',async()=>{
     const gateway=await setup(),s=await setup({root:gateway.root,start:false});
     const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('authoring-call',p);

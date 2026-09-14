@@ -29,6 +29,31 @@ jobs:
         run: node scripts/verify-package.mjs
         env:
           LOOPS_EVIDENCE_DIR: evidence/ci
+      - name: Verify ordinary package lifecycle
+        run: |
+          # Accepted #63 baseline; it predates the packaged #149/#64/#65 changes.
+          base_ref="7b2705bc2068f09e68e738ae199889feb69c1680"
+          git fetch --no-tags --depth=1 origin "$base_ref"
+          previous_dir="$(mktemp -d)"
+          trap 'rm -rf "$previous_dir"' EXIT
+          git archive "$base_ref" | tar -x -C "$previous_dir"
+          (
+            cd "$previous_dir"
+            npm ci
+            npm run build
+            npm pack --json > package-lifecycle-pack.json
+          )
+          previous_archive="$previous_dir/$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1]))[0].filename)' "$previous_dir/package-lifecycle-pack.json")"
+          current_archive="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("evidence/ci/package.json")).filename)')"
+          LOOPS_LIFECYCLE_PREVIOUS_REF="$base_ref" node scripts/verify-package-lifecycle.mjs "$previous_archive" "$current_archive"
+        env:
+          LOOPS_EVIDENCE_DIR: evidence/ci
+      - name: Verify sustained public Gateway workload
+        run: |
+          current_archive="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("evidence/ci/package.json")).filename)')"
+          node scripts/verify-sustained-workload.mjs "$current_archive"
+        env:
+          LOOPS_EVIDENCE_DIR: evidence/ci
       - name: Verify recovery from a full filesystem
         if: runner.os == 'Linux'
         run: |
@@ -44,4 +69,6 @@ jobs:
           path: |
             *.tgz
             evidence/ci/*.json
+            evidence/ci/package-lifecycle/receipt.json
+            evidence/ci/sustained-workload/receipt.json
           retention-days: 14

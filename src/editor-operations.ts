@@ -1,4 +1,5 @@
 import {outputFields,type Definition,type GraphNode} from './graph.js';
+import {requestError} from './errors.js';
 
 export function copyDefinition(definition:Definition,id:string,templateDefaults?:Pick<Definition['limits'],'maxExecutions'|'maxOutputBytes'>):Definition{
   const copy={...structuredClone(definition),id,slug:id,revision:0};
@@ -15,6 +16,13 @@ export function autoLayout(definition:Definition):Definition{
   }
   const rows=new Map<number,number>();const layout:Definition['layout']={};
   for(const node of definition.nodes){const column=depth.get(node.id)??0,row=rows.get(column)??0;rows.set(column,row+1);layout[node.id]={x:40+column*265,y:60+row*180};}
+  if(definition.schemaVersion!==1)return {...definition,layout};
+  const legacyLayout=Object.fromEntries((['x','y'] as const).map(axis=>{
+    const values=Object.values(layout).map(position=>position[axis]);const minimum=Math.min(...values),maximum=Math.max(...values);
+    if(maximum-minimum>20000)throw requestError('This version 1 draft cannot fit its layout within the legacy coordinate range. Use version 2 in this draft, then Arrange again.');
+    return [axis,minimum<-10000?-10000-minimum:maximum>10000?10000-maximum:0];
+  })) as Record<'x'|'y',number>;
+  for(const position of Object.values(layout)){position.x+=legacyLayout.x;position.y+=legacyLayout.y;}
   return {...definition,layout};
 }
 export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:string)=>string):Definition{
@@ -35,6 +43,17 @@ export function bindingChoices(definition:Definition,consumer:GraphNode):string[
   };
   const prior=definition.nodes.filter(node=>node.id!==consumer.id&&!reachableWithout(node.id).has(consumer.id));
   return [...definition.inputSchema.map(field=>`{{input.${field.name}}}`),...prior.flatMap(node=>outputFields(node).map(field=>`{{nodes.${node.id}.${field}}}`)),...consumer.kind==='repeat'?['{{repeat.index}}']:[]];
+}
+export function insertBinding(node:GraphNode,binding:string):GraphNode{
+  const replaceOrAppend=(value:unknown)=>typeof value==='string'?value+binding:binding;
+  if(node.kind==='inference')return {...node,prompt:replaceOrAppend(node.prompt)};
+  if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
+  if(node.kind==='return')return {...node,value:binding};
+  if(node.kind==='condition')return {...node,predicate:{...node.predicate,left:binding}};
+  if(node.kind==='wait')return {...node,message:binding};
+  if(node.kind==='review')return {...node,proposal:binding};
+  if(node.kind==='fail')return {...node,reason:binding};
+  return node;
 }
 export function revisionChanges(before:Definition,after:Definition):string[]{
   const changes:string[]=[];

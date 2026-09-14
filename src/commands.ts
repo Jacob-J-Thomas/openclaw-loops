@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {wireContract,OperationFailureSchema,DocumentReferenceSchema,type DocumentReference} from './wire-contract.js';
 import {outputs} from './output-schemas.js';
 import {parseCommand,formatRun} from './openclaw.js';
-import {requestError} from './errors.js';
+import {requestError,formatFailure} from './errors.js';
 import type {RunReceipt} from './receipts.js';
 import {fitTextPage,type textPage} from './feature-json.js';
 
@@ -66,8 +66,8 @@ export function commandHelp(operation?:Operation):string{
 }
 
 export function formatCommandResult(value:unknown,format:Invocation['format']='json'):string{
-  if(Value.Check(OperationFailureSchema,value))return `Loops [${value.error.code}]: ${value.error.message}\n${value.error.recovery}`;
-  if(Value.Check(DocumentReferenceSchema,value))return `${JSON.stringify(value,null,2)}\n\nRead the full JSON result with /loops document ${JSON.stringify({documentId:value.documentId,offset:0})}. Follow nextOffset until null.`;
+  if(Value.Check(OperationFailureSchema,value))return `Loops ${formatFailure(value.error)}`;
+  if(Value.Check(DocumentReferenceSchema,value))return `${JSON.stringify(value,null,2)}\n\nRead the full JSON result with /loops document ${JSON.stringify({documentId:value.documentId,offset:0,...value.readerId?{readerId:value.readerId}:{}})}. Follow nextOffset until null.${value.readerId?` After verifying the complete result, release this reader with /loops document_release ${JSON.stringify({documentId:value.documentId,readerId:value.readerId})}.`:''}`;
   if(format==='run'&&Value.Check(outputs.receipt,value))return formatRun(value as RunReceipt);
   return typeof value==='string'?value:JSON.stringify(value,null,2);
 }

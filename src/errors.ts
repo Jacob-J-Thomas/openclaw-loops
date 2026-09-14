@@ -42,6 +42,17 @@ export function safeFailure(error:LoopError):LoopErrorData{
   const {code,message,phase,nodeId,model,retryable,recovery}=error.detail;
   return {code,message:message.slice(0,4000),phase,retryable,recovery:recovery.slice(0,4000),...nodeId===undefined?{}:{nodeId},...model===undefined?{}:{model}};
 }
+// Format only the public diagnostic contract, never a native error or its cause.
+export function formatFailure(detail:LoopErrorData):string{
+  return [
+    `[${detail.code}]: ${detail.message}`,
+    `Phase: ${detail.phase}`,
+    ...detail.nodeId===undefined?[]:[`Node: ${detail.nodeId}`],
+    ...detail.model===undefined?[]:[`Model: ${detail.model}`],
+    `Retryable: ${detail.retryable?'Yes, after the recovery step':'Resolve the failure first'}`,
+    `Next step: ${detail.recovery}`,
+  ].join('\n');
+}
 export function executionError(message:string,code='LOOPS_EXECUTION_FAILED',recovery='Inspect the failed node and its recorded inputs before explicitly retrying.'){
   return new LoopError({code,message,phase:'execution',retryable:false,recovery});
 }

@@ -11,16 +11,19 @@ import {resolveBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {textPage} from './feature-json.js';
 import {retentionCandidates,type RetentionPolicy,type RetentionResult,type RetiredAdmission} from './retention.js';
 import {DocumentStore} from './document-store.js';
+import {type DocumentLinks, type MaintenancePolicy, type TransportRelease, emptyDocumentLinks} from './document-maintenance.js';
+import {fingerprintJson} from './fingerprint.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string};
-export type Run={id:string;requestKey:string;requestFingerprint:string;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
-export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
+export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
+export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
+const legacyGrantGeneration='legacy';
 export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
 export type RunSummary=Pick<Run,'id'|'state'|'createdAt'|'updatedAt'|'executions'>&{slug:string;revision:number};
-export type RunMetadata=Pick<Run,'id'|'owner'|'requestKey'|'requestFingerprint'|'state'|'createdAt'|'updatedAt'|'parentRunId'|'cleanupPending'>;
+export type RunMetadata=Pick<Run,'id'|'owner'|'requestKey'|'requestFingerprint'|'requestFingerprintVersion'|'state'|'createdAt'|'updatedAt'|'parentRunId'|'cleanupPending'>;
 // Indexed stores keep historical outputs on disk. The working state is an
 // explicitly partial run set; merging it must never delete omitted history.
 export interface IndexedRunStorage{
@@ -51,6 +54,7 @@ const now=()=>new Date().toISOString();
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const canonical=(value:unknown):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
 const ownerKey=(a:Owner)=>JSON.stringify([a.agentId,a.sessionKey,a.sessionId]);
+const retainedFingerprint=(run:Run)=>run.parentRunId?undefined:fingerprintJson({slug:run.definition.slug,input:run.input,...run.testMode?{draft:run.definition}:{}});
 const terminal=(r:Run)=>['completed','failed','cancelled','interrupted'].includes(r.state);
 export class Engine{
   private documents?:DocumentStore;
@@ -71,6 +75,9 @@ export class Engine{
     for(const record of Object.values(this.state.loops)){
       record.revisions??={[record.definition.revision]:structuredClone(record.definition)};
       record.publishedRevision??=record.enabledRevision;
+      // Older runs have an implicit legacy grant. A currently revoked legacy
+      // loop must not regain those grants when its publication is re-enabled.
+      record.grantGeneration??=record.revoked?randomUUID():legacyGrantGeneration;
     }
     for(const run of Object.values(this.state.runs)){const record=this.state.loops[run.definition.id];if(record&&!run.testMode)record.revisions![run.definition.revision]??=structuredClone(run.definition);}
     for(const r of Object.values(this.state.runs)){
@@ -132,15 +139,42 @@ export class Engine{
     if(!this.options.documentDirectory)throw requestError('Loops document storage is unavailable.','LOOPS_SERVICE_UNAVAILABLE');
     return this.documents??=new DocumentStore(this.options.documentDirectory,Math.max(this.budgets.definitionBytes,this.budgets.inputBytes)*2);
   }
-  documentWrap(actor:Actor,value:unknown){return this.documentStore(actor).wrap(actor,value);}
-  documentSnapshot(actor:Actor,value:unknown){return this.documentStore(actor).snapshot(actor,value);}
-  documentRead(actor:Actor,id:string,offset?:number,limit?:number){return this.documentStore(actor).read(actor,id,offset,limit);}
+  documentWrap(actor:Actor,value:unknown,links:DocumentLinks={...emptyDocumentLinks(),unknown:true}){return this.documentStore(actor).wrap(actor,value,links);}
+  documentSnapshot(actor:Actor,value:unknown,links:DocumentLinks={...emptyDocumentLinks(),unknown:true}){return this.documentStore(actor).snapshot(actor,value,links);}
+  documentRead(actor:Actor,id:string,offset?:number,limit?:number,readerId?:string){return this.documentStore(actor).read(actor,id,offset,limit,readerId);}
+  documentAcquire(actor:Actor,id:string){return this.documentStore(actor).acquire(actor,id);}
+  documentRelease(actor:Actor,id:string,readerId:string){return this.documentStore(actor).release(actor,{kind:'reader',documentId:id,readerId});}
+  documentUse(actor:Actor,reference:Parameters<DocumentStore['use']>[1]){return this.documentStore(actor).use(actor,reference);}
+  documentFinishUse(actor:Actor,id:string,readerId:string|undefined,links:DocumentLinks){return this.documentStore(actor).finishUse(actor,id,readerId,links);}
+  maintenance(actor:Actor,policy:MaintenancePolicy,applyPlanId?:string){
+    this.ensureAuthor(actor);
+    const runs=this.storage.indexed?.runMetadata()??Object.values(this.state.runs);
+    return this.documentStore(actor).maintenance(actor,policy,{runs:new Set(runs.map(run=>run.id)),loops:new Set(Object.keys(this.state.loops))},applyPlanId);
+  }
+  transportRelease(actor:Actor,input:TransportRelease){this.ensureAuthor(actor);return this.documentStore(actor).release(actor,input);}
   documentUpload(actor:Actor,input:Parameters<DocumentStore['upload']>[1]){return this.documentStore(actor).upload(actor,input);}
   documentResolve(actor:Actor,reference:Parameters<DocumentStore['resolve']>[1]){return this.documentStore(actor).resolve(actor,reference);}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}
-  private own(actor:Actor,id:string){actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');return run;}
+  private own(actor:Actor,id:string){
+    actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');
+    // Older full restarts copied a parent's decision into a fresh pending review.
+    // Repair cold records on authorized access without scanning historical outputs.
+    // Earlier review nodes can legitimately have decisions in a multi-review run.
+    if(run.state==='review'&&run.review&&!run.definition.nodes.some(node=>{
+      const output=run.outputs[node.id];return node.kind==='review'&&output&&typeof output==='object'&&!Array.isArray(output)&&(output.decision==='approve'||output.decision==='reject');
+    })){
+      delete run.review;this.persist(run);
+    }
+    return run;
+  }
   private allowed(actor:Actor,d:Definition,record:LoopRecord|undefined){actor.check();if(!record||record.revoked)throw requestError('Loop permission revoked.');for(const c of d.capabilities){if(!record.grants.includes(c))throw requestError(`Loop permission revoked: ${c}`);this.host.check(actor,c);}}
-  private allowedRun(actor:Actor,run:Run){if(run.testMode){this.ensureAuthor(actor);for(const capability of run.definition.capabilities)this.host.check(actor,capability);}else this.allowed(actor,run.definition,this.state.loops[run.definition.id]);}
+  private allowedRun(actor:Actor,run:Run){
+    if(run.testMode){this.ensureAuthor(actor);for(const capability of run.definition.capabilities)this.host.check(actor,capability);}
+    else{
+      const record=this.state.loops[run.definition.id];this.allowed(actor,run.definition,record);
+      if((run.grantGeneration??legacyGrantGeneration)!==(record.grantGeneration??legacyGrantGeneration))throw requestError('This run\'s loop grant was revoked. Re-enabling the loop authorizes new admissions.','LOOPS_RUN_REVOKED','Cancel a parked run, then explicitly retry or restart it under current loop and host permissions, or start a new run. The original admission remains revoked.');
+    }
+  }
   library(actor:Actor){actor.check();return Object.values(this.state.loops).filter(r=>!r.deletedAt&&!r.archived).map(r=>({id:r.definition.id,slug:r.definition.slug,name:r.definition.name,description:r.definition.description,revision:r.definition.revision,enabledRevision:r.enabledRevision,publishedRevision:r.publishedRevision??null,hasDraft:r.definition.revision!==r.publishedRevision,capabilities:r.definition.capabilities}));}
   browse(actor:Actor,query:LibraryQuery={}){
     actor.check();const {view='active',search='',limit=50,cursor}=query;
@@ -169,8 +203,15 @@ export class Engine{
     return {items,nextCursor,total:rows.length,offset};
   }
   private published(record:LoopRecord){return record.enabledRevision===null?undefined:record.revisions?.[record.enabledRevision]??(record.definition.revision===record.enabledRevision?record.definition:undefined);}
+  private assertSlugAvailable(id:string,slug:string){
+    if(Object.values(this.state.loops).some(record=>record.definition.id!==id&&!record.deletedAt&&(record.definition.slug===slug||this.published(record)?.slug===slug)))throw requestError('Another loop already uses that slug.','LOOPS_SLUG_CONFLICT','Resolve the other loop\'s current draft or enabled publication using this slug, then explicitly retry. No saved state was changed.');
+  }
   list(actor:Actor){actor.check();return Object.values(this.state.loops).flatMap(r=>{try{const d=this.published(r);if(!d||r.deletedAt||r.archived)return [];this.allowed(actor,d,r);return [{id:d.id,slug:d.slug,name:d.name,description:d.description,revision:d.revision,inputSchema:d.inputSchema}];}catch{return [];}});}
-  describe(actor:Actor,slug:string){const r=Object.values(this.state.loops).find(r=>this.published(r)?.slug===slug&&!r.deletedAt&&!r.archived);const d=r&&this.published(r);if(!r||!d)throw requestError('Enabled loop not found.');this.allowed(actor,d,r);return structuredClone(d);}
+  describe(actor:Actor,slug:string){
+    actor.check();const matches=Object.values(this.state.loops).filter(record=>this.published(record)?.slug===slug&&!record.deletedAt&&!record.archived);
+    if(matches.length>1)throw requestError('More than one enabled loop uses this slug; invocation is ambiguous.','LOOPS_AMBIGUOUS_SLUG','Inspect the conflicting loops by ID and explicitly disable or republish one with a different slug. Existing pinned runs remain inspectable and controllable by their run IDs.');
+    const r=matches[0],d=r&&this.published(r);if(!r||!d)throw requestError('Enabled loop not found.');this.allowed(actor,d,r);return structuredClone(d);
+  }
   load(actor:Actor,id:string){actor.check();const r=this.state.loops[id];if(!r||r.deletedAt)throw requestError('Loop not found.');return structuredClone(r);}
   save(actor:Actor,value:unknown,expectedRevision:number,enabled=false){
     this.ensureAuthor(actor);return this.saveRevision(actor,value,expectedRevision,enabled);
@@ -195,12 +236,12 @@ export class Engine{
     const d=parseDefinition(value,this.budgets);const previous=this.state.loops[d.id];
     if((previous?.definition.revision??0)!==expectedRevision||d.revision!==expectedRevision)throw requestError('Save conflict: reload the current revision before saving.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');
     if(previous?.deletedAt)throw requestError('Loop was deleted; recover it explicitly before editing.');
-    if(Object.values(this.state.loops).some(r=>!r.deletedAt&&(r.definition.slug===d.slug||this.published(r)?.slug===d.slug)&&r.definition.id!==d.id))throw requestError('Another loop already uses that slug.');
+    this.assertSlugAvailable(d.id,d.slug);
     d.revision=expectedRevision+1;const issues=this.validate(actor,d).issues;
     // Validate and check the caller before committing either definition or grants.
     // A rejected publish leaves the previous revision and activation untouched.
     if(enabled)this.checkActivation(actor,d,issues);
-    this.state.loops[d.id]={...previous,definition:d,revisions:{...previous?.revisions,[d.revision]:structuredClone(d)},publishedRevision:enabled?d.revision:previous?.publishedRevision??null,
+    this.state.loops[d.id]={...previous,definition:d,grantGeneration:previous?.grantGeneration??randomUUID(),revisions:{...previous?.revisions,[d.revision]:structuredClone(d)},publishedRevision:enabled?d.revision:previous?.publishedRevision??null,
       enabledRevision:enabled?d.revision:preservePublication?previous?.enabledRevision??null:null,revoked:enabled?false:previous?.revoked??false,
       grants:enabled?[...new Set([...(previous?.grants??[]),...d.capabilities])]:previous?.grants??[]};this.persist();
     return {record:structuredClone(this.state.loops[d.id]),issues};
@@ -213,17 +254,17 @@ export class Engine{
   enable(actor:Actor,id:string,revision:number,enabled:boolean,grants?:Capability[]){
     this.ensureAuthor(actor);const r=this.state.loops[id];if(!r||r.deletedAt)throw requestError('Loop not found.');
     if(r.definition.revision!==revision)throw requestError('Revision changed; reload before changing activation.','LOOPS_REVISION_CONFLICT','Reload the current definition before changing activation.');
-    if(enabled){this.checkActivation(actor,r.definition);if(grants&&r.definition.capabilities.some(c=>!grants.includes(c)))throw requestError('Enabling requires all declared loop capabilities.');r.grants=[...new Set([...r.grants,...r.definition.capabilities])];r.enabledRevision=revision;r.publishedRevision=revision;r.revoked=false;}else r.enabledRevision=null;
+    if(enabled){this.assertSlugAvailable(id,r.definition.slug);this.checkActivation(actor,r.definition);if(grants&&r.definition.capabilities.some(c=>!grants.includes(c)))throw requestError('Enabling requires all declared loop capabilities.');r.grants=[...new Set([...r.grants,...r.definition.capabilities])];r.enabledRevision=revision;r.publishedRevision=revision;r.revoked=false;}else r.enabledRevision=null;
     this.persist();return structuredClone(r);
   }
-  revoke(actor:Actor,id:string){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r||r.deletedAt)throw requestError('Loop not found.');r.enabledRevision=null;r.grants=[];r.revoked=true;this.persist();return structuredClone(r);}
+  revoke(actor:Actor,id:string){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r||r.deletedAt)throw requestError('Loop not found.');r.enabledRevision=null;r.grants=[];r.revoked=true;r.grantGeneration=randomUUID();this.persist();return structuredClone(r);}
   draft(actor:Actor,value:unknown,expectedRevision:number){this.ensureAuthor(actor);return this.saveRevision(actor,value,expectedRevision,false,true);}
   versions(actor:Actor,id:string){const record=this.load(actor,id);return Object.values(record.revisions??{}).sort((a,b)=>b.revision-a.revision).map(d=>({revision:d.revision,name:d.name,enabled:d.revision===record.enabledRevision,published:d.revision===record.publishedRevision,definition:d}));}
-  publish(actor:Actor,id:string,revision:number,expectedRevision:number){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r||r.deletedAt)throw requestError('Loop not found.');if(r.definition.revision!==expectedRevision)throw requestError('Publish conflict: reload the current revision.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');const definition=r.revisions?.[revision];if(!definition)throw requestError('Revision not found.');this.checkActivation(actor,definition);r.enabledRevision=revision;r.publishedRevision=revision;r.revoked=false;r.grants=[...new Set([...r.grants,...definition.capabilities])];this.persist();return structuredClone(r);}
+  publish(actor:Actor,id:string,revision:number,expectedRevision:number){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r||r.deletedAt)throw requestError('Loop not found.');if(r.definition.revision!==expectedRevision)throw requestError('Publish conflict: reload the current revision.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');const definition=r.revisions?.[revision];if(!definition)throw requestError('Revision not found.');this.assertSlugAvailable(id,definition.slug);this.checkActivation(actor,definition);r.enabledRevision=revision;r.publishedRevision=revision;r.revoked=false;r.grants=[...new Set([...r.grants,...definition.capabilities])];this.persist();return structuredClone(r);}
   restore(actor:Actor,id:string,revision:number,expectedRevision:number){this.ensureAuthor(actor);const record=this.load(actor,id);const definition=record.revisions?.[revision];if(!definition)throw requestError('Revision not found.');return this.saveRevision(actor,{...definition,revision:expectedRevision},expectedRevision,false,true);}
   archive(actor:Actor,id:string,expectedRevision:number,archived:boolean){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r||r.deletedAt)throw requestError('Loop not found.');if(r.definition.revision!==expectedRevision)throw requestError('Archive conflict: reload the current revision.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');r.archived=archived;if(archived)r.enabledRevision=null;this.persist();return structuredClone(r);}
   deleted(actor:Actor){this.ensureAuthor(actor);return Object.values(this.state.loops).filter(r=>r.deletedAt||r.archived).map(r=>({id:r.definition.id,slug:r.definition.slug,revision:r.definition.revision,...r.deletedAt?{deletedAt:r.deletedAt}:{},archived:r.archived??false}));}
-  recover(actor:Actor,id:string,expectedRevision:number){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r)throw requestError('Loop not found.');if(r.definition.revision!==expectedRevision)throw requestError('Recovery conflict: reload the current revision.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');if(Object.values(this.state.loops).some(other=>other!==r&&!other.deletedAt&&other.definition.slug===r.definition.slug))throw requestError('Slug is already in use; restore to a new loop instead.');delete r.deletedAt;r.archived=false;r.enabledRevision=null;this.persist();return structuredClone(r);}
+  recover(actor:Actor,id:string,expectedRevision:number){this.ensureAuthor(actor);const r=this.state.loops[id];if(!r)throw requestError('Loop not found.');if(r.definition.revision!==expectedRevision)throw requestError('Recovery conflict: reload the current revision.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');this.assertSlugAvailable(id,r.definition.slug);delete r.deletedAt;r.archived=false;r.enabledRevision=null;this.persist();return structuredClone(r);}
   output(actor:Actor,id:string,nodeId?:string,offset=0,limit=8000){const run=this.own(actor,id);const value=nodeId===undefined?run.result:run.outputs[nodeId];if(value===undefined)throw requestError('Output not found.');return {runId:id,nodeId:nodeId??null,...textPage(display(value),offset,limit),format:typeof value==='string'?'text':'json'};}
   history(actor:Actor,cursor=0,limit=100){actor.check();if(!Number.isInteger(cursor)||cursor<0||!Number.isInteger(limit)||limit<1||limit>1000)throw requestError('History page requires a nonnegative cursor and limit 1–1000.');if(this.storage.indexed)return this.storage.indexed.history(ownerKey(actor),cursor,limit);const rows=this.runs(actor);return {items:rows.slice(cursor,cursor+limit),nextCursor:cursor+limit<rows.length?cursor+limit:null,total:rows.length};}
   retention(actor:Actor,policy:RetentionPolicy,applyPlanId?:string):RetentionResult{
@@ -234,17 +275,24 @@ export class Engine{
     if(applyPlanId!==undefined){
       if(applyPlanId!==planId)throw requestError('History cleanup changed since preview. Preview again before applying. No history has been deleted.','LOOPS_RETENTION_CONFLICT');
       if(plan.candidates.length){
-        const retiredAt=now();this.state.retiredAdmissions??={};
+        const retiredAt=now();
         const byId=new Map(all.map(run=>[run.id,run]));
-        for(const {id} of plan.candidates){const run=byId.get(id)!;this.state.retiredAdmissions[run.requestKey]={runId:id,fingerprint:run.requestFingerprint,owner:run.owner,retiredAt};delete this.state.runs[id];}
+        // Resolve legacy comparison evidence before changing working memory.
+        // A failed cold read must leave both history and tombstones untouched.
+        const retired=plan.candidates.map(({id})=>{
+          const run=byId.get(id)!,canonicalFingerprint=run.requestFingerprintVersion===undefined&&!run.parentRunId?retainedFingerprint(this.own(actor,id)):undefined;
+          return {key:run.requestKey,record:{runId:id,fingerprint:run.requestFingerprint,owner:run.owner,retiredAt,...run.requestFingerprintVersion?{fingerprintVersion:run.requestFingerprintVersion}:{},...canonicalFingerprint?{canonicalFingerprint}:{}}};
+        });
+        this.state.retiredAdmissions??={};
+        for(const {key,record} of retired){this.state.retiredAdmissions[key]=record;delete this.state.runs[record.runId];}
         this.persist();
       }
     }
     return {planId,policy:structuredClone(policy),...plan,applied:applyPlanId!==undefined};
   }
-  private rejectRetiredAdmission(key:string,fingerprint:string){
+  private rejectRetiredAdmission(key:string,value:unknown,fingerprint:string){
     const retired=this.state.retiredAdmissions?.[key]??this.storage.indexed?.readRetiredAdmission(key);if(!retired)return;
-    if(retired.fingerprint!==fingerprint)throw requestError('Request ID conflict: this admission belongs to deliberately removed history.');
+    if(retired.fingerprint!==fingerprint&&retired.canonicalFingerprint!==fingerprint&&retired.fingerprint!==fingerprintJson(value,1))throw requestError('Request ID conflict: this admission belongs to deliberately removed history.');
     throw new LoopError({code:'LOOPS_HISTORY_REMOVED',message:`Run ${retired.runId} was deliberately removed from history. This request ID will not execute again.`,phase:'admission',retryable:false,recovery:'Use a new request ID only for an intentional new execution.'});
   }
   runs(actor:Actor){actor.check();if(this.storage.indexed)return this.storage.indexed.runSummaries(ownerKey(actor));return Object.values(this.state.runs).filter(r=>ownerKey(r.owner)===ownerKey(actor)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id)).map(r=>({id:r.id,slug:r.definition.slug,revision:r.definition.revision,state:r.state,createdAt:r.createdAt,updatedAt:r.updatedAt,executions:r.executions}));}
@@ -255,27 +303,35 @@ export class Engine{
   async test(actor:Actor,value:unknown,input:unknown,requestId:string){this.ensureAuthor(actor);const definition=parseDefinition(value,this.budgets);return this.admit(actor,definition.slug,input,requestId,definition);}
   private async admit(actor:Actor,slug:string,input:unknown,requestId:string,draft?:Definition):Promise<Run>{
     actor.check();if(!requestId||requestId.length>200)throw requestError('A stable request ID of at most 200 characters is required.');
-    const requestKey=hash(ownerKey(actor)+':'+requestId);const fingerprint=hash(canonical({slug,input,...draft?{draft}:{}}));
-    this.rejectRetiredAdmission(requestKey,fingerprint);
+    const requestKey=hash(ownerKey(actor)+':'+requestId),value={slug,input,...draft?{draft}:{}},fingerprint=fingerprintJson(value);
+    this.rejectRetiredAdmission(requestKey,value,fingerprint);
     const prior=this.admission(requestKey);
-    if(prior){if(prior.fingerprint!==fingerprint)throw requestError('Request ID conflict: input changed.');return this.status(actor,prior.id);}
+    if(prior){
+      const run=this.status(actor,prior.id);
+      if(prior.fingerprint!==fingerprint&&prior.fingerprint!==fingerprintJson(value,1)&&
+        (run.requestFingerprintVersion!==undefined||retainedFingerprint(run)!==fingerprint))throw requestError('Request ID conflict: input changed.');
+      return run;
+    }
     const definition=draft??this.describe(actor,slug);const issues=this.validate(actor,definition).issues;if(issues.length)throw requestError(issues.map(i=>i.message).join(' '));
     const checkedInput=validateInput(definition,input,this.budgets);
-    const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
-    if(draft)run.testMode=true;
+    const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,requestFingerprintVersion:2,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
+    if(draft)run.testMode=true;else run.grantGeneration=this.state.loops[definition.id].grantGeneration??legacyGrantGeneration;
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
   async retry(actor:Actor,id:string,mode:'checkpoint'|'retry-node'|'restart',requestId:string){
     const previous=this.own(actor,id);if(!['failed','interrupted','cancelled'].includes(previous.state))throw requestError('Only failed, interrupted or cancelled runs can be recovered.');
     if(this.active.has(id)||this.physical.has(id))throw requestError('Wait for physical execution cleanup before recovery.');
-    this.allowedRun(actor,previous);
+    // Recovery is an explicit new admission. Recheck current grants and host
+    // authority without reviving the original run's revoked generation.
+    if(previous.testMode)this.allowedRun(actor,previous);else this.allowed(actor,previous.definition,this.state.loops[previous.definition.id]);
     if(!requestId||requestId.length>200)throw requestError('Recovery requires an admission request ID of at most 200 characters.');
-    const key=hash(ownerKey(actor)+':'+requestId),fingerprint=hash(canonical({parentRunId:id,mode}));this.rejectRetiredAdmission(key,fingerprint);const prior=this.admission(key);
-    if(prior){if(prior.fingerprint!==fingerprint)throw requestError('Request ID conflict.');return this.status(actor,prior.id);}
+    const key=hash(ownerKey(actor)+':'+requestId),value={parentRunId:id,mode},fingerprint=fingerprintJson(value);this.rejectRetiredAdmission(key,value,fingerprint);const prior=this.admission(key);
+    if(prior){if(prior.fingerprint!==fingerprint&&prior.fingerprint!==fingerprintJson(value,1))throw requestError('Request ID conflict.');return this.status(actor,prior.id);}
     if(mode==='checkpoint'&&(previous.uncertainty||previous.trace.some(t=>['running','interrupted','cancelled','failed'].includes(t.state))))throw requestError('The current attempt is not a committed checkpoint. Inspect its outcome, then explicitly retry the node or restart.');
-    const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
+    const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,requestFingerprintVersion:2,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
+    if(!run.testMode)run.grantGeneration=this.state.loops[run.definition.id].grantGeneration??legacyGrantGeneration;
     delete run.error;delete run.errorDetail;delete run.uncertainty;delete run.pending;delete run.result;delete run.cleanupPending;
-    if(mode==='restart'){run.outputs={};run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;}else delete run.outputs[run.cursor];
+    if(mode==='restart'){run.outputs={};delete run.review;run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;}else delete run.outputs[run.cursor];
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
   private admission(key:string){

@@ -1,16 +1,17 @@
 import React,{useState} from 'react';
 import type {RetentionPolicy,RetentionResult} from './retention.js';
+import {FailureNotice,displayFailure,type DisplayFailure} from './failure-notice.js';
 
 export function HistoryCleanup({invoke,onApplied,disabled}:{invoke:(policy:RetentionPolicy,planId?:string)=>Promise<RetentionResult>;onApplied:(ids:string[])=>void;disabled:boolean}){
   const [days,setDays]=useState(''),[keep,setKeep]=useState('');
-  const [preview,setPreview]=useState<RetentionResult>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
+  const [preview,setPreview]=useState<RetentionResult>(),[error,setError]=useState<DisplayFailure>(''),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
   const act=async(apply=false)=>{
     setBusy(true);setError('');setMessage('');
     try{
       const policy=apply?preview!.policy:{...days!==''?{olderThanDays:Number(days)}:{},...keep!==''?{keepLatest:Number(keep)}:{}};
       const result=await invoke(policy,apply?preview!.planId:undefined);
       if(result.applied){setPreview(undefined);setMessage(`Removed ${result.candidates.length} ${result.candidates.length===1?'run':'runs'} from this conversation's history.`);onApplied(result.candidates.map(run=>run.id));}else setPreview(result);
-    }catch(error){setError(error instanceof Error?error.message:String(error));setPreview(undefined);}finally{setBusy(false);}
+    }catch(error){setError(displayFailure(error));setPreview(undefined);}finally{setBusy(false);}
   };
   const change=(set:(value:string)=>void,value:string)=>{set(value);setPreview(undefined);setMessage('');};
   return <details className="lp-history-cleanup"><summary>History cleanup</summary>
@@ -23,6 +24,6 @@ export function HistoryCleanup({invoke,onApplied,disabled}:{invoke:(policy:Reten
       <p className="lp-hint">Deleted run evidence cannot be restored here. Existing backups and transport documents are retained separately. Old request IDs will remain reserved.</p>
       <button className="danger" disabled={disabled||busy||!preview.candidates.length} onClick={()=>void act(true)}>Delete {preview.candidates.length} eligible {preview.candidates.length===1?'run':'runs'}</button>
     </>}
-    {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}
+    <FailureNotice failure={error} label="History cleanup failure"/>{message&&<p role="status">{message}</p>}
   </details>;
 }

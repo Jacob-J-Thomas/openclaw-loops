@@ -31,6 +31,7 @@ summary:focus-visible{outline:2px solid #8177d5;outline-offset:3px}button:disabl
 .lp-history-cleanup{margin:12px 0;padding:12px;border:1px solid var(--lp-border,#8d91a2);border-radius:8px}
 .lp-history-cleanup>summary{cursor:pointer;font-weight:600}
 .lp-history-cleanup .lp-field{max-width:320px}
+.lp-history-cleanup li{overflow-wrap:anywhere;margin:8px 0}.lp-history-cleanup li button{margin:4px 0}.lp-history-cleanup code{overflow-wrap:anywhere}
 
 /* Inherit the host's resolved color scheme, including manual theme overrides.
    Native CSS pairs also update across the shadow boundary without inspecting
@@ -110,8 +111,25 @@ button.danger,.danger{color:var(--lp-danger)}
 }
 .react-flow__controls,.react-flow__minimap{border-color:var(--lp-control-border)}
 .react-flow__attribution a{color:var(--lp-muted)}
-.lp-run-failure{display:block}.lp-run-failure>p{margin-top:8px}.lp-run-failure dl{margin:12px 0}.lp-run-failure dt{font-weight:650;margin-top:6px}.lp-run-failure dd{margin:0;overflow-wrap:anywhere}
+.lp-run-failure{display:block;min-width:0;overflow-wrap:anywhere}.lp-failure-dismiss{float:right;margin-left:8px}.lp-run-failure>p{margin-top:8px}.lp-run-failure dl{margin:12px 0}.lp-run-failure dt{font-weight:650;margin-top:6px}.lp-run-failure dd{margin:0;overflow-wrap:anywhere}
+.lp-executed-workflow{margin:16px 0;border-top:1px solid var(--lp-border);padding-top:14px}.lp-run-parent,.lp-run-evidence{display:flex;gap:9px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:8px 0;font-size:11px}.lp-run-parent{background:var(--lp-subtle);padding:9px;border-radius:7px}.lp-run-parent button,.lp-run-evidence button{font-size:10px;padding:5px 8px}.lp-executed-workflow summary{cursor:pointer;font-weight:650;color:var(--lp-text)}.lp-executed-flow{height:310px;margin:11px 0;border:1px solid var(--lp-border);border-radius:8px;overflow:hidden;background:var(--lp-subtle)}.lp-run-node{width:185px;border:1px solid var(--lp-border);border-radius:8px;background:var(--lp-surface);padding:10px;box-shadow:0 2px 5px #27304512}.lp-run-node.selected,.lp-run-node:focus-visible{outline:2px solid var(--lp-accent);outline-offset:2px}.lp-run-node>span{color:var(--lp-accent);font-size:10px;margin-right:7px}.lp-run-node strong,.lp-run-node small{display:block;overflow-wrap:anywhere}.lp-run-node strong{font-size:11px;color:var(--lp-text)}.lp-run-node small{font-size:9px;color:var(--lp-muted);margin-top:5px}.lp-run-node-detail{border:1px solid var(--lp-border);border-radius:8px;padding:12px;margin-top:10px}.lp-run-node-detail h4{margin:13px 0 6px}.lp-run-node-detail pre{font:11px/1.6 ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;background:var(--lp-subtle);padding:9px;border-radius:5px}.lp-run-node-detail .lp-full-output{max-height:none;overflow:visible}@media(max-width:620px){.lp-executed-flow{height:260px}.lp-run-parent,.lp-run-evidence{align-items:flex-start}}
 
 .lp-library-pages{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 12px;font-size:11px}.lp-library-pages button{font-size:10px;white-space:normal}.lp-library-notice{padding:8px 12px;font-size:11px;overflow-wrap:anywhere}
 .lp-library-recovery button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
 @media(max-width:620px){.lp-library{max-height:400px;overflow:auto}}
+
+/* Permitted authored names can be unbroken. Let responsive text containers
+   shrink before preserving an intrinsic line width that would clip the UI. */
+.lp-canvas-heading>div:first-child,.lp-run-evidence>span,.lp-canvas-footer>span{min-width:0}
+.lp-canvas-heading h2,.lp-canvas-heading .lp-hint,.lp-loop-card strong,.lp-loop-card small,.lp-run-evidence>span,.lp-canvas-footer>span{overflow-wrap:anywhere}
+
+/* Form controls may be flex or fieldset children. Keep their native intrinsic
+   widths from expanding a narrow plugin surface beyond its container. */
+.lp-field,fieldset,fieldset>label{min-width:0;max-width:100%}
+.lp-field>input:not([type=checkbox]),.lp-field>select,.lp-field>textarea,fieldset input,fieldset select,fieldset textarea{min-width:0;max-width:100%}
+
+/* A 1fr track otherwise retains the min-content width of a permitted field
+   label. Keep the run form inside the viewport and wrap labels, not values. */
+.lp-runs-panel,.lp-run-input{min-width:0}
+.lp-field>span{overflow-wrap:anywhere}
+@media(max-width:860px){.lp-runs-panel{grid-template-columns:minmax(0,1fr)}}

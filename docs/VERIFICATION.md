@@ -1,5 +1,11 @@
 # Local verification
 
+## Responsive text and host themes
+
+The responsive-layout check uses the permitted 100-character loop name, node label and input display label, plus a 500-character description, including unbroken text. Reload the saved draft and inspect authoring, run inputs, an existing structured failure and a complete oversized result at 320, 390, 900, 1024 and 1440 pixels. Headings, labels and run panels must stay inside their containers; library and graph scrolling remain intentional. Native text inputs may scroll their values internally.
+
+Use the host's Light and Dark controls with the opposite system preference, then verify that System follows both preferences. Measure rendered text and keyboard focus colors in each resolved scheme, inspect screenshots after transitions settle, and capture console errors. Record the installed package hash and source commit with the receipt. Temporary injected styles are useful for diagnosis but do not qualify the installed artifact. These sampled checks do not establish complete WCAG conformance or screen-reader speech acceptance.
+
 Current scope is the [standalone 1.0 delivery plan](DELIVERY_PLAN.md), revised September 12, 2026. Expansion families are deferred. Public GitHub source/history publication is now authorized; references to pending authorization in older entries describe their historical checkpoint and no longer apply. The [current status](DELIVERY_STATUS.md) records publication and release gates separately.
 
 ## Alpha.17 transport storage hardening
@@ -333,3 +339,10 @@ Evidence: `evidence/repeat-early-success.json`, `review-resume-denied-chat.json`
 This is a local, single-operator/main-agent POC using experimental external-plugin APIs. Inference and configured-model metadata are host-backed; other node mechanics and authenticated human review are plugin logic. Web search is visibly unavailable. Wait/review are manual; active calls interrupted by shutdown are inspectable and never automatically replayed. Deduplication is limited to retained records. Read `CAPABILITIES.md` for the exact limits and trust boundaries, and `README.md` for setup, launch, uninstall and the try-it sequence.
 
 `evidence/diagnostics/` retains earlier unsuccessful integration experiments, including the offline LM Studio reference, an unsuitable thinking model, the host's separate tool registration scope and excessive chat receipts. They are not acceptance evidence. The user explicitly selected Ollama and authorized installing a model that fits this machine.
+## Sustained public Gateway workload
+
+`node scripts/verify-sustained-workload.mjs <package.tgz>` installs an ordinary plugin archive into a disposable, authenticated Gateway. The default workload runs 256 Input/Return fixtures with 64 KiB Unicode values across four restart epochs, then preserves 16 Wait checkpoints through another restart and explicitly resumes eight and cancels eight. It checks all 272 history IDs, complete input/result hashes, paginated output, document-reference integrity and reader release, terminal execution state, parked-run retention protection, explicit history cleanup and SQLite integrity. A smaller `LOOPS_SUSTAINED_RUNS` value is for diagnosis only; the CI acceptance workload uses the default 256.
+
+The receipt records phase-boundary Gateway RSS, CPU percentage/time, plugin-state bytes, elapsed time and observed response states. These samples can miss intervening peaks; serial deterministic admissions do not measure concurrent queue depth or production inference capacity. Delayed-host queue/cleanup tests and real inference receipts remain separate evidence. Logical history removal does not promise immediate filesystem shrinkage: SQLite allocation and retained transport documents have separate lifetimes. The fixture makes no provider/model calls, uses one disposable Gateway, applies a 15-minute operation budget and waits for child cleanup. The earlier local 256-run qualification completed in about 39 seconds with a largest sampled Gateway RSS of about 710 MiB; this is an observation on one Mac, not a capacity guarantee.
+
+The four-platform Verify matrix runs this journey against its current built archive. Only the sanitized receipt is uploaded. Raw per-record hashes, profiles, credentials and logs remain under ignored `.dev-profile/` paths; successful disposable profiles are removed.

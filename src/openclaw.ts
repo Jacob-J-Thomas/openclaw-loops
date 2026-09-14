@@ -6,7 +6,7 @@ import { display } from './graph.js';
 import { randomUUID } from 'node:crypto';
 import {resolveSessionModelRef} from 'openclaw/plugin-sdk/model-session-runtime';
 import {completionParameters,validateAdvanced,type InferenceSettings,type InferenceCapabilities} from './inference-settings.js';
-import {LoopError,requestError} from './errors.js';
+import {LoopError,requestError,formatFailure} from './errors.js';
 import {defaultBudgets} from './budgets.js';
 import type {RunReceipt} from './receipts.js';
 
@@ -99,6 +99,6 @@ export function formatRun(run:Run|RunReceipt):string{
   }
   if(run.state==='review')return `${summary}\nHuman review is pending. Use the Loops UI or /loops review ${run.id} approve|reject. Continue cannot approve it.`;
   if(run.state==='waiting')return `${summary}\n${run.pending??''}\nContinue with /loops resume ${run.id}`;
-  if(run.errorDetail)return `${summary}\n[${run.errorDetail.code}] ${run.errorDetail.message}\n${run.errorDetail.recovery}`;
+  if(run.errorDetail)return `${summary}\n${formatFailure(run.errorDetail)}`;
   return `${summary}\n${run.error??run.uncertainty??`Use /loops status ${run.id} to inspect this run.`}`;
 }

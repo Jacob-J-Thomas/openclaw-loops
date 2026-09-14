@@ -1,15 +1,16 @@
 import React,{useEffect,useState} from 'react';
 import type {GraphNode} from './graph.js';
 import {completionParameters,type Advanced,type InferenceCapabilities,type InferenceSettings} from './inference-settings.js';
+import {FailureNotice,displayFailure,type DisplayFailure} from './failure-notice.js';
 
 type InferenceNode = Extract<GraphNode,{kind:'inference'}>;
 export function InferenceEditor({node,onChange,loadCapabilities}:{node:InferenceNode;onChange:(node:InferenceNode)=>void;loadCapabilities:(settings:InferenceSettings)=>Promise<InferenceCapabilities>}){
   const [capabilities,setCapabilities]=useState<InferenceCapabilities>();
-  const [error,setError]=useState('');
+  const [error,setError]=useState<DisplayFailure>('');
   useEffect(()=>{
     let current=true;
     setCapabilities(undefined);setError('');
-    const timer=setTimeout(()=>{void loadCapabilities({model:node.model,agentId:node.agentId}).then(result=>{if(current)setCapabilities(result);},failure=>{if(current)setError(failure instanceof Error?failure.message:String(failure));});},150);
+    const timer=setTimeout(()=>{void loadCapabilities({model:node.model,agentId:node.agentId}).then(result=>{if(current)setCapabilities(result);},failure=>{if(current)setError(displayFailure(failure));});},150);
     return()=>{current=false;clearTimeout(timer);};
   },[node.model,node.agentId,loadCapabilities]);
   const setSetting=(key:keyof Advanced,value:Advanced[keyof Advanced]|undefined)=>{
@@ -25,7 +26,7 @@ export function InferenceEditor({node,onChange,loadCapabilities}:{node:Inference
     <label className="lp-field"><span>Reasoning</span><select value={node.reasoning??''} onChange={e=>setOptional('reasoning',e.target.value)}><option value="">Inherit conversation / host</option>{['off','minimal','low','medium','high','xhigh','adaptive','max','ultra'].map(level=><option key={level}>{level}</option>)}</select></label>
     <details className="lp-advanced"><summary>Advanced settings {node.advanced&&Object.keys(node.advanced).length?`(${Object.keys(node.advanced).length} overrides)`:''}</summary>
       <p className="lp-hint">Empty fields inherit OpenClaw defaults. Advisory settings may be ignored by the selected runtime. Zero is an explicit value.</p>
-      {error&&<p role="alert" className="lp-validation-error">{error}</p>}
+      <FailureNotice failure={error} label="Model capability failure"/>
       {(capabilities?.parameters??completionParameters()).map(parameter=>{
         const value=node.advanced?.[parameter.key];const unavailable=parameter.support==='unsupported'||parameter.support==='unknown';
         return <div key={parameter.key} className="lp-advanced-field">

@@ -60,9 +60,15 @@ For source updates, rebuild/package, install that tarball explicitly in each des
 
 1. Choose an authorized agent and conversation in Loops. Load an example or create a graph.
 2. Edit nodes and connections. The keyboard node selector, binding picker, duplication, arrangement and undo/redo support graphical authoring.
-3. **Save draft** creates a version without replacing an existing publication. **Save & enable** publishes the edited revision. **Enable loop** and **Disable** control saved revisions. Versions can be compared, restored or published separately.
+3. **Save draft** creates a version without replacing an existing publication. **Publish r…** selects the saved revision for new runs. The publication controls enable or disable new starts. Versions can be compared, restored or published separately.
 4. Enter the declared inputs and run, or use **Test current draft** before publication. Inspect real outputs, the pinned definition, model attribution, waiting/review state and recovery options.
 5. Ask the chat agent to discover and actually invoke a saved loop. The same definitions and executor serve UI, commands and tools.
+
+Use **Search loops** to filter the saved library. Choose a node on the canvas or through **Select node to edit**, then edit its properties. **Insert available binding** offers input values and outputs guaranteed to precede that node. A whole binding preserves the value's type; embedding it in text produces text. Inference and Repeat selections append to their inference prompt, or replace a JSON literal prompt with the selected binding. Other supported consumer nodes replace their corresponding value or condition's left operand.
+
+**Duplicate node** gives the copy a separate identity and position; connect it into the graph before running. **Arrange** changes positions while preserving nodes, connections and settings. Version 1 drafts are translated into their original layout range when they fit; use version 2 when a layout cannot fit there. **Undo** and **Redo** operate within the current editor session. Unsaved edits are retained as recoverable local drafts for the selected agent and conversation; saving a draft commits a revision to the Gateway.
+
+Under **Versions and library actions**, **Compare version with current draft** lists changed definition sections and added, changed or removed nodes. **Restore as draft** creates a new revision from the selected version without replacing publication. **Publish this version** selects that saved version separately. Review the displayed revision and draft/publication state before running or testing.
 
 ```text
 /loops list

@@ -1,5 +1,8 @@
 # History and explicit cleanup
 
+See [execution recovery](RECOVERY.md) for checkpoint, retry-node and full-restart
+semantics, including preserved ancestry and fresh human decisions on restart.
+
 ## Loop library pages
 
 The Library and its archived/deleted recovery list search the complete selected view and display 50 records per page. Paging and searching preserve the current editor and its recoverable edits; selecting a different loop resets run-input values. Search matches names, slugs and descriptions without case sensitivity.
@@ -22,10 +25,10 @@ Queued, running, waiting and review runs are protected. Cancelled or failed runs
 
 Removal atomically deletes the run, attempt records, outputs and state-transition events. A small immutable admission tombstone keeps its request ID and fingerprint reserved across restart. Reusing that request ID returns `LOOPS_HISTORY_REMOVED`; it never repeats the old execution. Supply a new ID only when a new execution is intentional.
 
-Deletion here is not secure erasure. SQLite can reuse released pages; immutable transport documents, staged uploads, retained backups and original legacy JSON remain separate copies. No automatic compaction, document garbage collection or backup deletion is performed. Those storage-maintenance capabilities remain tracked release work.
+Deletion here is not secure erasure. SQLite can reuse released pages; immutable transport documents, staged uploads, retained backups and original legacy JSON remain separate copies. [Transport file cleanup](TRANSPORT.md#explicit-transport-file-maintenance) provides a separate preview/apply operation for eligible document copies and staging files. Retained runs and revisions protect their referenced documents. No automatic compaction, garbage collection or backup deletion is performed.
 
 ## SQLite upgrade
 
-Alpha.6 uses SQLite schema 2. A schema 1 database receives a verified, private `loops.sqlite.before-schema-2-<timestamp>.bak` snapshot before the migration transaction creates admission tombstones. Existing definitions and runs are preserved. The graph schema remains independent: existing version 1 and version 2 graphs keep their execution semantics.
+The admission-identity update uses SQLite schema 3. A schema 1 or 2 database receives a verified, private `loops.sqlite.before-schema-3-<timestamp>.bak` snapshot before migration. Existing definitions, runs and admission hashes are preserved. New admissions use locale-independent fingerprints; retained legacy payloads receive an additional canonical tombstone hash when removed. IDs already removed by an older artifact remain reserved even when discarded payloads cannot establish equivalence. Schema 1 also gains the admission-tombstone table introduced in alpha.6/schema 2. The graph schema remains independent: existing version 1 and version 2 graphs keep their execution semantics.
 
-An older artifact that supports only database schema 1 must be restored with its matching backup. See [deployment and rollback](DEPLOYMENT.md). A failed write rolls back visible state to the last committed records and aborts current execution. If readback also fails, the engine stops serving unverified state until the plugin is restarted and recovery inspects the saved attempts.
+An older artifact that supports only database schema 1 or 2 must be restored with its matching backup. See [deployment and rollback](DEPLOYMENT.md). A failed write rolls back visible state to the last committed records and aborts current execution. If readback also fails, the engine stops serving unverified state until the plugin is restarted and recovery inspects the saved attempts.
