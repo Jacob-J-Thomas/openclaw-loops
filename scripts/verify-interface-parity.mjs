@@ -92,8 +92,8 @@ try{
   assert.equal((await invoke('run',{slug,input:{text:'Disabled'},requestId:randomUUID()})).kind,'loops-error');
   await invoke('enable',{id,revision:5,enabled:true});
   const json=JSON.stringify({text:'Staged 🙂 result\nwith newline'}),sha256=hash(json),uploadId=randomUUID();
-  await invoke('upload',{uploadId,offset:0,text:json.slice(0,8)});
-  const upload=await invoke('upload',{uploadId,offset:8,text:json.slice(8),complete:true,sha256});assert.equal(upload.completed,true);
+  await invoke('upload',{uploadId,offset:0,textBase64:Buffer.from(json.slice(0,8)).toString('base64')});
+  const upload=await invoke('upload',{uploadId,offset:8,textBase64:Buffer.from(json.slice(8)).toString('base64'),complete:true,sha256});assert.equal(upload.completed,true);
   const run=await invoke('run',{slug,input:upload.reference,requestId:randomUUID()});assert.equal(run.state,'completed');assert.equal(run.result,JSON.parse(json).text);
   assert.equal((await invoke('status',{runId:run.id})).state,'completed');assert((await invoke('runs')).some(row=>row.id===run.id));
   assert.equal((await invoke('history',{limit:1})).total,1);
