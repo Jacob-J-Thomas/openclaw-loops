@@ -119,3 +119,19 @@ button.danger,.danger{color:var(--lp-danger)}
 .lp-library-pages{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 12px;font-size:11px}.lp-library-pages button{font-size:10px;white-space:normal}.lp-library-notice{padding:8px 12px;font-size:11px;overflow-wrap:anywhere}
 .lp-library-recovery button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
 @media(max-width:620px){.lp-library{max-height:400px;overflow:auto}}
+
+/* Permitted authored names can be unbroken. Let responsive text containers
+   shrink before preserving an intrinsic line width that would clip the UI. */
+.lp-canvas-heading>div:first-child,.lp-run-evidence>span,.lp-canvas-footer>span{min-width:0}
+.lp-canvas-heading h2,.lp-canvas-heading .lp-hint,.lp-loop-card strong,.lp-loop-card small,.lp-run-evidence>span,.lp-canvas-footer>span{overflow-wrap:anywhere}
+
+/* Form controls may be flex or fieldset children. Keep their native intrinsic
+   widths from expanding a narrow plugin surface beyond its container. */
+.lp-field,fieldset,fieldset>label{min-width:0;max-width:100%}
+.lp-field>input:not([type=checkbox]),.lp-field>select,.lp-field>textarea,fieldset input,fieldset select,fieldset textarea{min-width:0;max-width:100%}
+
+/* A 1fr track otherwise retains the min-content width of a permitted field
+   label. Keep the run form inside the viewport and wrap labels, not values. */
+.lp-runs-panel,.lp-run-input{min-width:0}
+.lp-field>span{overflow-wrap:anywhere}
+@media(max-width:860px){.lp-runs-panel{grid-template-columns:minmax(0,1fr)}}
