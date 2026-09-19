@@ -649,7 +649,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## typebox 1.3.30
+## typebox 1.3.32
 
 Declared license: MIT.
 
