@@ -19,6 +19,47 @@ function setup(maxBytes?:number){const root=mkdtempSync(join(tmpdir(),'loops-doc
 afterEach(()=>{vi.resetAllMocks();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 
 describe('large feature transport',()=>{
+  it('decodes encoded chunks losslessly through empty fragments, mixed retries and restart',()=>{
+    const {root,store}=setup(),value={value:'\uFEFF🙂\nquote" and slash\\'},full=JSON.stringify(value),characters=Array.from(full),cut=full.indexOf('\uFEFF');
+    const first=characters.slice(0,cut).join(''),last=characters.slice(cut).join(''),encode=(text:string)=>Buffer.from(text).toString('base64');
+    expect(store.upload(actor,{uploadId:'encoded',offset:0,textBase64:''})).toMatchObject({offset:0,completed:false});
+    const input={uploadId:'encoded',offset:0,textBase64:encode(first)};
+    expect(store.upload(actor,input).offset).toBe(cut);
+    expect(store.upload(actor,{uploadId:'encoded',offset:0,text:first}).offset).toBe(cut);
+    const reopened=new DocumentStore(root);expect(reopened.upload(actor,input).offset).toBe(cut);
+    // The second fragment begins with a real BOM inside a JSON string. Decoding
+    // must not strip it, replace Unicode, or interpret the fragment as JSON.
+    expect(reopened.upload(actor,{uploadId:'encoded',offset:cut,textBase64:encode(last)}).offset).toBe(characters.length);
+    const finish={uploadId:'encoded',offset:characters.length,textBase64:'',complete:true,sha256:digest(full)};
+    const completed=new DocumentStore(root).upload(actor,finish);expect(completed.completed).toBe(true);
+    expect(reopened.upload(actor,finish)).toEqual(completed);expect(reopened.resolve(actor,completed.reference!)).toEqual(value);
+    expect(()=>reopened.resolve({...actor,sessionId:'other'},completed.reference!)).toThrow('not found');
+  });
+  it.each(['e30','e30=\n','e30=extra','e30===','e3-=','Zh==',Buffer.from([0xc3,0x28]).toString('base64')])('rejects invalid encoded chunks without changing staging (%#)',textBase64=>{
+    const {root,store}=setup();store.upload(actor,{uploadId:'encoded-invalid',offset:0,text:'{"value":'});
+    const before=readdirSync(root).map(name=>[name,readFileSync(join(root,name),'utf8')]);
+    expect(()=>store.upload(actor,{uploadId:'encoded-invalid',offset:9,textBase64})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_UPLOAD_ENCODING'})}));
+    expect(readdirSync(root).map(name=>[name,readFileSync(join(root,name),'utf8')])).toEqual(before);
+  });
+  it('requires exactly one upload representation and checks authority before decoding',()=>{
+    const {root,store}=setup();
+    for(const fields of [{},{text:'',textBase64:''}])expect(()=>store.upload(actor,{uploadId:'exclusive',offset:0,...fields})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_UPLOAD_ENCODING'})}));
+    expect(()=>store.upload({...actor,check:()=>{throw Error('revoked');}},{uploadId:'exclusive',offset:0,textBase64:'invalid'})).toThrow('revoked');
+    expect(readdirSync(root)).toEqual([]);
+  });
+  it('applies encoded upload limits to decoded data and keeps rejected uploads uncommitted',()=>{
+    const {root,store}=setup(2),encode=(text:string)=>Buffer.from(text).toString('base64');
+    expect(()=>store.upload(actor,{uploadId:'budget',offset:0,textBase64:encode('🙂')})).toThrow('staging budget');
+    expect(readdirSync(root)).toEqual([]);
+    expect(store.upload(actor,{uploadId:'budget',offset:0,textBase64:encode('{}'),complete:true,sha256:digest('{}')})).toMatchObject({completed:true,offset:2});
+    const large=setup();expect(()=>large.store.upload(actor,{uploadId:'chunk',offset:0,textBase64:encode('x'.repeat(16001))})).toThrow('16,000 Unicode characters');
+    expect(readdirSync(large.root)).toEqual([]);
+    const boundary=encode('🙂'.repeat(12288));expect(boundary.length).toBe(65536);
+    expect(large.store.upload(actor,{uploadId:'boundary',offset:0,textBase64:boundary}).offset).toBe(12288);
+    const before=readdirSync(large.root).map(name=>[name,readFileSync(join(large.root,name),'utf8')]);
+    expect(()=>large.store.upload(actor,{uploadId:'boundary',offset:12288,textBase64:encode('🙂'.repeat(12289))})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_UPLOAD_ENCODING'})}));
+    expect(readdirSync(large.root).map(name=>[name,readFileSync(join(large.root,name),'utf8')])).toEqual(before);
+  });
   it('reconstructs an immutable Unicode result after restart and cannot read it from another conversation',()=>{
     const {root,store}=setup();const source={value:'🙂\u0000"\\'.repeat(30000),nested:Array.from({length:5000},(_,index)=>({index}))};
     const reference=store.snapshot(actor,source),reopened=new DocumentStore(root);

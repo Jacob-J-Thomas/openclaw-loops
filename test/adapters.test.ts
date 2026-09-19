@@ -30,21 +30,25 @@ beforeAll(()=>{if(!process.env.LOOPS_TEST_PLUGIN)execFileSync(process.execPath,[
 const directories:string[]=[];
 const shutdowns:Array<()=>Promise<void>>=[];
 afterEach(async()=>{for(const shutdown of shutdowns.splice(0))await shutdown();for(const dir of directories.splice(0))rmSync(dir,{recursive:true,force:true});});
-async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin}){
+type AdapterActor={agentId:string;sessionKey:string;sessionId:string};
+type SessionEntry={sessionId:string};
+async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin;maxConcurrentRuns?:number;onComplete?:OpenClawPluginApi['runtime']['llm']['complete'];actor?:AdapterActor;additionalActors?:readonly AdapterActor[];sessionEntry?:({agentId,sessionKey}:{agentId:string;sessionKey:string},sessions:Map<string,SessionEntry>)=>SessionEntry|undefined}){
   const root=options?.root??mkdtempSync(join(tmpdir(),'loops-adapters-'));if(!options?.root)directories.push(root);
   const commands=new Map<string,OpenClawPluginCommandDefinition>(),actions=new Map<string,PluginSessionActionRegistration>(),registered:ToolRegistration[]=[];const services:OpenClawPluginService[]=[];
-  const key='agent:main:adapter-test',sessionId='adapter-session';
+  const selected=options?.actor??{agentId:'main',sessionKey:'agent:main:adapter-test',sessionId:'adapter-session'};
+  const {agentId,key,sessionId}={agentId:selected.agentId,key:selected.sessionKey,sessionId:selected.sessionId};
+  const sessions=new Map<string,SessionEntry>([selected,...options?.additionalActors??[]].map(actor=>[`${actor.agentId}:${actor.sessionKey}`,{sessionId:actor.sessionId}]));
   // The real published feature SDK registers these adapters. Only host capabilities are faked.
-  const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async()=>({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
+  const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async request=>options?.onComplete?options.onComplete(request):({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
   const config={plugins:{entries:{'loops-poc':{enabled:true}}}};
-  const api={id:'loops-poc',config,runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>agentId==='main'&&sessionKey===key?{sessionId}:undefined}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
+  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>options?.sessionEntry?options.sessionEntry({agentId,sessionKey},sessions):sessions.get(`${agentId}:${sessionKey}`)}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
   (options?.plugin??plugin).register(api);
   if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
-  const toolContext:OpenClawPluginToolContext={agentId:'main',sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
+  const toolContext:OpenClawPluginToolContext={agentId,sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
   const tools=registered.flatMap(t=>{const value=typeof t==='function'?t(toolContext):t;return Array.isArray(value)?value:value?[value]:[];});
-  const commandContext={agentId:'main',sessionKey:key,sessionId,senderId:'host-sender',channel:'webchat',isAuthorizedSender:true,gatewayClientScopes:['operator.admin','operator.write'],config} as unknown as PluginCommandContext;
-  const action=(id:string,payload:Record<string,unknown>,scopes=['operator.admin','operator.write','operator.read'])=>actions.get(id)!.handler({pluginId:'loops-poc',actionId:id,agentId:'main',sessionKey:key,payload:payload as never,client:{connId:'human',scopes}});
-  return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,services};
+  const commandContext={agentId,sessionKey:key,sessionId,senderId:'host-sender',channel:'webchat',isAuthorizedSender:true,gatewayClientScopes:['operator.admin','operator.write'],config} as unknown as PluginCommandContext;
+  const action=(id:string,payload:Record<string,unknown>,scopes=['operator.admin','operator.write','operator.read'])=>actions.get(id)!.handler({pluginId:'loops-poc',actionId:id,agentId,sessionKey:key,payload:payload as never,client:{connId:'human',scopes}});
+  return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,agentId,services,sessions};
 }
 // Conversation consumers follow the same documented reference protocol. Check
 // each formatted reply, not only the larger feature-SDK envelope.
@@ -68,6 +72,52 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('keeps a host-selected non-main current session usable while rejecting foreign, replaced, and read-only writes at registered adapters',async()=>{
+    const current={agentId:'worker',sessionKey:'agent:worker:authority-current',sessionId:'authority-current'};
+    const foreignActor={agentId:'worker',sessionKey:'agent:worker:authority-foreign',sessionId:'authority-foreign'};
+    const owner=await setup({actor:current,additionalActors:[foreignActor]});
+    const definition={slug:'authority-fixture',name:'Authority fixture',description:'No provider calls.',inputSchema:[],capabilities:[] as const,nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'wait',kind:'wait' as const,label:'Wait',message:'Authority checkpoint'},{id:'return',kind:'return' as const,label:'Return',value:'complete'}],edges:[{id:'input-wait',source:'input',target:'wait',port:'next' as const},{id:'wait-return',source:'wait',target:'return',port:'next' as const}],layout:{},limits:{maxExecutions:2,maxOutputBytes:1024}};
+    const created=await owner.action('create',{definition,enabled:true});expect(created).toMatchObject({ok:true,result:{record:{definition:{slug:definition.slug}}}});
+    const admission=await owner.action('run',{slug:definition.slug,input:{},requestId:'authority-current'}) as {result:{id:string;state:string}};
+    const run=admission.result;expect(run.state).toBe('waiting');
+    expect(await commandJson(owner,'status',{runId:run.id})).toMatchObject({id:run.id,state:'waiting'});
+    expect(await toolJson(owner,'status',{runId:run.id},'authority-current-tool')).toMatchObject({id:run.id,state:'waiting'});
+
+    const foreign=await setup({root:owner.root,start:false,actor:foreignActor,additionalActors:[current]});
+    await expect(foreign.action('status',{runId:run.id})).resolves.toMatchObject({ok:true,result:{kind:'loops-error',error:{message:'Run not found in this session.'}}});
+    const commandFailure=await foreign.commands.get('loops')!.handler({...foreign.commandContext,args:`status ${JSON.stringify({runId:run.id})}`});expect(commandFailure.text).toContain('Run not found in this session.');
+    expect(await foreign.tools.find(tool=>tool.name==='loops_status')!.execute('authority-foreign-tool',{runId:run.id})).toMatchObject({details:{kind:'loops-error',error:{message:'Run not found in this session.'}}});
+
+    await expect(owner.action('create',{definition:{...definition,slug:'authority-read-only'},enabled:true},['operator.read'])).resolves.toMatchObject({ok:true,result:{kind:'loops-error',error:{code:'LOOPS_INVALID_REQUEST'}}});
+    const readOnlyCommand=await owner.commands.get('loops')!.handler({...owner.commandContext,gatewayClientScopes:['operator.read'],args:`create ${JSON.stringify({definition:{...definition,slug:'authority-command-read-only'},enabled:true})}`});expect(readOnlyCommand.text).toContain('HOST_POLICY_DENIED');
+    owner.sessions.set(`${current.agentId}:${current.sessionKey}`,{sessionId:'authority-replaced'});
+    await expect(owner.action('status',{runId:run.id})).resolves.toMatchObject({ok:true,result:{kind:'loops-error',error:{message:'Run not found in this session.'}}});
+    const replacedCommand=await owner.commands.get('loops')!.handler({...owner.commandContext,args:`status ${JSON.stringify({runId:run.id})}`});expect(replacedCommand.text).toContain('LOOPS_SESSION_CHANGED');
+    await expect(owner.tools.find(tool=>tool.name==='loops_status')!.execute('authority-replaced-tool',{runId:run.id})).resolves.toMatchObject({details:{kind:'loops-error',error:{code:'LOOPS_SESSION_CHANGED'}}});
+    owner.sessions.delete(`${current.agentId}:${current.sessionKey}`);
+    await expect(owner.action('status',{runId:run.id})).resolves.toMatchObject({ok:true,result:{kind:'loops-error',operation:'status',error:{code:'LOOPS_SESSION_REQUIRED'}}});
+    await expect(owner.tools.find(tool=>tool.name==='loops_status')!.execute('authority-missing-tool',{runId:run.id})).resolves.toMatchObject({details:{kind:'loops-error',operation:'status',error:{code:'LOOPS_SESSION_CHANGED'}}});
+    expect(owner.complete).not.toHaveBeenCalled();
+  });
+  it('classifies lost session identity after entry and preserves unknown failures for host masking',async()=>{
+    const current={agentId:'worker',sessionKey:'agent:worker:authority-race',sessionId:'authority-race'};
+    let present=true,mode:'success'|'failure'='success',entered!:()=>void,release!:()=>void;
+    const arm=()=>{const reached=new Promise<void>(resolve=>{entered=resolve}),gate=new Promise<void>(resolve=>{release=resolve});return {reached,gate};};let barrier=arm();
+    const s=await setup({actor:current,sessionEntry:({agentId,sessionKey},sessions)=>present?sessions.get(`${agentId}:${sessionKey}`):undefined,onComplete:async()=>{entered();await barrier.gate;if(mode==='failure')throw Error('private completion failure');return {text:'in-flight result',provider:'fake',model:'test-only',agentId:'worker',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}};}});
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug='session-race';const testDefinition={...structuredClone(examples[0]),slug:definition.slug};
+    const before=await s.action('library',{});present=false;
+    await expect(s.action('create',{definition,enabled:true})).resolves.toMatchObject({ok:true,result:{kind:'loops-error',operation:'create',error:{code:'LOOPS_SESSION_REQUIRED'}}});
+    expect(s.complete).not.toHaveBeenCalled();present=true;expect(await s.action('library',{})).toEqual(before);
+    const successful=s.action('test',{definition:testDefinition,input:{text:'in-flight'},requestId:'session-race-success'});await Promise.race([barrier.reached,Promise.resolve(successful).then(result=>{throw Error(`Inference did not reach its barrier: ${JSON.stringify(result)}`);})]);present=false;release();
+    const successResult=await successful;expect(successResult).toMatchObject({ok:true,result:{kind:'loops-error',operation:'test',error:{code:'LOOPS_SESSION_CHANGED'}}});expect(JSON.stringify(successResult)).not.toContain('in-flight result');
+    present=true;mode='failure';barrier=arm();
+    const failed=s.action('test',{definition:testDefinition,input:{text:'in-flight'},requestId:'session-race-failure'});await Promise.race([barrier.reached,Promise.resolve(failed).then(result=>{throw Error(`Inference did not reach its barrier: ${JSON.stringify(result)}`);})]);present=false;release();
+    const failureResult=await failed;expect(failureResult).toMatchObject({ok:true,result:{kind:'loops-error',operation:'test',error:{code:'LOOPS_SESSION_CHANGED'}}});expect(JSON.stringify(failureResult)).not.toContain('private completion failure');expect(s.complete).toHaveBeenCalledTimes(2);
+    present=true;
+    const unchanged=s.action('library',{});await expect(unchanged).resolves.toEqual(before);
+    let lookup=true;const unexpected=await setup({sessionEntry:({agentId,sessionKey},sessions)=>{if(!lookup)throw Error('private session lookup failure');return sessions.get(`${agentId}:${sessionKey}`);}});lookup=false;
+    await expect(unexpected.action('library',{})).rejects.toThrow('private session lookup failure');
+  },15_000);
   it('preflights explicit incompatible inference settings through the registered UI adapter without dispatching them',async()=>{
     const s=await setup(),inherited=structuredClone(examples[0]);
     expect(await s.action('test',{definition:inherited,input:{text:'Inherited settings'},requestId:'capability-inherit'})).toMatchObject({ok:true,result:{state:'completed'}});
@@ -267,6 +317,57 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     for(const [run,result] of [[original,'Original run'],[tested,'Draft test'],[published,'Published run']] as const)expect(await invoke('resume',{runId:run.id})).toMatchObject({state:'completed',result});
     expect(s.complete.mock.calls.map(([request])=>({temperature:request.temperature,maxTokens:request.maxTokens}))).toEqual([{temperature:0,maxTokens:128},{temperature:0.5,maxTokens:256},{temperature:0,maxTokens:128}]);
     const completed=await invoke('inspect',{runId:original.id});await invoke('delete',{id,expectedRevision:4});expect(await invoke('recover',{id,expectedRevision:4})).toMatchObject({enabledRevision:null,definition:restored.definition});expect(await invoke('inspect',{runId:original.id})).toEqual(completed);expect(await invoke('versions',{id})).toMatchObject([{revision:4},{revision:3},{revision:2},{revision:1}]);
+  },30000);
+  it.each(['session-action','command','tool'] as const)('round-trips inherited, reset, switched and unsupported Advanced settings through registered %s adapters',async surface=>{
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),captured:Parameters<OpenClawPluginApi['runtime']['llm']['complete']>[0][]=[];
+    const s=await setup({maxConcurrentRuns:2,onComplete:async request=>{
+      if(request.maxTokens===96||request.maxTokens===112){captured.push(request);await gate;}
+      return {text:`fixture:${request.maxTokens??'inherited'}`,provider:'fake',model:request.model??'inherited',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}};
+    }});let sequence=0;
+    const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
+    const client=createLoopsClient(transport);
+    const invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`advanced-${++sequence}`):client.invoke(op,input as never);
+    const definition={slug:`advanced-${surface}`,name:'Advanced round trip',description:'Deterministic registered-adapter fixture.',inputSchema:[{name:'text',label:'Text',type:'text',required:true}],capabilities:['llm'] as const,nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'infer',kind:'inference' as const,label:'Inference',prompt:'{{input.text}}',output:'text' as const},{id:'return',kind:'return' as const,label:'Return',value:'{{nodes.infer.text}}'}],edges:[{id:'a',source:'input',target:'infer',port:'next' as const},{id:'b',source:'infer',target:'return',port:'next' as const}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    const created=(await invoke('create',{definition}) as {record:LoopRecord}).record,id=created.definition.id;
+    const inference=(value:LoopRecord)=>value.definition.nodes.find(node=>node.kind==='inference');
+    expect(inference(created)).not.toHaveProperty('advanced');
+    const explicit=structuredClone(created.definition);const explicitNode=explicit.nodes.find(node=>node.kind==='inference');if(!explicitNode||explicitNode.kind!=='inference')throw Error('Expected inference fixture.');explicitNode.advanced={temperature:0,maxTokens:64};
+    const drafted=(await invoke('draft',{definition:explicit,expectedRevision:1}) as {record:LoopRecord}).record;
+    expect(inference(drafted)).toMatchObject({advanced:{temperature:0,maxTokens:64}});
+    const resetOne=structuredClone(drafted.definition);const resetOneNode=resetOne.nodes.find(node=>node.kind==='inference');if(!resetOneNode||resetOneNode.kind!=='inference')throw Error('Expected inference fixture.');resetOneNode.advanced={maxTokens:64};
+    const individuallyReset=(await invoke('draft',{definition:resetOne,expectedRevision:2}) as {record:LoopRecord}).record;
+    expect(inference(individuallyReset)).toMatchObject({advanced:{maxTokens:64}});expect(inference(individuallyReset)).not.toHaveProperty('advanced.temperature');
+    const resetAll=structuredClone(individuallyReset.definition);const resetAllNode=resetAll.nodes.find(node=>node.kind==='inference');if(!resetAllNode||resetAllNode.kind!=='inference')throw Error('Expected inference fixture.');delete resetAllNode.advanced;
+    const inherited=(await invoke('draft',{definition:resetAll,expectedRevision:3}) as {record:LoopRecord}).record;
+    expect(inference(inherited)).not.toHaveProperty('advanced');
+    expect(await invoke('test',{definition:inherited.definition,input:{text:'inherit'},requestId:'inherit'})).toMatchObject({state:'completed'});
+    const switched=structuredClone(inherited.definition);const switchedNode=switched.nodes.find(node=>node.kind==='inference');if(!switchedNode||switchedNode.kind!=='inference')throw Error('Expected inference fixture.');switchedNode.model='fake/switched';switchedNode.advanced={temperature:0,maxTokens:96};
+    const switchedRecord=(await invoke('draft',{definition:switched,expectedRevision:4}) as {record:LoopRecord}).record;
+    expect(await invoke('publish',{id,revision:5,expectedRevision:5})).toMatchObject({enabledRevision:5,publishedRevision:5});
+    const exported=JSON.stringify(switchedRecord.definition),{id:_id,schemaVersion:_schemaVersion,revision:_revision,...imported}=JSON.parse(exported) as LoopRecord['definition'];imported.slug=`advanced-import-${surface}`;const importedNode=imported.nodes.find(node=>node.kind==='inference');if(!importedNode||importedNode.kind!=='inference')throw Error('Expected inference fixture.');expect(importedNode).toMatchObject({model:'fake/switched',advanced:{temperature:0,maxTokens:96}});importedNode.advanced={temperature:0,maxTokens:112};
+    const importedRecord=(await invoke('create',{definition:imported}) as {record:LoopRecord}).record;
+    expect(inference(importedRecord)).toMatchObject({model:'fake/switched',advanced:{temperature:0,maxTokens:112}});
+    const restored=(await invoke('restore',{id,revision:1,expectedRevision:5}) as {record:LoopRecord}).record;
+    expect(inference(restored)).not.toHaveProperty('advanced');
+    const concurrent=Promise.all([
+      invoke('run',{slug:definition.slug,input:{text:'published'},requestId:'published'}),
+      invoke('run',{slug:imported.slug,input:{text:'imported'},requestId:'imported'}),
+    ]) as Promise<RunReceipt[]>;
+    try{await vi.waitFor(()=>expect(captured).toHaveLength(2),{timeout:3000});expect(captured.map(request=>({model:request.model,temperature:request.temperature,maxTokens:request.maxTokens})).sort((left,right)=>(left.maxTokens??0)-(right.maxTokens??0))).toEqual([{model:'fake/switched',temperature:0,maxTokens:96},{model:'fake/switched',temperature:0,maxTokens:112}]);}
+    finally{release();}
+    const [publishedRun,importedRun]=await concurrent;
+    expect([publishedRun,importedRun]).toMatchObject([{state:'completed',result:'fixture:96'},{state:'completed',result:'fixture:112'}]);
+    expect(s.complete.mock.calls.map(([request])=>({model:request.model,temperature:request.temperature,maxTokens:request.maxTokens}))).toEqual(expect.arrayContaining([expect.objectContaining({temperature:undefined,maxTokens:undefined}),{model:'fake/switched',temperature:0,maxTokens:96},{model:'fake/switched',temperature:0,maxTokens:112}]));
+    (s.config as Record<string,unknown>).models={providers:{fake:{models:[{id:'unsupported',compat:{supportsTemperature:false}}]}}};
+    const unsupported=structuredClone(importedRecord.definition);const unsupportedNode=unsupported.nodes.find(node=>node.kind==='inference');if(!unsupportedNode||unsupportedNode.kind!=='inference')throw Error('Expected inference fixture.');unsupportedNode.model='fake/unsupported';unsupportedNode.advanced={temperature:0,maxTokens:96};
+    const incompatible=(await invoke('draft',{definition:unsupported,expectedRevision:1}) as {record:LoopRecord}).record;
+    expect(await invoke('capabilities',{model:'fake/unsupported'})).toMatchObject({parameters:expect.arrayContaining([expect.objectContaining({key:'temperature',support:'unsupported'})])});
+    const unsupportedInput={definition:incompatible.definition,input:{text:'must not dispatch'},requestId:'unsupported'};
+    if(surface==='session-action')await expect(invoke('test',unsupportedInput)).rejects.toThrow('Temperature: The host model catalog marks temperature unsupported for this model.');
+    else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`test ${JSON.stringify(unsupportedInput)}`})).text).toContain('Temperature: The host model catalog marks temperature unsupported for this model.');
+    else expect(await invoke('test',unsupportedInput)).toMatchObject({kind:'loops-error',error:{message:'Temperature: The host model catalog marks temperature unsupported for this model.'}});
+    expect(inference(incompatible)).toMatchObject({advanced:{temperature:0,maxTokens:96}});
+    expect(s.complete.mock.calls).toHaveLength(3);
   },30000);
   it.each(['ui','command','tool'] as const)('preserves current and published slug reservations through %s lifecycle operations',async surface=>{
     const s=await setup();let sequence=0;
@@ -866,6 +967,51 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     }finally{if(filename)writeFileSync(filename,saved);}
     expect((await client.invoke('load',{id:definition.id})).definition.nodes[1]).toMatchObject({value:large});expect(s.complete).not.toHaveBeenCalled();
   });
+  it.each(['ui','command','tool'] as const)('preserves encoded upload fragments through the %s SDK adapter and service restart',async surface=>{
+    let s=await setup();let sequence=0;
+    const invoke=async(op:string,input:Record<string,unknown>)=>{
+      if(surface==='tool')return toolJson(s,op,input,`encoded-${++sequence}`);
+      if(surface==='command'){
+        const args=`${op} --json-base64 ${Buffer.from(JSON.stringify(input)).toString('base64')}`;
+        expect(args.length).toBeLessThan(4096);
+        const text=(await s.commands.get('loops')!.handler({...s.commandContext,args})).text!;
+        return text.startsWith('Loops [')?{failure:text}:JSON.parse(text);
+      }
+      const response=await s.action(op,input);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;
+    };
+    const directory=join(s.root,'loops-poc','documents'),files=()=>readdirSync(directory).map(name=>[name,readFileSync(join(directory,name),'utf8')]);
+    const text='\uFEFF🙂\nquote" and slash\\',json=JSON.stringify({text}),characters=Array.from(json),cut=json.indexOf('\uFEFF');
+    const first=characters.slice(0,cut).join(''),last=characters.slice(cut).join(''),encode=(value:string)=>Buffer.from(value).toString('base64');
+    const uploadId=`encoded-${surface}`,start={uploadId,offset:0,textBase64:encode(first)};
+    expect(await invoke('upload',{uploadId,offset:0,textBase64:''})).toMatchObject({offset:0,completed:false});
+    expect(await invoke('upload',start)).toMatchObject({offset:cut,completed:false});
+    const before=files();
+    for(const fields of [{},{text:'',textBase64:''},{textBase64:'Zh=='},{textBase64:Buffer.from([0xc3,0x28]).toString('base64')}]){
+      expect(JSON.stringify(await invoke('upload',{uploadId,offset:cut,...fields}))).toContain('LOOPS_UPLOAD_ENCODING');expect(files()).toEqual(before);
+    }
+    expect(JSON.stringify(await invoke('upload',{uploadId,offset:cut+1,textBase64:encode(last)}))).toContain('LOOPS_UPLOAD_CONFLICT');expect(files()).toEqual(before);
+    expect(JSON.stringify(await invoke('upload',{uploadId,offset:cut,textBase64:encode(last),complete:true,sha256:'0'.repeat(64)}))).toContain('LOOPS_UPLOAD_INTEGRITY');expect(files()).toEqual(before);
+    await expect(s.action('upload',start,[])).resolves.toMatchObject({ok:true,result:{kind:'loops-error',operation:'upload',error:{code:'HOST_POLICY_DENIED'}}});expect(files()).toEqual(before);
+    s.config.plugins.entries['loops-poc'].enabled=false;
+    const denied=await invoke('upload',start).then(value=>JSON.stringify(value),error=>String(error));expect(denied.toLowerCase()).toContain('disabled');expect(files()).toEqual(before);
+    s.config.plugins.entries['loops-poc'].enabled=true;
+    for(const shutdown of shutdowns.splice(0))await shutdown();
+    s=await setup({root:s.root});
+    expect(await invoke('upload',start)).toMatchObject({offset:cut,completed:false});
+    expect(await invoke('upload',{uploadId,offset:0,text:first})).toMatchObject({offset:cut,completed:false});
+    expect(await invoke('upload',{uploadId,offset:cut,textBase64:encode(last)})).toMatchObject({offset:characters.length,completed:false});
+    const finish={uploadId,offset:characters.length,textBase64:'',complete:true,sha256:createHash('sha256').update(json).digest('hex')};
+    const completed=await invoke('upload',finish);expect(completed).toMatchObject({offset:characters.length,completed:true});
+    expect(await invoke('upload',finish)).toEqual(completed);
+    const {id:_id,revision:_revision,schemaVersion:_version,...definition}=structuredClone(examples[0]);definition.slug=`encoded-${surface}`;definition.capabilities=[];
+    definition.nodes=[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}];definition.edges=[{id:'next',source:'input',target:'return',port:'next'}];
+    await invoke('create',{definition});
+    const run=await invoke('run',{slug:definition.slug,input:completed.reference,requestId:`encoded-${surface}`});
+    expect(run).toMatchObject({state:'completed',result:text});
+    const output=await invoke('output',{runId:run.id});expect(output).toMatchObject({text,nextOffset:null});
+    expect(createHash('sha256').update(output.text).digest('hex')).toBe(createHash('sha256').update(text).digest('hex'));
+    expect(s.complete).not.toHaveBeenCalled();
+  });
   it('reports upload validation conflicts consistently and preserves the previously staged value',async()=>{
     const s=await setup(),input={uploadId:'conflict',offset:0,text:'{}'};await s.action('upload',input);
     const changed={...input,text:'[]'},ui=await s.action('upload',changed),tool=await s.tools.find(tool=>tool.name==='loops_upload')!.execute('upload-conflict',changed);
@@ -978,11 +1124,11 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect((await del.execute('stale',{id:'summarize-text',expectedRevision:1})).details).toMatchObject({kind:'loops-error',error:{code:'LOOPS_REVISION_CONFLICT'}});
     expect(await s.action('edit',{id:'summarize-text',expectedRevision:2,changes:{name:'Forbidden'}},['operator.read'])).toMatchObject({result:{kind:'loops-error',error:{message:expect.stringMatching(/authorized/)}}});
   });
-  it('requires a matching host-resolved conversation for all authoring tools',async()=>{
+  it('returns classified failures when a tool loses its host-resolved conversation',async()=>{
     for(const context of [{agentId:'other'},{sessionKey:'agent:main:forged'},{sessionId:'forged'}]){
       const s=await setup({toolContext:context});
-      await expect(s.tools.find(t=>t.name==='loops_library')!.execute('bad-reader',{})).rejects.toThrow();
-      await expect(s.tools.find(t=>t.name==='loops_delete')!.execute('bad-author',{id:'summarize-text',expectedRevision:1})).rejects.toThrow();
+      await expect(s.tools.find(t=>t.name==='loops_library')!.execute('bad-reader',{})).resolves.toMatchObject({details:{kind:'loops-error',operation:'library',error:{code:'LOOPS_SESSION_CHANGED'}}});
+      await expect(s.tools.find(t=>t.name==='loops_delete')!.execute('bad-author',{id:'summarize-text',expectedRevision:1})).resolves.toMatchObject({details:{kind:'loops-error',operation:'delete',error:{code:'LOOPS_SESSION_CHANGED'}}});
     }
   });
   it('uses Codex-compatible array schemas without weakening ordered Repeat validation',async()=>{
@@ -1023,6 +1169,6 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(s.complete).toHaveBeenCalledOnce();
   });
   it('returns truthful waits and refuses generic review approval',async()=>{const s=await setup();await s.action('enable',{id:'read-pause-continue',revision:1,enabled:true,grants:['llm','model-info']});const result=await s.tools.find(t=>t.name==='loops_run')!.execute('pause',{slug:'read-pause-continue',input:{text:'A'}});expect(result.details).toMatchObject({state:'waiting',definition:{revision:1}});expect(s.complete).not.toHaveBeenCalled();});
-  it('rejects a host-revoked plugin after a tool factory was created',async()=>{const s=await setup();s.config.plugins.entries['loops-poc'].enabled=false;await expect(s.tools.find(t=>t.name==='loops_list')!.execute('disabled',{})).rejects.toThrow(/disabled/);});
+  it('returns a classified plugin-disabled failure after a tool factory was created',async()=>{const s=await setup();s.config.plugins.entries['loops-poc'].enabled=false;await expect(s.tools.find(t=>t.name==='loops_list')!.execute('disabled',{})).resolves.toMatchObject({details:{kind:'loops-error',operation:'list',error:{code:'LOOPS_DISABLED'}}});});
   it('keeps command input bounded and distinguishes explicit retry IDs',async()=>{const s=await setup();expect(parseCommand({...s.commandContext,args:'run summarize-text hello --request-id once'})).toMatchObject({input:{text:'hello'},requestId:'command:once'});expect(()=>parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)},16000)).toThrow(/large/);expect(parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)})).toHaveProperty('input.text');});
 });

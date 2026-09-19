@@ -71,13 +71,18 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     enable:(p,c)=>service().invoke('enable',bridge.actor(c),p.id,p.revision,p.enabled,p.grants),revoke:(p,c)=>service().invoke('revoke',bridge.actor(c),p.id),runs:(_,c)=>service().invoke('runs',bridge.actor(c)),inspect:(p,c)=>service().invoke('status',bridge.actor(c),p.runId),review:async(p,c)=>receipt(await service().invoke('review',bridge.actor(c),p.runId,p.decision)),
   };
   const safely=async<T>(name:string,context:FeatureInvocationContext,handler:(actor:Actor)=>T|Promise<T>)=>{
-    const actor=bridge.actor(context);
+    let actor:Actor|undefined;
     try{
+      actor=bridge.actor(context);
       const result=await handler(actor);actor.check();return result;
     }catch(error){
-      actor.check();
-      if(!(error instanceof LoopError))throw error;
-      return {kind:'loops-error' as const,operation:name,error:safeFailure(error)};
+      // Recheck a constructed actor before publishing a known failure. A lost
+      // session supersedes a stale operation failure, but unexpected errors
+      // still cross the host boundary as masked failures.
+      let failure:unknown=error;
+      try{actor?.check();}catch(current){failure=current;}
+      if(!(failure instanceof LoopError))throw failure;
+      return {kind:'loops-error' as const,operation:name,error:safeFailure(failure)};
     }
   };
   const wrapped=Object.fromEntries(Object.entries(handlers).map(([name,handler])=>[name,(input:unknown,context:FeatureInvocationContext)=>safely(name,context,async actor=>{

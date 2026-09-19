@@ -25,6 +25,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Verify mounted Editor Advanced lifecycle
+        if: runner.os == 'Linux' && matrix.node == '24.16.0'
+        run: |
+          npx playwright-core install --with-deps chromium
+          node scripts/verify-editor.mjs
+        env:
+          LOOPS_EVIDENCE_DIR: evidence/ci
       - name: Verify extracted publication artifact
         run: node scripts/verify-package.mjs
         env:

@@ -12,14 +12,111 @@ Reviewed September 12, 2026. The active deliverable is the [standalone 1.0 plugi
 
 Issue state, linked PR state, source behavior and first containing release are separate facts. Recheck them at contribution and adoption time. An open issue may describe already-landed behavior; a related PR may fix only part of the requirement.
 
+## SDK01 consumer qualification — September 14, 2026
+
+The [compile-only consumer](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/test/contracts/sdk01-consumer.ts) imports
+`OpenClawPluginApi` from the supported `openclaw/plugin-sdk/core` export. The
+normal `npm run typecheck` gate checks inherited and explicit-override requests
+against the pinned **2026.9.3** peer. It makes no runtime or provider call.
+Its key assertions deliberately require renewed qualification when the peer
+changes; an absent member assertion describes that named interface only.
+
+| Public contract | Available behavior | Qualification limit |
+|---|---|---|
+| `runtime.llm.complete` isolated request | One fresh user prompt; optional model, temperature, output-token limit, reasoning and cancellation signal. Omitting generation overrides inherits host behavior. Explicit temperature `0` typechecks. | Temperature and `maxTokens` are documented advisory hints. Type acceptance does not establish model validity, normalization or provider enforcement. Loops still requires a positive output-token limit. |
+| Additional sampling overrides | The requested top-p/top-k/min-p/typical-p, penalties, seed and stop keys are absent from this public completion request. | Provider or shared configuration support is not a per-invocation plugin contract. Unset controls do not block inference; incompatible explicit overrides remain preserved and fail preflight with an explanation. |
+| Capability information | Loops can use the host model catalog's temperature compatibility flag. Its other Advanced descriptors identify the pinned completion contract. | `runtime.llm` has no `capabilities` member. This is not a claim that OpenClaw has no other capability APIs. Full selected-runtime sampling ranges, inherited values and support descriptors remain unqualified. |
+| Completion result | Text, actual provider/model/agent, usage, runtime execution owner and caller audit. Loops separately records the settings it submitted to the host. | The result has no normalized/transmitted generation-settings receipt. `transmittedToHost` is plugin submission evidence; it is not provider transport evidence. Applied settings remain `unknown`. |
+
+Accepted [PR #159](https://github.com/Jacob-J-Thomas/openclaw-loops/pull/159)
+provides Advanced lifecycle, zero-value, preflight and concurrent-isolation
+mechanics, including a mounted production editor with synthetic transport.
+Accepted [PR #160](https://github.com/Jacob-J-Thomas/openclaw-loops/pull/160)
+provides six actual Codex/Ollama selected-model journeys on the same inherited
+node through native UI, command and agent tools. Their original source/archive
+receipts remain authoritative for those exercised paths. Neither receipt
+establishes sampling transport, applied reasoning or effective account identity.
+This consumer does not recast fixture output or generated text as such evidence.
+
+Fresh issue readback on September 14 confirmed that
+[#127561](https://github.com/openclaw/openclaw/issues/127561) and
+[#90193](https://github.com/openclaw/openclaw/issues/90193) remain open. The former
+addresses the configured `top_p` alias; the latter covers duplicate Codex
+completion transports. Neither supplies the full per-call forwarding,
+capability discovery or settings-attribution contract. SDK01 adoption remains
+open until a released public contract and actual transport qualification meet
+those requirements. This qualification adds no host patch, provider client,
+shared-configuration change or new compatibility claim.
+
+## SDK02 consumer qualification — September 14, 2026
+
+The [compile-only consumer](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/test/contracts/sdk02-consumer.ts)
+checks `openclaw/plugin-sdk/core` and `feature-plugin` against the pinned
+**2026.9.3** peer without a runtime or provider call. A command context has an
+optional invocation-bound `runtimeContext.llm.complete`; tool and
+session-action types lack those named members. This is a property of those
+named interfaces, not an absence claim for other host APIs. The ordinary
+isolated completion request accepts `execution.authProfileId`, but host policy
+decides whether that requested account binding is authorized. Its result names
+provider/model/agent/runtime owner and caller, without effective-account or
+applied-reasoning attestation.
+
+Accepted [PR #160](https://github.com/Jacob-J-Thomas/openclaw-loops/pull/160)
+retains six actual Codex/Ollama routes for the same inherited node. Its Codex
+agent-tool route first returned `HOST_POLICY_DENIED` after a host session
+account binding; after the dedicated profile explicitly granted
+`plugins.entries.loops-poc.llm.allowAuthProfileOverride`, fresh agent-tool and
+native UI routes completed. The preserved receipt identifies actual
+provider/model/agent/runtime owner and requested reasoning, while effective
+account and applied reasoning remain `unknown`. It proves neither two-account
+isolation nor transparent account inheritance.
+
+Bolt #57's retained ordinary-install evidence records a real post-turn
+`HOST_ABORTED` loop attempt and restart-preserved uncertainty when the public
+invocation signal ended. This is request-lifetime evidence, not durable
+authority. A durable model-only runner remains unadopted until its account,
+authority, cancellation and settlement semantics are qualified under SDK02/06.
+This consumer and reused evidence do not change host policy, credentials,
+profiles, providers or runtime behavior.
+
+## SDK04 consumer qualification — September 19, 2026
+
+The [compile-only consumer](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/test/contracts/sdk04-consumer.ts)
+checks the pinned **2026.9.3** public `runtime.subagent` contract for a named
+tool-free `run` with idempotency and `completionDelivery:"current-requester"`,
+plus `waitForRun` and `getSessionMessages` request shapes. It imports only
+`openclaw/plugin-sdk/core` and makes no runtime, provider, Gateway or delivery
+call. Type acceptance does not grant a requester, select a destination, or
+establish successful or durable delivery.
+
+An ordinary external plugin installed through `plugins install --link` was
+then exercised on OpenClaw 2026.9.3/Node 24.16.0. The authenticated synthetic
+`plugins.sessionAction` and a real `before_dispatch` hook entered through
+public `GatewayClient` `chat.send` both rejected the named setting because the
+host did not grant an active requester-bound scope. The WebChat terminal was
+host-injected with zero model tokens; no subagent run was admitted. These are
+two actual unbound negatives, not proof that another public delivery API is
+absent and not a successful, post-request, or durable-delivery claim.
+
+Fresh readback on September 19 found [#145021](https://github.com/openclaw/openclaw/issues/145021)
+and [#117210](https://github.com/openclaw/openclaw/issues/117210) open, with
+[#117212](https://github.com/openclaw/openclaw/pull/117212) open at
+`2c64200ed4753df66c25f0924b5154632925def1`. The former is scoped cancellation
+of host-bound current-turn delivery; the latter is outbound session
+correlation. Neither readback supplies a supported requester-bound destination
+or durable completion authority. Parent SDK04 remains open for a supported
+destination, completion after request end/restart, permission reauthorization,
+and dedupe. SDK02 account authority and SDK06 cancellation/physical-settlement
+qualification remain separate requirements.
+
 ## Required plugin-facing contracts
 
 | ID | 1.0 requirement | Existing issue coverage | Remaining gate |
 |---|---|---|---|
 | SDK01 | Typed per-call inference overrides and runtime/model capability descriptors; inheritance, explicit zero and honest normalization/transport attribution. | #127561 covers one configuration alias. #90193 concerns shared Codex completion behavior. Neither covers the complete parameter/discovery contract. | Agree the residual public completion contract with its owner, implement and release it. Verify real Ollama transport, native Codex reasoning, unsupported/advisory values and concurrent isolation. No global configuration mutation. |
-| SDK02 | Effective model/runtime/account selection and cancellation authority consistently bound to the UI, command or tool invocation. | #122172 provides a model-only durable execution candidate already visible in releases; #90193 is partial transport parity; #141438 is a backend-specific sender-context defect. | Prove or extend request-bound completion for all entry paths, waits and retries, with two distinct accounts on one provider. Do not infer credential ownership from sender IDs or fall back to the operator's credentials. |
-| SDK03 | Authenticated initiating principal, current target-session read/control permission, permitted agent inventory and history/recovery across reset. | #115902 originally requests principal exposure, but its accepted scope is approval attribution only. #127977/PR #127982 supplies plugin-scoped session state, not authorization. | Obtain the remaining host authorization contract and test owner/member/read-only/other-session/reset/reassignment cases. Do not build a second identity or team-permission system inside Loops. |
-| SDK04 | Authorized completion after request end and restart; host-selected destination, dedupe, cancellation and permission revalidation. | #145021 addresses per-send cancellation; #117210/PR #117212 adds outbound session correlation. Existing current-requester APIs need context/lifetime qualification. | Prove a supported durable external-plugin route or extend the existing host delivery lifecycle. Persist Loops delivery state, preserve uncertain outcomes and prevent cross-session/duplicate delivery. Correlation metadata is not delivery authority. |
+| SDK02 | Effective model/runtime/account selection and cancellation authority consistently bound to the UI, command or tool invocation. | Public command-bound completion and policy-gated isolated `authProfileId` are type-qualified; PR160 supplies six retained routes plus default-policy denial and one explicitly granted-profile success. #122172 remains a model-only durable runner candidate; #90193 is partial transport parity; #141438 is a backend-specific sender-context defect. | Prove or extend request-bound completion for all entry paths, waits and retries, with two distinct accounts on one provider. Do not infer credential ownership from sender IDs or fall back to the operator's credentials. Preserve the post-turn abort boundary and do not adopt durable execution without SDK02/06 authority, cancellation and settlement qualification. |
+| SDK03 | Authenticated initiating principal, current target-session read/control permission, permitted agent inventory and history/recovery across reset. | Pinned 2026.9.3 public consumer [SDK03](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/test/contracts/sdk03-consumer.ts) qualifies host-attested current command/tool/session-action identity and ordinary current-session `getSessionEntry` lookup. Exported transcript helpers operate on caller-supplied scope; the host read fence protects an already-admitted current turn, not a plugin-chosen target. #115902 covers approval attribution; #127977/PR #127982 cover plugin-scoped session state, not authorization. | Reuse current-session evidence only: #47/#163 prove current non-main admission, foreign/read-only denial, reset retaining session ID/history, and delete/recreate denying the old run. Obtain a documented public host decision for a newly selected target, then test independently authenticated owner/member/read-only/other-session/reset/reassignment/recovery cases. Do not build a second identity or team-permission system inside Loops. |
+| SDK04 | Authorized completion after request end and restart; host-selected destination, dedupe, cancellation and permission revalidation. | The pinned public compile consumer names tool-free/idempotent `runtime.subagent.run`, `current-requester`, wait and inspection. Ordinary installed session-action and WebChat `before_dispatch` routes both rejected that named delivery setting without a host-granted active requester scope; their terminal admitted zero model tokens and no subagent run. #145021 remains open for current-turn cancellation; #117210/PR #117212 remain open for outbound session correlation. | Prove a supported external-plugin destination and completion after request end/restart, with permission reauthorization and dedupe. Persist Loops delivery state and preserve uncertain outcomes. The exercised negatives do not establish global API absence or successful/durable delivery; correlation is not delivery authority. SDK02 account and SDK06 cancellation/settlement requirements remain separate. |
 | SDK06 | Cancellation of a durable host run without deleting its session; observable physical settlement and ownership enforcement. | #120139/PR #120140 is the direct candidate. Ordinary single-completion AbortSignal support already exists. | If the durable runner is selected, adopt the released cancellation contract and verify plugin ownership, completion/cancel races, cleanup, restart and transcript preservation. Do not treat deleting the session as cancellation. |
 | SDK05 | Native tools, plans/goals, compaction, subagents and broad host integrations. | Revisit relevant owner issues when their expansion milestone is admitted. | **Deferred after 1.0.** These capabilities are not dependencies just to finish the existing nine-node palette. |
 

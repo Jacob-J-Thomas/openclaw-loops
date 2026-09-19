@@ -67,7 +67,7 @@ under R19–R23; calling an action handler alone is not browser evidence.
 | `recover` | `loops_recover` | Restore a definition as disabled. |
 | `delete` | `loops_delete` | Delete the requested definition at the expected revision; protect open runs. |
 | `retention` | `loops_retention` | Preview cleanup, then apply that unchanged candidate plan. |
-| `upload` | `loops_upload` | Stage and verify input before an authorized operation consumes it. |
+| `upload` | `loops_upload` | Stage plaintext or explicit Base64 fragments and verify input before an authorized operation consumes it. |
 | `document` | `loops_document` | Retrieve immutable complete results and verify their digest. |
 
 ## Common negative and unavailable cases
@@ -160,6 +160,13 @@ ancestry, Human review separation and archive/recovery/deletion. These automated
 tests use fixture host capabilities and no real model completion; source and
 extracted-package runs remain distinct from installed-runtime evidence.
 
+Encoded-upload adapter tests also preserve incomplete JSON, Unicode, newlines
+and a BOM across fragment boundaries and service restart. They check empty/zero
+values, mixed representations, malformed Base64/UTF-8, offset/digest conflicts,
+current authority, exact replay and complete reference consumption through all
+three surfaces. The [transport contract](TRANSPORT.md) defines decoded budgets
+and offsets; encoding does not grant additional permissions.
+
 Stable principals across conversation reset, account-bound completion,
 unsupported sampling controls, durable requester-bound delivery and durable
 abort depend on the [public SDK requirements](UPSTREAM_REQUIREMENTS.md). A test
@@ -167,6 +174,72 @@ of local plugin revocation or an operator-admin session is not proof of those
 missing host contracts or all shared-team roles.
 
 ## Installed-runtime qualification
+
+### Current-session authority recipe
+
+On an installed OpenClaw 2026.9.3 Gateway, qualify only the authority that the
+public host contract actually supplies. Prepare a disposable profile with an
+existing non-`main` test agent. The verifier creates and deletes its own two
+synthetic sessions and makes no model call. Run:
+
+```sh
+node scripts/verify-session-authority.mjs \
+  --profile /absolute/path/to/test-profile \
+  --agent-id loops-authority-47
+```
+
+The verifier connects through the public `GatewayClient` and
+`plugins.sessionAction` API. This is Gateway session-action evidence, **not
+native UI evidence**. It creates a UUID-named Input/Wait/Return loop, proves a
+permitted non-main current-session session-action admission, sends the matching
+documented no-model `/loops run --json-base64 <payload>` command, awaits its
+terminal chat event, and correlates the inspected run's source, owner and
+input. It exercises foreign-session and read-only denials through session
+actions and commands, records the actual granted hello scopes, and requires
+the expected structured permission failure. Every command must report zero
+model tokens. It settles both parked runs before using public `sessions.reset`
+on its current synthetic session. If the host preserves `sessionId`, existing
+authorized history must remain accessible; if it replaces that identity,
+old-run access must fail.
+
+For a real replacement check, the verifier deletes only its own synthetic
+conversation, recreates that key through a registered command, and confirms
+the new host session ID differs. Both command and session-action access to the
+old run must fail. It deletes its fixture and synthetic sessions, reporting
+cleanup failures and returning a failing exit status when cleanup fails. The
+mode-0600 receipt is written below ignored `evidence/issue-47/worker/` by default.
+
+The receipt is deliberately narrow. A Gateway operator scope is a
+host-granted connection scope; it is not evidence of an independent person,
+team member role, reassignment right, or durable authority after a reset. The
+2026.9.3 public Gateway API has no supported no-model RPC for directly
+invoking a registered agent tool, so this recipe does not fabricate one or use
+an agent prompt to obtain a tool call. The registered UI, command, and tool
+adapter regressions in `test/adapters.test.ts` cover the plugin-owned
+current-session owner key and denied foreign, replaced and missing-session
+reads. A deleted session-action request must return the classified
+`LOOPS_SESSION_REQUIRED` result before any command recreates that key; a
+generic host `UNAVAILABLE` is a failed transport contract, not a permission
+denial. A real agent-tool authorization exercise requires a serial model-backed
+host run. SDK03 remains unresolved until the required principal, team-role,
+target-session and recovery authorization contracts are available.
+
+The September 14, 2026 qualification used OpenClaw 2026.9.3, Node 24.16.0,
+runtime source `d5d6fc2d37910e1fac56af5c0ef436c5aeebcebc`, and ordinarily installed
+archive `a00ae0a9bbbac1e5d30d0af0034bf39ab5425b677744bbd0a6126c99b008c527`.
+The deterministic recipe passed with an operator-created non-main agent and
+actual admin/write/read versus read-only connection grants. This host's reset
+preserved the session ID and changed its lifecycle revision; deletion and
+recreation produced a different session ID. Both behaviors passed their
+respective access checks, and all synthetic parked runs settled before cleanup.
+
+A separate real Codex Sol request in that non-main agent's conversation made
+five recorded Loops tool calls: deny foreign-run status, create an enabled
+definition, run it, inspect its completed run, and delete its definition. The
+actual matching tool results and public inspection confirmed each outcome.
+The loop itself used Input and Return and made no inference call. This proves
+the exercised agent-tool boundary, independently of the deterministic recipe
+and fake adapter regressions; it does not qualify independent team principals.
 
 Run against an explicitly selected **disposable** loopback Gateway profile with
 the candidate installed through ordinary plugin installation:
@@ -184,12 +257,23 @@ uses the current configured model; it does not replace model/account/tool policy
 model and verifies their recorded tool reports. Loop execution in this lifecycle
 journey uses deterministic echo/Wait/review nodes. Only `agent` invokes a model.
 It does not claim inference-node parameter forwarding or browser interaction.
+The upload steps use explicit Base64 fragments, including the incomplete JSON
+boundary that was altered in actual plaintext Ollama tool calls
+([Finding #130](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/130)).
+Retain exact requested/actual arguments and output digests when qualifying this
+path; successful encoding does not establish the cause of plaintext alteration.
 
 The agent journey expects exactly one recorded result per requested tool. It
 preserves unexpected/missing calls and stops without blindly repeating a
 mutation. Human approval in that journey is a separate authenticated session
 action, explicitly recorded and never attributed to the model. The script
 removes its own synthetic definition after success and preserves run evidence.
+Long Ollama conversations have also failed host compaction or exceeded context
+([Finding #129](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/129)). A
+failed final chat can follow a committed tool operation. Preserve the actual
+tool result and inspect current state before deciding whether an explicit retry
+is needed; do not describe a split-conversation recovery as an uninterrupted
+successful journey.
 
 Private receipts are written under ignored `evidence/interface-parity` by
 default (`LOOPS_EVIDENCE_DIR` can select another private evidence directory).
