@@ -47,6 +47,7 @@ writeFileSync(pathResolve(profile,'openclaw.json'),JSON.stringify(config,null,2)
 const env={...process.env,OPENCLAW_CONFIG_PATH:pathResolve(profile,'openclaw.json'),OPENCLAW_STATE_DIR:pathResolve(profile,'state')};
 const runCli=(selected,...args)=>execFileSync(process.execPath,[selected.cli,...args],{cwd:selected.root,env,encoding:'utf8',maxBuffer:8*1024*1024});
 const install=(selected,archive)=>runCli(selected,'plugins','install',`npm-pack:${pathResolve(archive)}`,'--force','--accept-capabilities');
+const installedRoot=selected=>pathResolve(JSON.parse(runCli(selected,'plugins','info','loops-poc','--json')).plugin.rootDir);
 const installations=[];
 const archiveRegularFiles=new Map();
 const regularFiles=archive=>{
@@ -54,17 +55,21 @@ const regularFiles=archive=>{
   const files=new Map(execFileSync('tar',['-tvzf',archive],{encoding:'utf8'}).trim().split('\n').filter(line=>line.startsWith('-')).map(line=>{const match=line.match(/\s(package\/.+)$/);assert(match,`Could not read regular archive path: ${line}`);const file=match[1].replace(/^package\//,'');return [file,execFileSync('tar',['-xOf',archive,'package/'+file],{maxBuffer:16*1024*1024})];}));
   archiveRegularFiles.set(archiveSha,files);return files;
 };
+const verifyFilesAtRoot=(root,archive,otherArchive)=>{
+  const expectedFiles=regularFiles(archive),otherFiles=regularFiles(otherArchive),files=[...expectedFiles].map(([file,expected])=>{
+    const installed=pathResolve(root,file);assert(lstatSync(installed).isFile(),`Installed archive path is not a regular file: ${file}`);
+    assert.deepEqual(readFileSync(pathResolve(root,file)),expected);
+    return {file,sha256:createHash('sha256').update(expected).digest('hex')};
+  });
+  const obsoletePathsAbsent=[...otherFiles.keys()].filter(file=>!expectedFiles.has(file));
+  for(const file of obsoletePathsAbsent)assert.throws(()=>lstatSync(pathResolve(root,file)),{code:'ENOENT'},`Installed obsolete archive path remains: ${file}`);
+  return {files,obsoletePathsAbsent};
+};
 const verifyInstalled=(selected,archive,otherArchive)=>{
   const info=JSON.parse(runCli(selected,'plugins','info','loops-poc','--json'));
   assert.equal(info.plugin.id,'loops-poc');
   assert(pathResolve(info.plugin.rootDir).startsWith(pathResolve(profile,'state')+'/'));
-  const expectedFiles=regularFiles(archive),otherFiles=regularFiles(otherArchive),files=[...expectedFiles].map(([file,expected])=>{
-    const installed=pathResolve(info.plugin.rootDir,file);assert(lstatSync(installed).isFile(),`Installed archive path is not a regular file: ${file}`);
-    assert.deepEqual(readFileSync(pathResolve(info.plugin.rootDir,file)),expected);
-    return {file,sha256:createHash('sha256').update(expected).digest('hex')};
-  });
-  const obsoletePathsAbsent=[...otherFiles.keys()].filter(file=>!expectedFiles.has(file));
-  for(const file of obsoletePathsAbsent)assert.throws(()=>lstatSync(pathResolve(info.plugin.rootDir,file)),{code:'ENOENT'},`Installed obsolete archive path remains: ${file}`);
+  const {files,obsoletePathsAbsent}=verifyFilesAtRoot(info.plugin.rootDir,archive,otherArchive);
   installations.push({host:selected.version,archiveSha256:hash(archive),files,obsoletePathsAbsent});
 };
 const protectedConfig=()=>{const value=JSON.parse(readFileSync(pathResolve(profile,'openclaw.json'))),plugin=value.plugins??{};return JSON.stringify({gateway:value.gateway,agents:value.agents,models:value.models,tools:value.tools,auth:value.auth,logging:value.logging,bindings:value.bindings,channels:value.channels,skills:value.skills,env:value.env,pluginEntry:plugin.entries?.['loops-poc']});};
@@ -125,10 +130,16 @@ try{
   await client.stopAndWait();client=null;await stop();
 
   phase='matching-predecessor-restore';
-  renameSync(profile,pathResolve(raw,'current-profile-before-rollback'));
+  const currentProfileBeforeRollback=pathResolve(raw,'current-profile-before-rollback');
+  renameSync(profile,currentProfileBeforeRollback);
   cpSync(pathResolve(backup,'profile'),profile,{recursive:true,verbatimSymlinks:true});
   assert.deepEqual(inventory(profile),backupInventory,'Rollback did not restore the complete stopped predecessor profile.');
   verifyInstalled(hosts.previous,previous,current);
+  const rollbackPluginRoot=installedRoot(hosts.previous);
+  assert(rollbackPluginRoot.startsWith(pathResolve(profile,'state')+'/'),'Rollback plugin installation must remain inside the disposable profile.');
+  rmSync(rollbackPluginRoot,{recursive:true,force:true});mkdirSync(rollbackPluginRoot,{recursive:true,mode:0o700});
+  execFileSync('tar',['-xzf',pathResolve(current),'--strip-components=1','-C',rollbackPluginRoot]);
+  verifyFilesAtRoot(rollbackPluginRoot,current,previous);
   writeFileSync(pathResolve(raw,'install-rollback-previous.txt'),install(hosts.previous,pathResolve(backup,'application.tgz')),{mode:0o600});
   assert.equal(protectedConfig(),configBeforeUpgrade);verifyInstalled(hosts.previous,previous,current);
   start(hosts.previous);await waitForListening();client=await connect(hosts.previous);
@@ -136,7 +147,7 @@ try{
   assert.deepEqual(await action(client,session,'load',{id:created.record.definition.id}),created.record);
   await client.stopAndWait();client=null;await stop();
 
-  write('receipt.json',{previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,installations});
+  write('receipt.json',{previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,rollbackInstallerReplacedCurrentBytes:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,installations});
   completed=true;
 }catch(error){
   write('receipt.json',{previous:{source:previousSource,sha256:previousSha,expectedHostVersion:expectedHostVersions.previous??null,host:hostIdentity(hosts.previous)},current:{sha256:currentSha,expectedHostVersion:expectedHostVersions.current??null,host:hostIdentity(hosts.current)},status:'failed',phase,code:'LIFECYCLE_VERIFICATION_FAILED',fixtureOnly:true,noModelCalls:true});
