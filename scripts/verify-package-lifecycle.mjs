@@ -6,6 +6,7 @@ import {createRequire} from 'node:module';
 import {createConnection} from 'node:net';
 import {resolve as pathResolve} from 'node:path';
 import {setTimeout as pause} from 'node:timers/promises';
+import {writeLifecycleFailureReceipt} from './lifecycle-failure-receipt.mjs';
 
 const [previous,current]=process.argv.slice(2);
 assert(previous&&current,'Usage: node scripts/verify-package-lifecycle.mjs <previous.tgz> <current.tgz>');
@@ -150,7 +151,7 @@ try{
   write('receipt.json',{previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,rollbackInstallerReplacedCurrentBytes:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,installations});
   completed=true;
 }catch(error){
-  write('receipt.json',{previous:{source:previousSource,sha256:previousSha,expectedHostVersion:expectedHostVersions.previous??null,host:hostIdentity(hosts.previous)},current:{sha256:currentSha,expectedHostVersion:expectedHostVersions.current??null,host:hostIdentity(hosts.current)},status:'failed',phase,code:'LIFECYCLE_VERIFICATION_FAILED',fixtureOnly:true,noModelCalls:true});
+  writeLifecycleFailureReceipt(evidence,phase,error);
   writeFileSync(pathResolve(raw,'failure.txt'),String(error?.stack??error),{mode:0o600});
   console.error(`Package lifecycle verification failed during ${phase}; private diagnostic evidence was retained.`);
   process.exitCode=1;
