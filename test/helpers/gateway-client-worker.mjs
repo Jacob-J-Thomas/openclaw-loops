@@ -1,6 +1,14 @@
 // A public SDK client is process-scoped so its OpenClaw identity is initialized
-// only after the disposable profile environment has been installed.
-const {GatewayClient}=await import('openclaw/plugin-sdk/gateway-runtime');
+// only after the disposable profile environment has been installed. Lifecycle
+// tests may select the public SDK from a matching previous host checkout.
+import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
+import {resolve} from 'node:path';
+
+const clientProjectRoot=resolve(process.env.LOOPS_GATEWAY_CLIENT_PROJECT_ROOT??'.');
+const clientRequire=createRequire(resolve(clientProjectRoot,'package.json'));
+const gatewayRuntime=clientRequire.resolve('openclaw/plugin-sdk/gateway-runtime');
+const {GatewayClient}=await import(pathToFileURL(gatewayRuntime).href);
 const url=process.env.LOOPS_GATEWAY_URL,token=process.env.LOOPS_GATEWAY_TOKEN;
 if(!url||!token)throw Error('Disposable gateway endpoint and token are required.');
 
