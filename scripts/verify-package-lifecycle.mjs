@@ -154,8 +154,9 @@ const pluginState=pathResolve(profile,'state','loops-poc');
   completed=true;
 }catch(error){
   writeLifecycleFailureReceipt(evidence,phase,error,{previous:{source:previousSource,sha256:previousSha,hostVersion:hosts?.previous?.version},current:{sha256:currentSha,hostVersion:hosts?.current?.version}});
-  if(raw)try{mkdirSync(raw,{recursive:true,mode:0o700});writeFileSync(pathResolve(raw,'failure.txt'),String(error?.stack??error),{mode:0o600});}catch{/* The sanitized receipt remains the authoritative failure artifact. */}
-  console.error(`Package lifecycle verification failed during ${phase}; private diagnostic evidence was retained.`);
+  let privateDiagnosticRetained=false;
+  if(raw)try{mkdirSync(raw,{recursive:true,mode:0o700});writeFileSync(pathResolve(raw,'failure.txt'),String(error?.stack??error),{mode:0o600});privateDiagnosticRetained=true;}catch{/* The sanitized receipt remains the authoritative failure artifact. */}
+  console.error(`Package lifecycle verification failed during ${phase}; private diagnostic evidence ${privateDiagnosticRetained?'was retained':'could not be retained'}.`);
   process.exitCode=1;
 }finally{
   await client?.stopAndWait().catch(()=>{});await stop().catch(()=>{});if(completed&&profile)rmSync(profile,{recursive:true,force:true});

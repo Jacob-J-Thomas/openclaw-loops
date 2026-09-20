@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {mkdtempSync,readFileSync,readdirSync,rmSync} from 'node:fs';
+import {mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -69,6 +69,15 @@ describe('sanitized lifecycle failure receipt',()=>{
     const privateDirectory=readdirSync(join(directory,'.dev-profile'),{withFileTypes:true}).find(entry=>entry.isDirectory()&&entry.name.startsWith('package-lifecycle-evidence-'));
     expect(privateDirectory).toBeDefined();
     expect(readFileSync(join(directory,'.dev-profile',privateDirectory.name,'failure.txt'),'utf8')).toContain('Usage: node scripts/verify-package-lifecycle.mjs');
+  });
+
+  it('reports accurately when private argument diagnostics cannot be retained',()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-lifecycle-private-unavailable-'));directories.push(directory);
+    writeFileSync(join(directory,'.dev-profile'),'not a directory');
+    const result=spawnSync(process.execPath,[new URL('../scripts/verify-package-lifecycle.mjs',import.meta.url).pathname],{cwd:directory,encoding:'utf8',env:{...process.env,LOOPS_EVIDENCE_DIR:directory}});
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('private diagnostic evidence could not be retained');
+    expect(JSON.parse(readFileSync(join(directory,'package-lifecycle','receipt.json'),'utf8'))).toMatchObject({status:'failed',phase:'archive-validation',category:'invariant'});
   });
 
   it('keeps the sanitized receipt in the always-uploaded artifact allowlist without private evidence',()=>{
