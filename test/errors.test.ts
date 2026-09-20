@@ -24,6 +24,25 @@ describe('safe execution diagnostics',()=>{
     expect(errorDetail(error,{phase:'execution'})).toMatchObject({code:'EXECUTION_FAILED',retryable:false});expect(getter).not.toHaveBeenCalled();
     expect(JSON.stringify(errorDetail(error,{phase:'execution'}))).not.toContain('SYNTHETIC');
   });
+  it.each([
+    ['authentication',{status:401},'HOST_AUTHENTICATION_FAILED',false],
+    ['context',{code:'context_length_exceeded'},'HOST_CONTEXT_LIMIT',false],
+    ['model',{status:404},'HOST_MODEL_UNAVAILABLE',false],
+    ['rate limit',{status:429},'HOST_RATE_LIMITED',true],
+    ['service unavailable',{status:503,code:'service_unavailable'},'HOST_UNAVAILABLE',true],
+    ['overload',{message:'provider overload'},'HOST_UNAVAILABLE',true],
+    ['timeout',{code:'LLM_COMPLETION_TIMEOUT'},'HOST_TIMEOUT',true],
+    ['abort',{code:'LLM_COMPLETION_ABORTED'},'HOST_ABORTED',false],
+    ['pure output',undefined,'HOST_OUTPUT_REJECTED',false],
+  ])('classifies a released-style output cause: %s',(_name,signal,expected,retryable)=>{
+    const secret='SYNTHETIC_NESTED_PRIVATE';
+    const provider=signal?{message:`https://user:${secret}@example.test ${secret}`,details:{credential:secret},...signal}:undefined;
+    const isolated=Object.assign(new Error(`isolated ${secret}`),{code:'output-rejected',cause:provider});
+    const wrapped=Object.assign(new Error(`outer ${secret}`),{code:'LLM_COMPLETION_OUTPUT_REJECTED',cause:isolated});
+    const detail=errorDetail(wrapped,{phase:'inference',nodeId:'infer',model:'fixture/test'});
+    expect(detail).toMatchObject({code:expected,retryable,phase:'inference',nodeId:'infer',model:'fixture/test'});
+    expect(JSON.stringify(detail)).not.toContain(secret);expect(JSON.stringify(detail)).not.toContain('example.test');
+  });
   it('keeps deliberate graph failures and their location actionable',()=>{
     const error=executionError('Required test evidence was missing.','LOOPS_EXPLICIT_FAILURE');
     expect(errorDetail(error,{phase:'inference',nodeId:'exit',model:'fake/test'})).toMatchObject({code:'LOOPS_EXPLICIT_FAILURE',message:'Required test evidence was missing.',phase:'execution',nodeId:'exit',model:'fake/test'});
