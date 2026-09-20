@@ -46,6 +46,13 @@ describe('sanitized lifecycle failure receipt',()=>{
     expect(lifecycleFailureReceipt('archive-validation',new Error('failed'),{previous:{source:secret,sha256:'short',hostVersion:'bad/version',config:secret},current:{sha256:secret,hostVersion:'',token:secret}})).toEqual({status:'failed',phase:'archive-validation',category:'unexpected',message:'Lifecycle verification failed unexpectedly.',artifacts:{previous:{source:'unknown',sha256:'unknown',hostVersion:'unknown'},current:{sha256:'unknown',hostVersion:'unknown'}}});
   });
 
+  it('adds only bounded readiness evidence when a lifecycle listener appears after the failed deadline',()=>{
+    const secret='token=private-readiness-detail';
+    const receipt=lifecycleFailureReceipt('upgrade',new Error('private'),undefined,{restartOrdinal:1,deadlineElapsedMs:15000,deadlineProcessState:'alive',postDeadlineAttempts:3,postDeadlineWindowMs:200,listenerAfterDeadline:true,listenerElapsedMs:15200,finalProcessState:'alive',secret});
+    expect(receipt).toMatchObject({status:'failed',phase:'upgrade',category:'unexpected',readiness:{restartOrdinal:1,listenerAfterDeadline:true,listenerElapsedMs:15200}});
+    expect(JSON.stringify(receipt)).not.toContain(secret);
+  });
+
   it('recognizes a connection code after a child runtime failure is wrapped at the lifecycle boundary',()=>{
     let runtimeError;
     try{execFileSync(process.execPath,['--input-type=module','--eval',"throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1'),{code:'ECONNREFUSED'})"],{stdio:'pipe'});}catch(error){runtimeError=error;}

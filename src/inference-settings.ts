@@ -43,8 +43,8 @@ export function completionParameters(options: {model?: string; supportsTemperatu
       key, label: labels[key], type: key === 'stop' ? 'string[]' : ['topK','seed','maxTokens'].includes(key) ? 'integer' : 'number',
       support: unsupportedTemperature || !publicParameter ? 'unsupported' : 'advisory',
       reason: unsupportedTemperature ? 'The host model catalog marks temperature unsupported for this model.'
-        : publicParameter ? 'OpenClaw 2026.9.3 accepts this as a hint; its runtime may ignore it.'
-        : 'OpenClaw 2026.9.3 does not expose this parameter through the public isolated completion API.',
+        : publicParameter ? 'The pinned OpenClaw public isolated completion API accepts this as a hint; its runtime may ignore it.'
+        : 'The pinned OpenClaw public isolated completion API does not expose this parameter.',
       ...'minimum' in schema ? {minimum: schema.minimum as number} : {},
       ...'maximum' in schema ? {maximum: schema.maximum as number} : {},
       ...(defaultValue !== undefined && Value.Check(schema, defaultValue)) ? {defaultValue: defaultValue as Advanced[keyof Advanced]} : {},

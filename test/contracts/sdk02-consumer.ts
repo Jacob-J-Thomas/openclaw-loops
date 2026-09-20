@@ -15,7 +15,7 @@ type Assert<T extends true> = T;
 // A peer upgrade changing these named contracts requires renewed qualification.
 export type ToolHasNoCompleterMembers = Assert<Equal<Extract<keyof Tool,'runtimeContext'|'llm'|'complete'>,never>>;
 export type ActionHasNoCompleterMembers = Assert<Equal<Extract<keyof Action,'runtimeContext'|'llm'|'complete'>,never>>;
-export type ResultFields = Assert<Equal<keyof Result,'text'|'provider'|'model'|'agentId'|'usage'|'execution'|'audit'>>;
+export type ResultFields = Assert<Equal<keyof Result,'text'|'provider'|'model'|'responseModel'|'stopReason'|'agentId'|'usage'|'execution'|'audit'>>;
 
 // Runtime acceptance is host-policy-gated; typechecking establishes no account authority.
 export const policyGatedRequest = {
