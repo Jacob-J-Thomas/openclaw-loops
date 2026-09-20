@@ -1,3 +1,6 @@
+// Test-process allowance, not a loop/inference timeout. Finding #191 records
+// hosted 18,385ms and 25,463ms restarts beyond the former 15-second assumption.
+export const GATEWAY_STARTUP_BUDGET_MS=60_000;
 const MAX_DIAGNOSTIC_MS=45*1000;
 const numeric=(value,maximum)=>Number.isSafeInteger(value)&&value>=0&&value<=maximum?value:0;
 const state=child=>!child?'unavailable':child.exitCode!==null?'exited':child.signalCode!==null?'signaled':'alive';
