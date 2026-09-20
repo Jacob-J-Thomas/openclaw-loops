@@ -1,7 +1,7 @@
 # Loops interface contract
 
 The editor, `/loops` commands and `loops_*` agent tools use one typed feature
-contract. There are 34 public operations and 33 agent tools. `review` records an
+contract. There are 38 public operations and 37 agent tools. `review` records an
 explicitly authored Human review decision and is the sole operation without an
 agent tool. Agents may author, enable, invoke, inspect, cancel and recover loops.
 
@@ -67,8 +67,12 @@ under R19–R23; calling an action handler alone is not browser evidence.
 | `recover` | `loops_recover` | Restore a definition as disabled. |
 | `delete` | `loops_delete` | Delete the requested definition at the expected revision; protect open runs. |
 | `retention` | `loops_retention` | Preview cleanup, then apply that unchanged candidate plan. |
+| `maintenance` | `loops_maintenance` | Preview transport-file cleanup, then apply the unchanged candidate plan; protect referenced evidence and active readers/uploads. |
+| `transport_release` | `loops_transport_release` | Explicitly release an abandoned reader or unfinished upload; this does not delete its files. |
 | `upload` | `loops_upload` | Stage plaintext or explicit Base64 fragments and verify input before an authorized operation consumes it. |
 | `document` | `loops_document` | Retrieve immutable complete results and verify their digest. |
+| `document_acquire` | `loops_document_acquire` | Acquire an independent durable reader under the existing conversation authority. |
+| `document_release` | `loops_document_release` | Release that specific reader after verifying all pages, or explicitly abandon it. |
 
 ## Common negative and unavailable cases
 

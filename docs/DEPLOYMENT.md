@@ -8,7 +8,7 @@ This is a development alpha. The current candidate targets OpenClaw 2026.9.4. Fo
 
 Install the packaged plugin with OpenClaw's normal plugin installer, enable it in the profile, and open its native Loops page. Authoring and execution tools use the active host conversation. A new loop is enabled by default unless its author explicitly requests a draft. Generation controls inherit by omission. Do not add a per-plugin model allowlist unless the operator wants one. Existing host policy remains authoritative.
 
-Run history belongs to its originating agent/session/session generation. The library is Gateway-wide. With OpenClaw 2026.9.3, conversation reset and durable requester-bound delivery are pending upstream contracts; do not promise cross-reset run control or background completion notifications yet.
+Run history belongs to its originating agent/session/session generation. The library is Gateway-wide. The qualified ordinary conversation reset retains the session ID/history and access to its matching runs; deleting and recreating the session denies access to the old run. This does not authorize a newly selected target or reassigned principal. Those broader authority contracts remain SDK03 requirements, and durable requester-bound delivery/background completion remains SDK04; see [the exact qualification limits](UPSTREAM_REQUIREMENTS.md).
 
 ## Shared team
 
