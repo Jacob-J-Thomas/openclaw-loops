@@ -1,5 +1,22 @@
 # Local verification
 
+## Alpha.19 wrapped provider failure diagnostics
+
+[Bolt #192](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/192) consumes the provider failure causes shipped in OpenClaw 2026.9.5 by [upstream PR #147901](https://github.com/openclaw/openclaw/pull/147901). Loops already inspects a bounded chain of own-property causes without copying raw provider diagnostics into shared run history. The repair checks recognized service-unavailability and policy evidence before the generic completion-output rejection. It adds no provider client, host patch, automatic retry or new restriction.
+
+The ordinarily installed alpha.18 baseline reproduced a controlled HTTP 503 as `HOST_OUTPUT_REJECTED`, retryable false. Alpha.19 source `20cea0032fbb23fb25c6d32e424c6b8bd90ce560`, archive SHA-256 `d2c7366cee2ca391880043b41ce18e5710d85cc7c6e5020cbe3c9a59dcf86288`, instead returned `HOST_UNAVAILABLE`, retryable true. Both used the same unmodified released host and public session actions. All 27 installed archive members were compared. Later included documentation changes have a separate artifact identity recorded on the Bolt.
+
+| Installed-host case | Observed public outcome |
+|---|---|
+| Controlled success | Completed with the expected complete output and downstream Return. |
+| HTTP 401 / 404 / 429 / context-limit 400 / 503 | Authentication / model-unavailable / rate-limited / context-limit / unavailable categories respectively, retaining inference phase, node, model and recovery guidance. Each case made one observed HTTP request. No failed case dispatched Return. |
+| Unsolicited tool output | `HOST_OUTPUT_REJECTED`, non-retryable, with no Return; the completion remains tool-free. |
+| Deliberately nonexistent model at the separate local Ollama endpoint | `HOST_MODEL_UNAVAILABLE`, non-retryable, with node/model/recovery attribution and no Return. This test used the real configured endpoint; it did not directly capture its HTTP traffic or generate with an installed model. |
+
+The controlled HTTP/SSE fixture verifies the real host adapter boundary, not commercial-provider behavior or model quality. The Ollama case is recorded separately. Public run and inspection records excluded synthetic credentials and provider URLs. Owned clients and temporary Gateways stopped after the checks; the normal development Gateway and Ollama server were preserved. Unit regressions additionally cover overload, wrapped timeout/abort, pure output, and existing cycle/getter bounds. This candidate does not claim fresh real timeout, physical cancellation, effective-account or applied-reasoning evidence.
+
+Preserved unsuccessful probe attempts remain failures: one fixture profile initially lacked an explicit agent-override grant, one fixture slug used an invalid uppercase character before dispatch, an earlier missing-model helper failed installation because of its inherited npm cache, and a sandboxed endpoint probe was denied before dispatch. Corrected disposable fixtures and an isolated npm cache supplied the successful receipts; no product policy or acceptance assertion was relaxed. The full local gate passed 630 source tests and 83 extracted-package tests. Current hosted matrix, final artifact identity, independent review and acceptance are recorded on Bolt #192, separately from these initial runtime receipts.
+
 ## Alpha.18 OpenClaw 2026.9.5 SDK adoption
 
 Bolt #186 pins the source, peer, build compatibility metadata and generated manifest to released OpenClaw 2026.9.5. Its compile-only public consumers accept optional `responseModel` and `stopReason`, retain the isolated request's temperature/output-token/reasoning surface, and exclude the release's direct-provider-only `responseFormat` and `requiredAuthMode` controls from that isolated branch. They also name the additive configured runtime-policy reader and persisted asynchronous task resolver while retaining the existing synchronous owner-bound cancellation contract.
