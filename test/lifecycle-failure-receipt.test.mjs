@@ -27,17 +27,23 @@ describe('sanitized lifecycle failure receipt',()=>{
     const directory=mkdtempSync(join(tmpdir(),'loops-lifecycle-failure-'));directories.push(directory);
     const secret='token=private-child-secret profile=/private/operator/config';
     const moduleUrl=pathToFileURL(new URL('../scripts/lifecycle-failure-receipt.mjs',import.meta.url).pathname).href;
-    const source=`import {writeLifecycleFailureReceipt} from ${JSON.stringify(moduleUrl)};\ntry { const error=Object.assign(new Error(${JSON.stringify(secret)}),{status:17,stderr:${JSON.stringify(secret)}}); throw error; } catch(error) { writeLifecycleFailureReceipt(process.env.RECEIPT_DIR,'uninstall-reinstall',error); process.exitCode=17; }`;
+    const artifacts={previous:{source:'7b2705bc2068f09e68e738ae199889feb69c1680',sha256:'a'.repeat(64),hostVersion:'2026.9.3',token:secret},current:{sha256:'b'.repeat(64),hostVersion:'2026.9.4',profile:secret},config:secret};
+    const source=`import {writeLifecycleFailureReceipt} from ${JSON.stringify(moduleUrl)};\ntry { const error=Object.assign(new Error(${JSON.stringify(secret)}),{status:17,stderr:${JSON.stringify(secret)}}); throw error; } catch(error) { writeLifecycleFailureReceipt(process.env.RECEIPT_DIR,'uninstall-reinstall',error,${JSON.stringify(artifacts)}); process.exitCode=17; }`;
     const child=spawnSync(process.execPath,['--input-type=module','--eval',source],{encoding:'utf8',env:{...process.env,RECEIPT_DIR:directory}});
     expect(child.status).toBe(17);
     const text=readFileSync(join(directory,'receipt.json'),'utf8');
-    expect(JSON.parse(text)).toEqual({status:'failed',phase:'uninstall-reinstall',category:'subprocess-exit',message:'A lifecycle subprocess exited unsuccessfully.'});
+    expect(JSON.parse(text)).toEqual({status:'failed',phase:'uninstall-reinstall',category:'subprocess-exit',message:'A lifecycle subprocess exited unsuccessfully.',artifacts:{previous:{source:artifacts.previous.source,sha256:artifacts.previous.sha256,hostVersion:artifacts.previous.hostVersion},current:{sha256:artifacts.current.sha256,hostVersion:artifacts.current.hostVersion}}});
     expect(text).not.toContain(secret);
     expect(text).not.toMatch(/token|profile|config|stderr|stack|path/i);
   });
 
   it('replaces an unrecognized phase instead of serializing caller-controlled text',()=>{
     expect(lifecycleFailureReceipt('secret phase value',{message:'private'})).toEqual({status:'failed',phase:'unknown',category:'unexpected',message:'Lifecycle verification failed unexpectedly.'});
+  });
+
+  it('replaces invalid provenance and omits private metadata without throwing in the failure path',()=>{
+    const secret='private-profile-token';
+    expect(lifecycleFailureReceipt('archive-validation',new Error('failed'),{previous:{source:secret,sha256:'short',hostVersion:'bad/version',config:secret},current:{sha256:secret,hostVersion:'',token:secret}})).toEqual({status:'failed',phase:'archive-validation',category:'unexpected',message:'Lifecycle verification failed unexpectedly.',artifacts:{previous:{source:'unknown',sha256:'unknown',hostVersion:'unknown'},current:{sha256:'unknown',hostVersion:'unknown'}}});
   });
 
   it('recognizes a connection code after a child runtime failure is wrapped at the lifecycle boundary',()=>{

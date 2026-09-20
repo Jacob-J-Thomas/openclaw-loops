@@ -151,7 +151,7 @@ try{
   write('receipt.json',{previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,rollbackInstallerReplacedCurrentBytes:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,installations});
   completed=true;
 }catch(error){
-  writeLifecycleFailureReceipt(evidence,phase,error);
+  writeLifecycleFailureReceipt(evidence,phase,error,{previous:{source:previousSource,sha256:previousSha,hostVersion:hosts.previous.version},current:{sha256:currentSha,hostVersion:hosts.current.version}});
   writeFileSync(pathResolve(raw,'failure.txt'),String(error?.stack??error),{mode:0o600});
   console.error(`Package lifecycle verification failed during ${phase}; private diagnostic evidence was retained.`);
   process.exitCode=1;

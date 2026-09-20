@@ -12,6 +12,11 @@ const descriptions={
   'subprocess-exit':'A lifecycle subprocess exited unsuccessfully.',
   unexpected:'Lifecycle verification failed unexpectedly.',
 };
+const clean=(value,pattern)=>typeof value==='string'&&pattern.test(value)?value:'unknown';
+const provenance=value=>({
+  previous:{source:clean(value?.previous?.source,/^[0-9a-f]{40}$/),sha256:clean(value?.previous?.sha256,/^[0-9a-f]{64}$/),hostVersion:clean(value?.previous?.hostVersion,/^[0-9A-Za-z.+-]{1,64}$/)},
+  current:{sha256:clean(value?.current?.sha256,/^[0-9a-f]{64}$/),hostVersion:clean(value?.current?.hostVersion,/^[0-9A-Za-z.+-]{1,64}$/)},
+});
 
 function category(error){
   const code=typeof error?.code==='string'?error.code:'';
@@ -26,14 +31,14 @@ function category(error){
   return 'unexpected';
 }
 
-export function lifecycleFailureReceipt(phase,error){
+export function lifecycleFailureReceipt(phase,error,artifacts){
   const safeCategory=category(error);
-  return {status:'failed',phase:phases.has(phase)?phase:'unknown',category:safeCategory,message:descriptions[safeCategory]};
+  return {status:'failed',phase:phases.has(phase)?phase:'unknown',category:safeCategory,message:descriptions[safeCategory],...(artifacts?{artifacts:provenance(artifacts)}:{})};
 }
 
-export function writeLifecycleFailureReceipt(directory,phase,error){
+export function writeLifecycleFailureReceipt(directory,phase,error,artifacts){
   mkdirSync(directory,{recursive:true});
-  const receipt=lifecycleFailureReceipt(phase,error);
+  const receipt=lifecycleFailureReceipt(phase,error,artifacts);
   writeFileSync(resolve(directory,'receipt.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600});
   return receipt;
 }
