@@ -6,7 +6,7 @@ An external OpenClaw plugin with a native graph editor and one executor shared b
 
 This repository contains the plugin and its development/test tooling. All host integration uses OpenClaw APIs. Required runtime/SDK changes are pursued through [existing OpenClaw issues and separate upstream PRs](docs/UPSTREAM_REQUIREMENTS.md); no host fork, provider client or upstream patch is bundled here. See the [repository boundary](docs/RELEASE_SCOPE.md).
 
-The alpha.18 candidate uses the public **OpenClaw 2026.9.5** SDK. Earlier runtime acceptance used **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b** against OpenClaw 2026.9.4; the new host pin requires its own runtime qualification. See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [upstream SDK requirements](docs/UPSTREAM_REQUIREMENTS.md).
+The plugin uses the public **OpenClaw 2026.9.5** SDK. Local qualification uses **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b** through an ordinary isolated-profile installation. Exact candidate, hosted-matrix and review evidence is recorded on [Bolt #186](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/186). See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [upstream SDK requirements](docs/UPSTREAM_REQUIREMENTS.md).
 
 ## Develop locally with Ollama
 

@@ -1,6 +1,6 @@
 # Capabilities and current release boundaries
 
-The alpha.18 candidate targets **OpenClaw 2026.9.5** and **Node 24.16.0**. It is an external feature plugin with the stable runtime/storage ID `loops-poc`. Runtime imports use public `openclaw/plugin-sdk/*` exports. This package is not a published or accepted 1.0 release. Runtime qualification of this new host pin remains separate from compile and package qualification. The old capability record is preserved in `CAPABILITIES-0.3.md` for historical reference.
+The alpha.18 candidate targets **OpenClaw 2026.9.5** and **Node 24.16.0**. It is an external feature plugin with the stable runtime/storage ID `loops-poc`. Runtime imports use public `openclaw/plugin-sdk/*` exports. This package is not a published or accepted 1.0 release. Local ordinary-install, real Codex/Ollama and native readback evidence is recorded separately from compile, package and hosted-matrix qualification on [Bolt #186](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/186). The old capability record is preserved in `CAPABILITIES-0.3.md` for historical reference.
 
 | Surface | Current behavior |
 |---|---|
