@@ -54,6 +54,13 @@ describe('sanitized lifecycle failure receipt',()=>{
     expect(lifecycleFailureReceipt('upgrade',wrapped)).toEqual({status:'failed',phase:'upgrade',category:'connection',message:'A lifecycle connection failed.'});
   });
 
+  it('writes a sanitized receipt when lifecycle archive preflight fails',()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-lifecycle-preflight-'));directories.push(directory);
+    const result=spawnSync(process.execPath,[new URL('../scripts/verify-package-lifecycle.mjs',import.meta.url).pathname,join(directory,'missing-previous.tgz'),join(directory,'missing-current.tgz')],{encoding:'utf8',env:{...process.env,LOOPS_EVIDENCE_DIR:directory,LOOPS_LIFECYCLE_PREVIOUS_REF:'7b2705bc2068f09e68e738ae199889feb69c1680',LOOPS_LIFECYCLE_PREVIOUS_HOST_ROOT:directory}});
+    expect(result.status).toBe(1);
+    expect(JSON.parse(readFileSync(join(directory,'package-lifecycle','receipt.json'),'utf8'))).toEqual({status:'failed',phase:'archive-validation',category:'required-file-missing',message:'A required lifecycle file was unavailable.',artifacts:{previous:{source:'7b2705bc2068f09e68e738ae199889feb69c1680',sha256:'unknown',hostVersion:'unknown'},current:{sha256:'unknown',hostVersion:'unknown'}}});
+  });
+
   it('keeps the sanitized receipt in the always-uploaded artifact allowlist without private evidence',()=>{
     const workflow=readFileSync(new URL('../.github/workflows/verify.yml',import.meta.url),'utf8');
     const upload=workflow.slice(workflow.indexOf('- uses: actions/upload-artifact'));
