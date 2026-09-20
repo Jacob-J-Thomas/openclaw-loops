@@ -13,6 +13,7 @@ let previous,current,previousSource,previousSha,currentSha,raw,profile,client;
 let hosts,completed=false,phase='archive-validation';
 let stop=async()=>{};
 try{
+ raw=pathResolve('.dev-profile',`package-lifecycle-evidence-${randomUUID()}`);
  [previous,current]=process.argv.slice(2);
  previousSource=process.env.LOOPS_LIFECYCLE_PREVIOUS_REF;
  const previousHostRoot=process.env.LOOPS_LIFECYCLE_PREVIOUS_HOST_ROOT;
@@ -21,7 +22,6 @@ try{
  assert(previousSource,'LOOPS_LIFECYCLE_PREVIOUS_REF must identify the source used to build the previous archive.');
  assert(previousHostRoot,'LOOPS_LIFECYCLE_PREVIOUS_HOST_ROOT must identify the project containing the matching previous OpenClaw host.');
 
- raw=pathResolve('.dev-profile',`package-lifecycle-evidence-${randomUUID()}`);
  profile=pathResolve('.dev-profile',`package-lifecycle-${randomUUID()}`);
  const worker=pathResolve('test/helpers/gateway-client-worker.mjs');
 const hash=file=>createHash('sha256').update(readFileSync(file)).digest('hex');

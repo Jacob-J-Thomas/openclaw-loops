@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,readFileSync,readdirSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -59,6 +59,16 @@ describe('sanitized lifecycle failure receipt',()=>{
     const result=spawnSync(process.execPath,[new URL('../scripts/verify-package-lifecycle.mjs',import.meta.url).pathname,join(directory,'missing-previous.tgz'),join(directory,'missing-current.tgz')],{encoding:'utf8',env:{...process.env,LOOPS_EVIDENCE_DIR:directory,LOOPS_LIFECYCLE_PREVIOUS_REF:'7b2705bc2068f09e68e738ae199889feb69c1680',LOOPS_LIFECYCLE_PREVIOUS_HOST_ROOT:directory}});
     expect(result.status).toBe(1);
     expect(JSON.parse(readFileSync(join(directory,'package-lifecycle','receipt.json'),'utf8'))).toEqual({status:'failed',phase:'archive-validation',category:'required-file-missing',message:'A required lifecycle file was unavailable.',artifacts:{previous:{source:'7b2705bc2068f09e68e738ae199889feb69c1680',sha256:'unknown',hostVersion:'unknown'},current:{sha256:'unknown',hostVersion:'unknown'}}});
+  });
+
+  it('retains private diagnostics when required lifecycle arguments are missing',()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-lifecycle-arguments-'));directories.push(directory);
+    const result=spawnSync(process.execPath,[new URL('../scripts/verify-package-lifecycle.mjs',import.meta.url).pathname],{cwd:directory,encoding:'utf8',env:{...process.env,LOOPS_EVIDENCE_DIR:directory}});
+    expect(result.status).toBe(1);
+    expect(JSON.parse(readFileSync(join(directory,'package-lifecycle','receipt.json'),'utf8'))).toMatchObject({status:'failed',phase:'archive-validation',category:'invariant'});
+    const privateDirectory=readdirSync(join(directory,'.dev-profile'),{withFileTypes:true}).find(entry=>entry.isDirectory()&&entry.name.startsWith('package-lifecycle-evidence-'));
+    expect(privateDirectory).toBeDefined();
+    expect(readFileSync(join(directory,'.dev-profile',privateDirectory.name,'failure.txt'),'utf8')).toContain('Usage: node scripts/verify-package-lifecycle.mjs');
   });
 
   it('keeps the sanitized receipt in the always-uploaded artifact allowlist without private evidence',()=>{
