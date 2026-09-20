@@ -1,12 +1,12 @@
 # OpenClaw Loops — development alpha
 
-An external OpenClaw plugin with a native graph editor and one executor shared by the UI, `/loops`, and 31 agent tools. Agents can read, create, edit, publish, enable, disable, invoke, inspect and delete loops. Valid agent-created loops are enabled by default; drafts are optional. OpenClaw's model and permission policies remain authoritative.
+An external OpenClaw plugin with a native graph editor and one executor shared by the UI, `/loops`, and 37 agent tools. Agents can read, create, edit, publish, enable, disable, invoke, inspect and delete loops. Valid agent-created loops are enabled by default; drafts are optional. OpenClaw's model and permission policies remain authoritative.
 
 **This is a development alpha, not a finished 1.0.** The active [delivery goal](docs/DELIVERY_PLAN.md) is a standalone 1.0 external plugin with Input, Inference, configured-model metadata Action, Condition, bounded Repeat, Wait, Human review, Return and Fail. Context, scripts, full agents, subagents, broader control flow, triggers, evaluations and advanced operations are deferred until after 1.0. [Delivery status](docs/DELIVERY_STATUS.md) and [verification](docs/VERIFICATION.md) distinguish source tests, live acceptance and remaining gates.
 
 This repository contains the plugin and its development/test tooling. All host integration uses OpenClaw APIs. Required runtime/SDK changes are pursued through [existing OpenClaw issues and separate upstream PRs](docs/UPSTREAM_REQUIREMENTS.md); no host fork, provider client or upstream patch is bundled here. See the [repository boundary](docs/RELEASE_SCOPE.md).
 
-The plugin uses the public **OpenClaw 2026.9.3** SDK. Local acceptance uses **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b**. See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [upstream SDK requirements](docs/UPSTREAM_REQUIREMENTS.md).
+The plugin uses the public **OpenClaw 2026.9.4** SDK. Local acceptance uses **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b**. See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [upstream SDK requirements](docs/UPSTREAM_REQUIREMENTS.md).
 
 ## Develop locally with Ollama
 
@@ -88,7 +88,7 @@ Every editor operation is also available through the command's JSON argument for
 
 The JSON form returns the same receipt as tools and the editor. Text shortcuts preserve the readable run summary. Large results return a document reference or an explicitly labeled preview; use `document` or `output` pages to retrieve the complete result. Large input fields accept staged references from `upload`, with the same authorization and validation as agent tools.
 
-OpenClaw 2026.9.3 limits inline command arguments to 4,096 UTF-16 units. Loops detects host-altered arguments and returns `HOST_COMMAND_INPUT_CHANGED` before executing an operation. For a larger definition or input, stage JSON with `upload` chunks small enough that each complete command argument fits that host limit, then pass the returned reference. The editor and agent tools have their own documented transport budgets.
+OpenClaw 2026.9.4 limits inline command arguments to 4,096 UTF-16 units. Loops detects host-altered arguments and returns `HOST_COMMAND_INPUT_CHANGED` before executing an operation. For a larger definition or input, stage JSON with `upload` chunks small enough that each complete command argument fits that host limit, then pass the returned reference. The editor and agent tools have their own documented transport budgets.
 
 A normal command invocation receives a fresh identity. Reuse an explicit request ID only for a retry of the same admission; changed inputs with that ID conflict. Tool-call IDs and UI request UUIDs provide equivalent retry identity. This does not promise exactly-once external side effects.
 
@@ -107,7 +107,7 @@ Run only for profiles that exist. The helper preserves unrelated tools and deny 
 
 Each Inference node, including a Repeat body, has optional model/agent/reasoning overrides and a collapsible **Advanced settings** category. Unset values inherit host behavior. Explicit `0` survives validation, persistence and transmission. Reset one field or all overrides. Model switches preserve saved overrides and reveal incompatibilities.
 
-OpenClaw 2026.9.3 publicly exposes temperature and output tokens as advisory hints on the isolated completion API. Top p, top k, min p, typical p, frequency/presence/repetition penalties, seed and stop sequences are visible with an unsupported explanation because that API does not expose them. Unsupported explicit imports fail preflight; unset controls do not block execution. Requested/transmitted settings are recorded separately from unknown provider enforcement. Closing those gaps requires the targeted public SDK additions described in the plan, not changes to global provider settings.
+OpenClaw 2026.9.4 publicly exposes temperature and output tokens as advisory hints on the isolated completion API. Top p, top k, min p, typical p, frequency/presence/repetition penalties, seed and stop sequences are visible with an unsupported explanation because that API does not expose them. Unsupported explicit imports fail preflight; unset controls do not block execution. Requested/transmitted settings are recorded separately from unknown provider enforcement. Closing those gaps requires the targeted public SDK additions described in the plan, not changes to global provider settings.
 
 V2 loops can omit the active timeout to use the host's timeout. An explicit loop timeout counts active execution across steps and resumes. Existing saved limits are preserved.
 
