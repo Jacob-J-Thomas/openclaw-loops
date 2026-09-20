@@ -1,3 +1,5 @@
+import {sanitizeGatewayReadiness} from './gateway-readiness-evidence.mjs';
+
 const descriptions={
   'gateway-startup':'The gateway did not become ready.',
   'client-startup':'The gateway client did not become ready.',
@@ -34,8 +36,9 @@ export function sustainedFailureCategory(error){
   return 'unexpected';
 }
 
-export function sustainedFailureReceipt({phase,code,archiveSha256,error,elapsedMs,completeRuns,parkedRuns,runCount}){
+export function sustainedFailureReceipt({phase,code,archiveSha256,error,elapsedMs,completeRuns,parkedRuns,runCount,readiness}){
   const category=sustainedFailureCategory(error);
+  const safeReadiness=sanitizeGatewayReadiness(readiness);
   return {
     status:'failed',
     phase,
@@ -45,5 +48,6 @@ export function sustainedFailureReceipt({phase,code,archiveSha256,error,elapsedM
     archiveSha256,
     noModelCalls:true,
     progress:{elapsedMs:number(elapsedMs,Number.MAX_SAFE_INTEGER),completeRuns:number(completeRuns,number(runCount,256)),parkedRuns:number(parkedRuns,16)},
+    ...(safeReadiness?{readiness:safeReadiness}:{})
   };
 }

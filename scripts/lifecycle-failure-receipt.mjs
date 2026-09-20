@@ -1,5 +1,6 @@
 import {mkdirSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {sanitizeGatewayReadiness} from './gateway-readiness-evidence.mjs';
 
 const phases=new Set(['archive-validation','install-previous','backup-previous','upgrade','uninstall-reinstall','matching-predecessor-restore']);
 const descriptions={
@@ -31,14 +32,15 @@ function category(error){
   return 'unexpected';
 }
 
-export function lifecycleFailureReceipt(phase,error,artifacts){
+export function lifecycleFailureReceipt(phase,error,artifacts,readiness){
   const safeCategory=category(error);
-  return {status:'failed',phase:phases.has(phase)?phase:'unknown',category:safeCategory,message:descriptions[safeCategory],...(artifacts?{artifacts:provenance(artifacts)}:{})};
+  const safeReadiness=sanitizeGatewayReadiness(readiness);
+  return {status:'failed',phase:phases.has(phase)?phase:'unknown',category:safeCategory,message:descriptions[safeCategory],...(artifacts?{artifacts:provenance(artifacts)}:{}),...(safeReadiness?{readiness:safeReadiness}:{})};
 }
 
-export function writeLifecycleFailureReceipt(directory,phase,error,artifacts){
+export function writeLifecycleFailureReceipt(directory,phase,error,artifacts,readiness){
   mkdirSync(directory,{recursive:true});
-  const receipt=lifecycleFailureReceipt(phase,error,artifacts);
+  const receipt=lifecycleFailureReceipt(phase,error,artifacts,readiness);
   writeFileSync(resolve(directory,'receipt.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600});
   return receipt;
 }

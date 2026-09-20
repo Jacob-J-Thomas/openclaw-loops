@@ -33,4 +33,18 @@ describe('sanitized sustained-workload failure receipt',()=>{
   it('retains the cleanup code and phase for compatibility',()=>{
     expect(sustainedFailureReceipt({phase:'process-cleanup',code:'SUSTAINED_CLEANUP_FAILED',archiveSha256:'c'.repeat(64),error:Object.assign(new Error('private'),{signal:'SIGKILL'}),elapsedMs:500,completeRuns:256,parkedRuns:16,runCount:256})).toMatchObject({phase:'process-cleanup',code:'SUSTAINED_CLEANUP_FAILED',category:'system',progress:{elapsedMs:500,completeRuns:256,parkedRuns:16}});
   });
+
+  it('retains the original failure when the post-deadline observer sees a late listener',()=>{
+    const secret='private readiness payload';
+    const receipt=sustainedFailureReceipt({phase:'epoch-1',code:'SUSTAINED_VERIFICATION_FAILED',archiveSha256:'d'.repeat(64),error:new Error('Gateway did not listen.'),elapsedMs:60000,completeRuns:64,parkedRuns:0,runCount:256,readiness:{restartOrdinal:1,deadlineElapsedMs:15000,deadlineProcessState:'alive',postDeadlineAttempts:3,postDeadlineWindowMs:200,listenerAfterDeadline:true,listenerElapsedMs:15200,finalProcessState:'alive',secret}});
+    expect(receipt).toMatchObject({status:'failed',phase:'epoch-1',code:'SUSTAINED_VERIFICATION_FAILED',message:'The Gateway listening deadline expired.',readiness:{listenerAfterDeadline:true,listenerElapsedMs:15200}});
+    expect(JSON.stringify(receipt)).not.toContain(secret);
+  });
+
+  it('rejects getter-swapped readiness data',()=>{
+    const secret='private getter replacement';
+    const readiness={restartOrdinal:1,deadlineElapsedMs:15000,get deadlineProcessState(){return this.read?secret:(this.read=true,'alive');},postDeadlineAttempts:1,postDeadlineWindowMs:100,listenerAfterDeadline:false,listenerElapsedMs:0,finalProcessState:'alive'};
+    const receipt=sustainedFailureReceipt({phase:'start',code:'SUSTAINED_VERIFICATION_FAILED',archiveSha256:'e'.repeat(64),error:new Error('Gateway did not listen.'),elapsedMs:15000,completeRuns:0,parkedRuns:0,runCount:256,readiness});
+    expect(receipt.readiness.deadlineProcessState).toBe('alive');expect(JSON.stringify(receipt)).not.toContain(secret);
+  });
 });
