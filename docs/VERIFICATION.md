@@ -1,5 +1,11 @@
 # Local verification
 
+## Alpha.18 OpenClaw 2026.9.5 SDK adoption
+
+Bolt #186 pins the source, peer, build compatibility metadata and generated manifest to released OpenClaw 2026.9.5. Its compile-only public consumers accept optional `responseModel` and `stopReason`, retain the isolated request's temperature/output-token/reasoning surface, and exclude the release's direct-provider-only `responseFormat` and `requiredAuthMode` controls from that isolated branch. They also name the additive configured runtime-policy reader and persisted asynchronous task resolver while retaining the existing synchronous owner-bound cancellation contract.
+
+These consumers make no runtime, provider, Gateway, delivery or cancellation call. Source and extracted-package checks qualify the public type/package boundary only. The exact alpha.18 archive, ordinary unmodified-host installation, matched lifecycle, native command/tool/UI readback, actual selected-model routes and hosted macOS/Linux × Node matrix require separate candidate receipts before this host pin is accepted.
+
 ## Selected-model invocation parity
 
 Qualify the same saved definition and revision through the native editor, a real

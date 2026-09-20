@@ -1,6 +1,6 @@
 {
   "name": "openclaw-loops-poc",
-  "version": "1.0.0-alpha.17",
+  "version": "1.0.0-alpha.18",
   "private": true,
   "type": "module",
   "description": "Inspectable, bounded loops for OpenClaw chat and native UI",
@@ -43,7 +43,7 @@
     "dev": "bash scripts/dev.sh"
   },
   "peerDependencies": {
-    "openclaw": "2026.9.4"
+    "openclaw": "2026.9.5"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -53,7 +53,7 @@
     "@typescript/native": "npm:typescript@7.0.2",
     "esbuild": "0.28.2",
     "eslint": "10.10.0",
-    "openclaw": "2026.9.4",
+    "openclaw": "2026.9.5",
     "playwright-core": "1.63.0",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-eslint": "8.70.0",
@@ -65,10 +65,10 @@
     ],
     "controlUi": "./src/control-ui.tsx",
     "compat": {
-      "pluginApi": "2026.9.4"
+      "pluginApi": "2026.9.5"
     },
     "build": {
-      "openclawVersion": "2026.9.4"
+      "openclawVersion": "2026.9.5"
     }
   },
   "dependencies": {

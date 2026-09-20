@@ -8,6 +8,11 @@ type BoundRuns = ReturnType<TaskRuns['bindSession']>;
 type TaskRun = ReturnType<BoundRuns['list']>[number];
 type CancelRequest = Parameters<BoundRuns['cancel']>[0];
 type CancelResult = Awaited<ReturnType<BoundRuns['cancel']>>;
+type AsyncTaskRuns = OpenClawPluginApi['runtime']['tasks']['async']['runs'];
+type AsyncBindRequest = Parameters<AsyncTaskRuns['bindSession']>[0];
+type AsyncBoundRuns = ReturnType<AsyncTaskRuns['bindSession']>;
+type AsyncResolveResult = ReturnType<AsyncBoundRuns['resolve']>;
+type AsyncResolvedTask = Awaited<ReturnType<AsyncBoundRuns['resolve']>>;
 type Subagent = OpenClawPluginApi['runtime']['subagent'];
 type WaitRequest = Parameters<Subagent['waitForRun']>[0];
 type InspectionRequest = Parameters<Subagent['getSessionMessages']>[0];
@@ -21,6 +26,9 @@ export type OptionalBoundAgent = Assert<Equal<BindRequest['agentId'], string|und
 export type TaskRunIdentity = Assert<TaskRun extends {id:string;runId?:string} ? true : false>;
 export type CancellationRequestKeys = Assert<Equal<RequiredKeys<CancelRequest>, 'cfg'|'taskId'>>;
 export type CancellationResultShape = Assert<Equal<Pick<CancelResult,'found'|'cancelled'|'reason'|'task'>,{found:boolean;cancelled:boolean;reason?:string;task?:TaskRun}>>;
+export type AsyncSessionBinding = Assert<Equal<Pick<AsyncBindRequest,'sessionKey'|'agentId'>,{sessionKey:string;agentId?:string}>>;
+export type AsyncResolutionPromise = Assert<AsyncResolveResult extends Promise<unknown> ? true : false>;
+export type AsyncResolutionShape = Assert<Exclude<AsyncResolvedTask,undefined> extends {id:string;runId?:string} ? true : false>;
 export type WaitShape = Assert<WaitRequest extends {runId:string;timeoutMs?:number} ? true : false>;
 export type InspectionShape = Assert<InspectionRequest extends {sessionKey:string;limit?:number} ? true : false>;
 
@@ -31,6 +39,11 @@ export function bindAndMatchPublicTask(api:OpenClawPluginApi,sessionKey:string,a
 
 export function cancelMatchedPublicTask(bound:BoundRuns,taskId:string,cfg:CancelRequest['cfg']) {
   return bound.cancel({taskId,cfg});
+}
+
+// Persisted async lookup is additive. It does not prove mapping, ownership, or settlement.
+export function resolvePersistedPublicTask(api:OpenClawPluginApi,sessionKey:string,agentId:string|undefined,runId:string) {
+  return api.runtime.tasks.async.runs.bindSession({sessionKey,agentId}).resolve(runId);
 }
 
 export function readCancellationResult(result:CancelResult) {

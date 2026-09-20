@@ -1,6 +1,6 @@
 # Capabilities and current release boundaries
 
-The development alpha targets **OpenClaw 2026.9.4** and **Node 24.16.0**. It is an external feature plugin with the stable runtime/storage ID `loops-poc`. Runtime imports use public `openclaw/plugin-sdk/*` exports. This package is not a published or accepted 1.0 release. The old capability record is preserved in `CAPABILITIES-0.3.md` for historical reference.
+The alpha.18 candidate targets **OpenClaw 2026.9.5** and **Node 24.16.0**. It is an external feature plugin with the stable runtime/storage ID `loops-poc`. Runtime imports use public `openclaw/plugin-sdk/*` exports. This package is not a published or accepted 1.0 release. Runtime qualification of this new host pin remains separate from compile and package qualification. The old capability record is preserved in `CAPABILITIES-0.3.md` for historical reference.
 
 | Surface | Current behavior |
 |---|---|
@@ -20,13 +20,15 @@ Inference and the read-only configured-model Action are host-backed. The remaini
 
 Advanced is available on standalone and Repeat-body inference nodes. Temperature and output tokens are **advisory** on the current public SDK. Reasoning is normalized by OpenClaw. Portable fields for top_p, top_k, min_p, typical_p, frequency/presence/repetition penalty, seed and stop sequences are preserved by the definition contract but displayed as unsupported through the current isolated completion API. An unset unsupported field does not prevent execution; an explicit override fails preflight with the reason. Zero is retained, never treated as inheritance.
 
+OpenClaw 2026.9.5 adds optional `responseModel` and `stopReason` result fields and direct-provider-only `responseFormat` and `requiredAuthMode` inputs. Loops accepts the additive result shape but does not switch to direct-provider completion or advertise those inputs for isolated inference. The new model-runtime-policy reader reports authored configuration, not runtime availability or sampling capabilities.
+
 The descriptor contract also recognizes **supported** and **unknown** states. Supported values may be sent, while advisory values remain requests; an explicit unknown value fails preflight until a host/runtime describes it. The pinned public host currently emits advisory and unsupported states only. Fixture coverage of supported and unknown states qualifies the plugin's handling, not a claim that those states were observed on that host.
 
 Empty Advanced fields inherit. Resetting one field removes only that override; resetting the section removes all Advanced overrides. For example, `{"temperature":0,"maxTokens":256}` requests an explicit zero temperature and 256 output tokens. Resetting temperature leaves `{"maxTokens":256}`. The editor shows a resolved inherited value when the host supplies one, or an unspecified provider default otherwise.
 
 Draft saving preserves the active publication. Publishing selects a revision for new runs, and restoring an earlier revision creates a new draft with that revision's settings. Cloning, JSON export/import and model changes retain saved overrides, including values that the new target cannot accept. The editor identifies incompatible overrides and offers a reset; it does not silently discard them. Each admitted run keeps its own settings, including when differently configured runs overlap. Commands and agent tools use the same definition and revision operations.
 
-Some provider/streaming surfaces support these options, but `LlmCompleteCommonParams` in 2026.9.4 does not expose them. Loops does not mutate global provider settings, switch runtimes, or claim requested values were applied. See [upstream requirements](UPSTREAM_REQUIREMENTS.md).
+Some provider/streaming surfaces support these options, but `LlmCompleteCommonParams` in 2026.9.5 does not expose them. Loops does not mutate global provider settings, switch runtimes, or claim requested values were applied. See [upstream requirements](UPSTREAM_REQUIREMENTS.md).
 
 The old forced temperature 0.2, maxTokens 512 and reasoning off are removed. Profile repair backs up and removes only exact single-model policies emitted by the old scaffolders; custom policy is preserved. OpenClaw still enforces model/account authorization.
 

@@ -6,6 +6,8 @@ The active scope is the standalone plugin's requirements R01–R25 and packages 
 
 ## Current qualification
 
+Bolt #186's alpha.18 source candidate pins released OpenClaw 2026.9.5 and compile-qualifies its additive completion-result, direct-only input, model-runtime-policy and asynchronous task-read types. It does not adopt direct-provider completion or claim new account, target-session, durable-delivery or physical-cancellation authority. Ordinary installed-host, provider, native UI, lifecycle and hosted-matrix evidence remains pending for the exact candidate.
+
 The runtime baseline is merged main `55625d76087094a095bf5da9b7443d71cfe0cd77`, tree `c5e509fe59180e2eab46f0ba6aea7d387882ef91`. The ordinary installed alpha.17 archive has SHA-256 `9c6a38c4a6404f041e708ac9e8314fddc184008930f8a8a67f968b6163d2688f`, with all 27 installed members compared. This baseline targets unmodified OpenClaw 2026.9.4. Package hashes change when included documentation changes; use [the final candidate receipt](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/75) for publication identity, not this historical runtime archive hash.
 
 - [Accepted keyboard/editor candidate](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/68#issuecomment-5751484231): 583 source tests, 83 extracted-package tests, and all four macOS/Linux × Node 24.16.0/26.1.0 jobs. Actual review-equivalence accounting and guarded merge are recorded separately from CI.
