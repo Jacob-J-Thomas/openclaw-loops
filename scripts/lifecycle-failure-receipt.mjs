@@ -15,11 +15,12 @@ const descriptions={
 
 function category(error){
   const code=typeof error?.code==='string'?error.code:'';
+  const message=typeof error?.message==='string'?error.message:'';
   if(code==='ENOSPC')return 'storage-full';
   if(code==='EACCES'||code==='EPERM')return 'permission-denied';
   if(code==='ENOENT')return 'required-file-missing';
-  if(code==='ETIMEDOUT'||/timed out|timeout/i.test(String(error?.message??'')))return 'timeout';
-  if(['ECONNREFUSED','ECONNRESET','EPIPE'].includes(code))return 'connection';
+  if(code==='ETIMEDOUT'||/timed out|timeout/i.test(message))return 'timeout';
+  if(['ECONNREFUSED','ECONNRESET','EPIPE'].includes(code)||/\b(?:ECONNREFUSED|ECONNRESET|EPIPE)\b/.test(message))return 'connection';
   if(code==='ERR_ASSERTION')return 'invariant';
   if(typeof error?.status==='number'||typeof error?.signal==='string')return 'subprocess-exit';
   return 'unexpected';

@@ -3,7 +3,7 @@ import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {spawnSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 import {lifecycleFailureReceipt} from '../scripts/lifecycle-failure-receipt.mjs';
 
 const directories=[];
@@ -38,6 +38,14 @@ describe('sanitized lifecycle failure receipt',()=>{
 
   it('replaces an unrecognized phase instead of serializing caller-controlled text',()=>{
     expect(lifecycleFailureReceipt('secret phase value',{message:'private'})).toEqual({status:'failed',phase:'unknown',category:'unexpected',message:'Lifecycle verification failed unexpectedly.'});
+  });
+
+  it('recognizes a connection code after a child runtime failure is wrapped at the lifecycle boundary',()=>{
+    let runtimeError;
+    try{execFileSync(process.execPath,['--input-type=module','--eval',"throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1'),{code:'ECONNREFUSED'})"],{stdio:'pipe'});}catch(error){runtimeError=error;}
+    expect(runtimeError).toMatchObject({status:1});
+    const wrapped=new Error(`Gateway client failed: ${runtimeError.stderr}`);
+    expect(lifecycleFailureReceipt('upgrade',wrapped)).toEqual({status:'failed',phase:'upgrade',category:'connection',message:'A lifecycle connection failed.'});
   });
 
   it('keeps the sanitized receipt in the always-uploaded artifact allowlist without private evidence',()=>{
