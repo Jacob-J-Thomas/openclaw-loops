@@ -1,6 +1,6 @@
 # Capabilities and current release boundaries
 
-The development alpha uses **OpenClaw 2026.9.3** and **Node 24.16.0**. It is an external feature plugin with the stable runtime/storage ID `loops-poc`. Runtime imports use public `openclaw/plugin-sdk/*` exports. This package is not a published or accepted 1.0 release. The old capability record is preserved in `CAPABILITIES-0.3.md` for historical reference.
+The development alpha targets **OpenClaw 2026.9.4** and **Node 24.16.0**. It is an external feature plugin with the stable runtime/storage ID `loops-poc`. Runtime imports use public `openclaw/plugin-sdk/*` exports. This package is not a published or accepted 1.0 release. The old capability record is preserved in `CAPABILITIES-0.3.md` for historical reference.
 
 | Surface | Current behavior |
 |---|---|
@@ -26,7 +26,7 @@ Empty Advanced fields inherit. Resetting one field removes only that override; r
 
 Draft saving preserves the active publication. Publishing selects a revision for new runs, and restoring an earlier revision creates a new draft with that revision's settings. Cloning, JSON export/import and model changes retain saved overrides, including values that the new target cannot accept. The editor identifies incompatible overrides and offers a reset; it does not silently discard them. Each admitted run keeps its own settings, including when differently configured runs overlap. Commands and agent tools use the same definition and revision operations.
 
-Some provider/streaming surfaces support these options, but `LlmCompleteCommonParams` in 2026.9.3 does not expose them. Loops does not mutate global provider settings, switch runtimes, or claim requested values were applied. See [upstream requirements](UPSTREAM_REQUIREMENTS.md).
+Some provider/streaming surfaces support these options, but `LlmCompleteCommonParams` in 2026.9.4 does not expose them. Loops does not mutate global provider settings, switch runtimes, or claim requested values were applied. See [upstream requirements](UPSTREAM_REQUIREMENTS.md).
 
 The old forced temperature 0.2, maxTokens 512 and reasoning off are removed. Profile repair backs up and removes only exact single-model policies emitted by the old scaffolders; custom policy is preserved. OpenClaw still enforces model/account authorization.
 

@@ -52,7 +52,11 @@ jobs:
           )
           previous_archive="$previous_dir/$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1]))[0].filename)' "$previous_dir/package-lifecycle-pack.json")"
           current_archive="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("evidence/ci/package.json")).filename)')"
-          LOOPS_LIFECYCLE_PREVIOUS_REF="$base_ref" node scripts/verify-package-lifecycle.mjs "$previous_archive" "$current_archive"
+          LOOPS_LIFECYCLE_PREVIOUS_REF="$base_ref" \
+            LOOPS_LIFECYCLE_PREVIOUS_HOST_ROOT="$previous_dir" \
+            LOOPS_LIFECYCLE_EXPECTED_PREVIOUS_HOST_VERSION="2026.9.3" \
+            LOOPS_LIFECYCLE_EXPECTED_CURRENT_HOST_VERSION="2026.9.4" \
+            node scripts/verify-package-lifecycle.mjs "$previous_archive" "$current_archive"
         env:
           LOOPS_EVIDENCE_DIR: evidence/ci
       - name: Verify sustained public Gateway workload
