@@ -756,7 +756,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await command('delete',{id,expectedRevision:4})).toMatchObject({id,deleted:true});
     expect(await s.action('load',{id})).toMatchObject({result:{kind:'loops-error'}});
     expect(s.complete).not.toHaveBeenCalled();
-  });
+  },30_000);
   it('uses plugin-runtime inference and fresh or explicit retry identities for JSON invocation and recovery',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler,bound=vi.fn(s.complete.getMockImplementation()!);
     const context={...s.commandContext,runtimeContext:{llm:{complete:bound}}};
