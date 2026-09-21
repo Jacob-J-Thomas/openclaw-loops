@@ -115,7 +115,8 @@ describe('asynchronous committed-state service (real SQLite, synthetic host)',()
       await vi.waitFor(()=>expect(calls[0].signal.aborted).toBe(true));await sleep(1100);
       expect(Date.now()-Date.parse(queued.createdAt)).toBeGreaterThan(1000);expect((await service.invoke('status',actor(),queued.id))).toMatchObject({state:'queued',executions:0,activeMs:0});
       expect(calls).toHaveLength(1);expect(physical).toBe(1);calls[0].finish(settlement==='reject');
-      await vi.waitFor(()=>expect(calls).toHaveLength(2));expect(calls[1].signal.aborted).toBe(false);expect(calls[1].timeout).toBeGreaterThan(0);expect(calls[1].timeout).toBeLessThanOrEqual(1000);calls[1].finish();
+      // This waits for worker cleanup and queue handoff; it is not the next run's 1 s execution budget.
+      await vi.waitFor(()=>expect(calls).toHaveLength(2),{timeout:5000});expect(calls[1].signal.aborted).toBe(false);expect(calls[1].timeout).toBeGreaterThan(0);expect(calls[1].timeout).toBeLessThanOrEqual(1000);calls[1].finish();
       expect(await status(service,queued.id,'completed')).toMatchObject({result:'Fresh active budget'});
       await vi.waitFor(()=>{expect(references(service)).toBe(0);expect(physical).toBe(0);});expect(maximum).toBe(1);
       const after=await service.invoke('status',actor(),first.id);expect(after).toMatchObject({state:'failed',cleanupPending:false,errorDetail:failed.errorDetail,trace:failed.trace,outputs:failed.outputs});expect(after.result).toBeUndefined();expect(after.trace.some(node=>node.nodeId==='return')).toBe(false);
