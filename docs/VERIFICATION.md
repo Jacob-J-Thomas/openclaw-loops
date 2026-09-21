@@ -1,5 +1,13 @@
 # Local verification
 
+## Unpublished 1.0.0 candidate
+
+Version 1.0.0 is prepared locally as a release candidate and has not been published, accepted as stable, or installed from a registry. Its final source/archive identity, hosted matrix, migration/rollback receipt, practical accessibility result, ClawHub publisher verification, publication and fresh registry installation remain release work.
+
+[Bolt #201](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/201) supplies scoped model-default evidence for this candidate: source `58b33d7377`, live archive `b46e6388…`, six real API/command/tool calls and one graphical-default run. The candidate uses an explicit node model first, otherwise the host agent's configured model and runtime-default reasoning through generic public-plugin completion; it does not copy a new conversation account or reasoning pin, while legacy pins and host-policy denials remain preserved. This is not final-archive qualification.
+
+The host-context stress work in [#129](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/129) and [#199](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/199) is future SDK05 work. Manual compact/read worked on 2026.9.5; the failed stress attempt remains a failure and is not relabeled as a passing result. Native VoiceOver observability remains incomplete under [Bolt #185](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/185); the new tool timed out and did not establish a screen-reader interaction.
+
 ## Lifecycle operation diagnostics
 
 Bolt #196 keeps the ordinary package-lifecycle workload, its deadlines, and its
