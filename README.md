@@ -6,7 +6,7 @@ An external OpenClaw plugin with a native graph editor and one executor shared b
 
 This repository contains the plugin and its development/test tooling. All host integration uses supported released OpenClaw APIs. No OpenClaw issue, PR, comment or patch is part of this delivery; no host fork, provider client or upstream patch is bundled here. See the [repository boundary](docs/RELEASE_SCOPE.md).
 
-The plugin uses the public **OpenClaw 2026.9.5** SDK. The current alpha.19 source is `0e0f5915f198f8da35da9a90b3465555ac22ea5d`; its source/package/lifecycle/workload qualification is recorded on [Bolt #196](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/196#issuecomment-5754248839). Local qualification uses **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b** through an ordinary isolated-profile installation. See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [supported-host boundaries](docs/UPSTREAM_REQUIREMENTS.md).
+The plugin uses the public **OpenClaw 2026.9.5** SDK. The last qualified alpha.19 source baseline is `0e0f5915f198f8da35da9a90b3465555ac22ea5d`; its source/package/lifecycle/workload qualification is recorded on [Bolt #196](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/196#issuecomment-5754248839). Local qualification uses **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b** through an ordinary isolated-profile installation. See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [supported-host boundaries](docs/UPSTREAM_REQUIREMENTS.md).
 
 ## Develop locally with Ollama
 
