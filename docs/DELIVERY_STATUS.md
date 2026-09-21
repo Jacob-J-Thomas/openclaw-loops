@@ -4,9 +4,9 @@ Loops remains an external OpenClaw plugin with the existing `loops-poc` runtime 
 
 The active scope is the standalone plugin's requirements R01–R25 and packages P0–P6 in [the delivery plan](DELIVERY_PLAN.md). Advanced expansion, outgoing-notification AbortSignal/delayed durable notifications, automatic conversation model/account inheritance parity, independent shared-team principals and new cross-session recovery are post-1.0. No OpenClaw issues, PRs, comments or patches are part of the goal; host patches, private provider clients and personal profiles are excluded from this repository and package. GitHub native issue edges and owner acceptance receipts are authoritative; the [roadmap index](ROADMAP_ISSUES.json) preserves the initial 116 issues.
 
-## Current qualification
+## Last qualified baseline
 
-Released OpenClaw 2026.9.5 and alpha.19 are qualified at main `0e0f5915f198f8da35da9a90b3465555ac22ea5d`, tree `fc7b858c`, under [Bolt #196](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/196#issuecomment-5754248839). That scoped receipt records four-platform source (635 tests), extracted-package (83 tests), lifecycle and workload passes. It does not establish stable release acceptance, automatic account binding, durable delivery or physical cancellation.
+The last qualified alpha.19 baseline uses released OpenClaw 2026.9.5 at source `0e0f5915f198f8da35da9a90b3465555ac22ea5d`, tree `fc7b858c`, under [Bolt #196](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/196#issuecomment-5754248839). That scoped receipt records four-platform source (635 tests), extracted-package (83 tests), lifecycle and workload passes. It does not establish stable release acceptance, automatic account binding, durable delivery or physical cancellation.
 
 [Bolt #201](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/201) is admitted and pending. It will make the revised 1.0 model-default target concrete on every path: explicit node model first, otherwise the host agent's configured default, through generic public-plugin completion and without copying a new session account override. Legacy pinned accounts and current host-policy denials remain preserved. This is not part of the alpha.19 qualification above.
 
