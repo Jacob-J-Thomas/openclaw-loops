@@ -1,5 +1,21 @@
 # Local verification
 
+## Lifecycle operation diagnostics
+
+Bolt #196 keeps the ordinary package-lifecycle workload, its deadlines, and its
+single-run policy unchanged. Its sanitized receipt now names only a bounded active
+operation (`archive-validation`, installer, installed-file validation, Gateway
+readiness, SDK client startup, public session actions, client shutdown, or Gateway
+shutdown), a bounded elapsed value, and completed operation markers. Archive and
+host identity remain hashed. Raw child errors, profile paths, credentials,
+arguments, and cleanup traces stay in the retained private profile.
+
+When cleanup also fails, the receipt preserves the original lifecycle failure as
+the primary category and records only the bounded cleanup operation/category. This
+diagnostic improvement does not identify the intermittent macOS readiness timeout;
+the first instrumented macOS Node 24.16.0 lifecycle execution remains the capped
+observation for that unresolved cause.
+
 ## Alpha.19 wrapped provider failure diagnostics
 
 [Bolt #192](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/192) consumes the provider failure causes shipped in OpenClaw 2026.9.5 by [upstream PR #147901](https://github.com/openclaw/openclaw/pull/147901). Loops already inspects a bounded chain of own-property causes without copying raw provider diagnostics into shared run history. The repair checks recognized service-unavailability and policy evidence before the generic completion-output rejection. It adds no provider client, host patch, automatic retry or new restriction.
