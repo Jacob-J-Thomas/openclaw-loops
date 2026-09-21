@@ -208,6 +208,18 @@ describe('asynchronous committed-state service (real SQLite, synthetic host)',()
     expect(one.outputs.summary).toMatchObject({settings:{temperature:0}});expect(two.outputs.summary).toMatchObject({settings:{}});
     await vi.waitFor(()=>expect(references(service)).toBe(0));
   });
+  it('keeps a legacy account pin through resume and surfaces its host policy failure',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-service-legacy-account-'));dirs.push(root);const seen:Actor[]=[];
+    const denied=async(a:Actor)=>{seen.push(a);throw Object.assign(new Error('Legacy account is denied by host policy.'),{code:'HOST_POLICY_DENIED',status:403});};
+    const {service,file}=setup({file:join(root,'loops.sqlite')},{complete:denied});await service.ready;
+    const definition={...structuredClone(examples[0]),revision:1,capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Pause'},{id:'summary',kind:'inference',label:'Summary',prompt:'{{input.text}}',output:'text'},{id:'return',kind:'return',label:'Return',value:'{{nodes.summary.text}}'}],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'summary',port:'next'},{id:'c',source:'summary',target:'return',port:'next'}]};
+    await service.invoke('save',actor(),definition,1,true);
+    const parked=await service.invoke('run',actor({authProfileId:'legacy-profile'}),definition.slug,{text:'legacy'},'legacy');expect(parked.state).toBe('waiting');await service.close();
+    const reopened=setup({file},{complete:denied}).service;await reopened.ready;
+    const resumed=await reopened.invoke('resume',actor(),parked.id);
+    expect(resumed).toMatchObject({state:'failed',errorDetail:{code:'HOST_POLICY_DENIED'}});
+    expect(seen).toHaveLength(1);expect(seen[0]).toMatchObject({authProfileId:'legacy-profile'});
+  });
   it('retains queued authority until dispatch, observes permission revocation, and releases finished invocations',async()=>{
     let finish!:()=>void,permitted=true;
     const complete=vi.fn<HostCapabilities['complete']>(async()=>{await new Promise<void>(resolve=>{finish=resolve;});return {text:'First completion'};});
