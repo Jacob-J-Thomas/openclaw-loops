@@ -66,11 +66,11 @@ describe('real bridge parameter forwarding (fake host completion)',()=>{
   function bridgeSetup(){
     const complete=vi.fn(async()=>({text:'ok'}));
     const cfg={plugins:{entries:{'loops-poc':{enabled:true,llm:{allowModelOverride:true}}}},agents:{defaults:{model:{primary:'fake/default'}}}};
-    const entry={sessionId:'test',modelOverride:'active',providerOverride:'fake',thinkingLevel:'high'};
-    const api={config:cfg,runtime:{config:{current:()=>cfg},llm:{complete},agent:{normalizeThinkingLevel:(value:string)=>value,session:{getSessionEntry:()=>entry}}}} as unknown as OpenClawPluginApi;
+    const entry={sessionId:'test',modelOverride:'active',providerOverride:'fake',thinkingLevel:'high',authProfileOverride:'new-session-profile'};
+    const api={config:cfg,runtime:{config:{current:()=>cfg},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'default'})},agent:{normalizeThinkingLevel:(value:string)=>value,session:{getSessionEntry:()=>entry}}}} as unknown as OpenClawPluginApi;
     return {...createBridge(api),api,complete};
   }
-  it('uses the active session model for UI, command and agent tool paths without forcing sampling defaults',async()=>{
+  it('uses the configured host default for UI, command and agent tool paths without forcing sampling defaults',async()=>{
     const bridge=bridgeSetup();
     for(const source of ['session-action','command','tool'] as const){
       const c={agentId:'research',sessionKey:'agent:research:test',sessionId:'test',isAuthorizedSender:true,client:{connId:'test',scopes:['operator.admin']}};
@@ -78,8 +78,18 @@ describe('real bridge parameter forwarding (fake host completion)',()=>{
       const a=bridge.actor(context);
       await bridge.host.complete(a,'Prompt',new AbortController().signal,10000);
       const args=(bridge.complete.mock.lastCall as unknown as [{model:string;reasoning:string;temperature?:number;maxTokens?:number}])[0];
-      expect(args.model).toBe('fake/active');expect(args.reasoning).toBe('high');expect(args).not.toHaveProperty('temperature');expect(args).not.toHaveProperty('maxTokens');
+      expect(args.model).toBe('fake/default');expect(args.reasoning).toBe('high');expect(args).not.toHaveProperty('temperature');expect(args).not.toHaveProperty('maxTokens');
     }
+  });
+  it('transports legacy execution profile pins and preserves host denial without adopting a new session profile',async()=>{
+    const bridge=bridgeSetup();
+    const context={source:'session-action',api:bridge.api,action:{agentId:'research',sessionKey:'agent:research:test',client:{connId:'test',scopes:['operator.admin']}}} as unknown as FeatureInvocationContext;
+    const current=bridge.actor(context);
+    await bridge.host.complete(current,'Prompt',new AbortController().signal,10000);
+    expect((bridge.complete.mock.lastCall as unknown as [{execution:object}])[0].execution).not.toHaveProperty('authProfileId');
+    bridge.complete.mockRejectedValueOnce(Object.assign(new Error('Legacy account denied.'),{code:'HOST_POLICY_DENIED',status:403}));
+    await expect(bridge.host.complete({...current,authProfileId:'legacy-profile'},'Prompt',new AbortController().signal,10000)).rejects.toMatchObject({code:'HOST_POLICY_DENIED',status:403});
+    expect((bridge.complete.mock.lastCall as unknown as [{execution:object}])[0].execution).toMatchObject({mode:'isolated-agent-runtime',authProfileId:'legacy-profile'});
   });
   it('forwards explicit zero and records requested versus applied settings',async()=>{
     const bridge=bridgeSetup();
