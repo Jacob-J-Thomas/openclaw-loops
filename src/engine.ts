@@ -430,11 +430,11 @@ export class Engine{
   private begin(r:Run,n:{id:string;kind:string},iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{}};r.trace.push(e);this.checkpoint(r);return e;}
   private finish(r:Run,e:NodeEvidence,result:Json){const output=display(result);if(Buffer.byteLength(output)>r.definition.limits.maxOutputBytes)throw executionError(`Output-size limit exceeded at ${e.nodeId}.`,'LOOPS_OUTPUT_LIMIT');if(r.definition.schemaVersion===1&&r.trace.reduce((size,t)=>size+Buffer.byteLength(t.output??''),0)+Buffer.byteLength(output)>48000)throw executionError('Run evidence output budget exceeded.','LOOPS_OUTPUT_LIMIT');e.output=output;e.state='completed';e.endedAt=now();}
   private async infer(actor:Actor,r:Run,n:Extract<GraphNode,{kind:'inference'}>,ctx:BindingContext,signal:AbortSignal):Promise<Json>{
+    const agentModels=r.executionSettings?.agentModels,agentModel=n.agentId&&agentModels&&Object.hasOwn(agentModels,n.agentId)?agentModels[n.agentId]:undefined;
+    const model=n.model??agentModel??actor.model;
     try{
     this.allowedRun(actor,r);this.host.check(actor,'llm');
     const prompt=display(bind(n.prompt,ctx));if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw executionError('Rendered prompt exceeds the transport budget.','LOOPS_PROMPT_LIMIT');
-    const agentModels=r.executionSettings?.agentModels,agentModel=n.agentId&&agentModels&&Object.hasOwn(agentModels,n.agentId)?agentModels[n.agentId]:undefined;
-    const model=n.model??agentModel??actor.model;
     const settings:InferenceSettings={...model?{model}:{},...n.agentId?{agentId:n.agentId}:{},...n.reasoning?{reasoning:n.reasoning}:{},...n.advanced?{advanced:n.advanced}:{}};
     const issues=validateAdvanced(n.advanced,this.capabilities(actor,settings).parameters);if(issues.length)throw executionError(issues.join(' '),'UNSUPPORTED_INFERENCE_SETTINGS');
     const deadline=this.deadlines.get(r.id);
@@ -453,7 +453,7 @@ export class Engine{
       response.value=value;
     }
     return response;
-    }catch(error){throw new LoopError(errorDetail(error,{phase:'inference',nodeId:n.id,model:n.model??actor.model}),{cause:error});}
+    }catch(error){throw new LoopError(errorDetail(error,{phase:'inference',nodeId:n.id,model}),{cause:error});}
   }
   capabilities(actor:Actor,settings:InferenceSettings={}){actor.check();const inference=this.host.capabilities?.(actor,settings)??{...(settings.model??actor.model)?{model:settings.model??actor.model}:{},configured:'unknown' as const,authorized:'unknown' as const,available:'unknown' as const,parameters:completionParameters(),notes:[]};return {...inference,budgets:{...this.budgets},concurrency:this.options.concurrency??1};}
   validate(actor:Actor,value:unknown){actor.check();const definition=parseDefinition(value,this.budgets);const issues=validateGraph(definition);for(const node of definition.nodes.flatMap(n=>[n,...childNodes(n)]))if(node.kind==='inference')for(const message of validateAdvanced(node.advanced,this.capabilities(actor,node).parameters))issues.push({nodeId:node.id,message});return {valid:issues.length===0,issues};}

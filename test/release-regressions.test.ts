@@ -16,6 +16,19 @@ class Store implements Storage{
 function setup(){const storage=new Store();const host:HostCapabilities={check:()=>{},complete:vi.fn(async()=>({text:'Result'})),modelInfo:async()=>({provider:'fake',model:'test'})};return {storage,host,engine:new Engine(storage,host)};}
 
 describe('release fault regressions',()=>{
+  it.each([undefined,'explicit/chosen'])('attributes inference failures to the dispatched agent model with override %s',async model=>{
+    const {engine,host}=setup(),caller={...actor,model:'invoker/default'};
+    host.capabilities=(_actor,settings={})=>({model:settings.model??(settings.agentId==='worker'?'worker/default':'invoker/default'),configured:'unknown',authorized:'unknown',available:'unknown',parameters:[],notes:[]});
+    const complete=vi.fn<HostCapabilities['complete']>(async()=>{throw Object.assign(new Error('Synthetic rate limit'),{status:429});});host.complete=complete;
+    const definition=structuredClone(examples[0]),node=definition.nodes.find(n=>n.kind==='inference');if(node?.kind!=='inference')throw Error();node.agentId='worker';if(model)node.model=model;
+    definition.revision=1;engine.save(caller,definition,1,true);
+    try{
+      const run=await engine.run(caller,definition.slug,{text:'Failure attribution'},'agent-model-error'),expected=model??'worker/default';
+      expect(complete.mock.calls[0][4]).toMatchObject({agentId:'worker',model:expected});
+      expect(run).toMatchObject({state:'failed',errorDetail:{code:'HOST_RATE_LIMITED',phase:'inference',nodeId:node.id,model:expected,retryable:true}});
+      expect(run.trace.find(t=>t.nodeId==='return')).toBeUndefined();
+    }finally{await engine.close();}
+  });
   it('rejects fields that a real producer does not return',()=>{
     const d=structuredClone(examples[0]);const end=d.nodes.at(-1)!;if(end.kind!=='return')throw Error();end.value='{{nodes.input.text}}';
     expect(validateGraph(d)).toContainEqual({nodeId:'return',message:'Node input (input) does not produce text.'});
