@@ -209,16 +209,28 @@ describe('asynchronous committed-state service (real SQLite, synthetic host)',()
     await vi.waitFor(()=>expect(references(service)).toBe(0));
   });
   it('keeps a legacy account pin through resume and surfaces its host policy failure',async()=>{
-    const root=mkdtempSync(join(tmpdir(),'loops-service-legacy-account-'));dirs.push(root);const seen:Actor[]=[];
-    const denied=async(a:Actor)=>{seen.push(a);throw Object.assign(new Error('Legacy account is denied by host policy.'),{code:'HOST_POLICY_DENIED',status:403});};
+    const root=mkdtempSync(join(tmpdir(),'loops-service-legacy-account-'));dirs.push(root);const seen:Actor[]=[],seenSettings:Parameters<HostCapabilities['complete']>[4][]=[];
+    const denied:HostCapabilities['complete']=async(a,_prompt,_signal,_timeout,settings)=>{seen.push(a);seenSettings.push(settings);throw Object.assign(new Error('Legacy account is denied by host policy.'),{code:'HOST_POLICY_DENIED',status:403});};
     const {service,file}=setup({file:join(root,'loops.sqlite')},{complete:denied});await service.ready;
-    const definition={...structuredClone(examples[0]),revision:1,capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Pause'},{id:'summary',kind:'inference',label:'Summary',prompt:'{{input.text}}',output:'text'},{id:'return',kind:'return',label:'Return',value:'{{nodes.summary.text}}'}],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'summary',port:'next'},{id:'c',source:'summary',target:'return',port:'next'}]};
+    const definition={...structuredClone(examples[0]),revision:1,capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Pause'},{id:'summary',kind:'inference',label:'Summary',prompt:'{{input.text}}',output:'text',agentId:'legacy-worker'},{id:'return',kind:'return',label:'Return',value:'{{nodes.summary.text}}'}],edges:[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'summary',port:'next'},{id:'c',source:'summary',target:'return',port:'next'}]};
     await service.invoke('save',actor(),definition,1,true);
     const parked=await service.invoke('run',actor({authProfileId:'legacy-profile'}),definition.slug,{text:'legacy'},'legacy');expect(parked.state).toBe('waiting');await service.close();
+    const database=new DatabaseSync(file),stored=database.prepare('SELECT record FROM runs WHERE id=?').get(parked.id) as {record:string},legacy=JSON.parse(stored.record) as Run;delete legacy.executionSettings?.agentModels;database.prepare('UPDATE runs SET record=? WHERE id=?').run(JSON.stringify(legacy),parked.id);database.close();
     const reopened=setup({file},{complete:denied}).service;await reopened.ready;
     const resumed=await reopened.invoke('resume',actor(),parked.id);
     expect(resumed).toMatchObject({state:'failed',errorDetail:{code:'HOST_POLICY_DENIED'}});
-    expect(seen).toHaveLength(1);expect(seen[0]).toMatchObject({authProfileId:'legacy-profile'});
+    expect(seen).toHaveLength(1);expect(seen[0]).toMatchObject({model:'fixture/original',authProfileId:'legacy-profile'});expect(seenSettings).toEqual([expect.objectContaining({agentId:'legacy-worker',model:'fixture/original'})]);
+  });
+  it('pins an overridden agent default for a parked nested Repeat across restart',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-service-agent-default-'));dirs.push(root);let workerModel='worker/admitted',captured:Parameters<HostCapabilities['complete']>[4]|undefined;
+    const capabilities:NonNullable<HostCapabilities['capabilities']>=(_actor,settings={})=>({model:settings.model??(settings.agentId==='worker'?workerModel:'fixture/original'),configured:'unknown',authorized:'unknown',available:'unknown',parameters:[],notes:[]});
+    const complete:HostCapabilities['complete']=async(_actor,_prompt,_signal,_timeout,settings)=>{captured=settings;return {text:settings?.model??''};};
+    const definition={schemaVersion:2 as const,id:'agent-default-repeat',slug:'agent-default-repeat',name:'Agent default repeat',description:'Pin the selected worker default at admission.',revision:0,inputSchema:[],capabilities:['llm'] as const,nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'wait',kind:'wait' as const,label:'Wait',message:'Pause'},{id:'repeat',kind:'repeat' as const,label:'Repeat',maxIterations:1,body:[{id:'worker-infer',kind:'inference' as const,label:'Worker',prompt:'Run',output:'text' as const,agentId:'worker'},{id:'check',kind:'condition' as const,label:'Check',predicate:{left:'true',op:'truthy' as const,right:''}}]},{id:'return',kind:'return' as const,label:'Return',value:'{{nodes.repeat.text}}'}],edges:[{id:'a',source:'input',target:'wait',port:'next' as const},{id:'b',source:'wait',target:'repeat',port:'next' as const},{id:'c',source:'repeat',target:'return',port:'next' as const}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    const {service,file}=setup({file:join(root,'loops.sqlite')},{capabilities,complete});await service.ready;await service.invoke('save',actor(),definition,0,true);
+    const parked=await service.invoke('run',actor(),definition.slug,{},'agent-default');expect(parked).toMatchObject({state:'waiting',executionSettings:{model:'fixture/original',agentModels:{worker:'worker/admitted'}}});await service.close();
+    workerModel='worker/changed';const reopened=setup({file},{capabilities,complete}).service;await reopened.ready;
+    expect(await reopened.invoke('resume',actor(),parked.id)).toMatchObject({state:'completed',result:'worker/admitted'});
+    expect(captured).toMatchObject({agentId:'worker',model:'worker/admitted'});
   });
   it('retains queued authority until dispatch, observes permission revocation, and releases finished invocations',async()=>{
     let finish!:()=>void,permitted=true;
