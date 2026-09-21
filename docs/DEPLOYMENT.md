@@ -18,7 +18,7 @@ Independent shared-team principals, new cross-session recovery, delayed durable 
 
 ## Independent customers
 
-Use one Gateway, state directory, credentials, workspace and model authorization boundary per customer. Never point separate Gateways at one Loops database. The SQLite lock rejects a competing writer. Shared workers would require an explicit authenticated execution protocol and are not provided by this alpha. The deliverable covers plugin deployment and validation; customer provisioning, signup and billing are outside scope.
+Use one Gateway, state directory, credentials, workspace and model authorization boundary per customer. Never point separate Gateways at one Loops database. The SQLite lock rejects a competing writer. Shared workers would require an explicit authenticated execution protocol and are not provided by this release. The deliverable covers plugin deployment and validation; customer provisioning, signup and billing are outside scope.
 
 ## Local inference on 16 GB unified memory
 
