@@ -27,17 +27,17 @@ Source documentation and test fixtures may describe absent capabilities or later
 
 All integration with OpenClaw uses supported APIs available to ordinary external plugins. The host owns runtime execution, model/account selection, permission decisions, sessions and delivery. Loops owns its graph definitions, immutable revisions, run records, editor and one SQLite database in its host-provided plugin state location. Node/React libraries and access to plugin-owned files do not constitute a second host runtime.
 
-No required installation step may patch OpenClaw, whitelist Loops as trusted/bundled, supply administrator credentials to imitate a missing capability, or call a model provider directly. A shipped public export that is restricted to trusted plugins is not an available external-plugin contract. Missing required capabilities block 1.0 acceptance until the host exposes and releases them; unsupported optional generation settings remain explicitly reported and never disable a model when unset.
+No required installation step may patch OpenClaw, whitelist Loops as trusted/bundled, supply administrator credentials to imitate a missing capability, or call a model provider directly. A shipped public export that is restricted to trusted plugins is not an available external-plugin contract. Use a practical supported alternative for 1.0 where one exists; unsupported optional generation settings remain explicitly reported and never disable a model when unset.
 
 Inference remains one fresh, tool-free completion. An existing host-owned durable model-only API may implement an attempt if qualification proves those semantics, settings and authority; choosing that API does not introduce full-agent or subagent nodes. Do not select it solely to evade a request-lifetime restriction.
 
-## Separate upstream contribution track
+[Bolt #201](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/201) is the pending revised-1.0 model-default change: use an explicit node model first, otherwise the host agent's configured default on every path through generic public-plugin completion. It does not copy a new session account override, and it preserves legacy pinned accounts and current host-policy denials. This description is a target, not a claim about the current alpha runtime.
 
-Use an independent fork of `openclaw/openclaw`, outside the published plugin tree and history. Each change starts with an existing issue and a checked contribution scope. Reuse an author's open PR when it already solves the problem; contribute focused tests or a coordinated follow-up. Do not rewrite another contributor's branch without authorization or conflate a related issue with a complete solution.
+## Deferred host enhancements
 
-Upstream PRs contain generic runtime/SDK behavior, host tests and host documentation. They do not contain Loops' graph engine, database schema, UI or product rules. The plugin repository contains the consumer adapter and regression tests, plus links/version requirements for the upstream contracts. Track both sides in the [dependency register](UPSTREAM_REQUIREMENTS.md).
+Advanced expansion, outgoing-notification AbortSignal and delayed durable notifications, automatic conversation model/account inheritance parity, independent shared-team principals, and new cross-session recovery are post-1.0. Existing compatible Advanced values and controls remain preserved. Explicit model selection or a configured public-host default is acceptable for 1.0, and current host-policy denials remain observable rather than being bypassed.
 
-The previous local SDK experiments remain private diagnostic material. No experiment is a required install dependency. Update the declared minimum host version only after upstream merge, release and actual packaged-plugin qualification. Support claims identify tested versions; public API compatibility does not imply official endorsement by OpenClaw.
+No OpenClaw issue, PR, comment, maintainer coordination or patch is authorized for this delivery. The previous local SDK experiments remain private diagnostic material. A future owner-directed adoption must recheck a released public contract and qualify the packaged plugin; no experiment is an installation dependency.
 
 ## Publication checks
 
@@ -45,9 +45,9 @@ Before a source push, review the exact tree and reachable history for excluded f
 
 Before a package release, inspect the actual `npm pack` file list and built imports, not just `.gitignore`. The package allowlist contains compiled plugin assets, manifest, examples and end-user/contributor documentation. OpenClaw remains a peer dependency and its SDK imports remain external to the plugin bundle. Development launch scripts, tests, CI internals, host source and local evidence are not installed as part of the plugin.
 
-Run source checks and extracted-package SDK tests, then ordinary external-plugin installation. Verify model calls, identity, cancellation and delivery through the declared released host, including real transport evidence for Advanced settings. Publish the artifact hash and source commit, run ClawHub validation and publishing dry run, publish under the verified publisher, and test a fresh registry installation. Registry review/availability must be checked rather than inferred from upload success.
+Run source checks and extracted-package SDK tests, then ordinary external-plugin installation. Verify in-scope model calls, current-session authority, cancellation, complete-result retrieval and compatibility of existing optional controls through the declared released host. Full Advanced transport attribution and delayed notifications are not 1.0 gates. Publish the artifact hash and source commit, run ClawHub validation and publishing dry run, publish under the verified publisher, and test a fresh registry installation. Registry review/availability must be checked rather than inferred from upload success.
 
-The public GitHub development baseline may be published before 1.0 is ready, with its alpha status visible. Keep `private:true` until the package publication step deliberately changes it. GitHub source publication, hosted CI, upstream availability, ClawHub upload and verified 1.0 release are separate milestones.
+The public GitHub development baseline may be published before 1.0 is ready, with its alpha status visible. Keep `private:true` until the package publication step deliberately changes it. GitHub source publication, hosted CI, ClawHub upload and verified 1.0 release are separate milestones.
 
 ## Current boundary review
 
