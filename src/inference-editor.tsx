@@ -21,9 +21,9 @@ export function InferenceEditor({node,onChange,loadCapabilities}:{node:Inference
   };
   const setOptional=(key:'model'|'agentId'|'reasoning',value:string)=>{const next={...node};if(value)Object.assign(next,{[key]:value});else delete next[key];onChange(next);};
   return <>
-    <label className="lp-field"><span>Agent override</span><input value={node.agentId??''} placeholder="Inherit conversation agent" onChange={e=>setOptional('agentId',e.target.value)}/></label>
-    <label className="lp-field"><span>Model</span><input value={node.model??''} placeholder={capabilities?.model?`Inherit ${capabilities.model}`:'Inherit conversation model'} onChange={e=>setOptional('model',e.target.value)}/></label>
-    <label className="lp-field"><span>Reasoning</span><select value={node.reasoning??''} onChange={e=>setOptional('reasoning',e.target.value)}><option value="">Inherit conversation / host</option>{['off','minimal','low','medium','high','xhigh','adaptive','max','ultra'].map(level=><option key={level}>{level}</option>)}</select></label>
+    <label className="lp-field"><span>Agent override</span><input value={node.agentId??''} placeholder="Use current agent" onChange={e=>setOptional('agentId',e.target.value)}/></label>
+    <label className="lp-field"><span>Model</span><input value={node.model??''} placeholder={capabilities?.model?`Use host default ${capabilities.model}`:'Use host default model'} onChange={e=>setOptional('model',e.target.value)}/></label>
+    <label className="lp-field"><span>Reasoning</span><select value={node.reasoning??''} onChange={e=>setOptional('reasoning',e.target.value)}><option value="">Inherit host runtime</option>{['off','minimal','low','medium','high','xhigh','adaptive','max','ultra'].map(level=><option key={level}>{level}</option>)}</select></label>
     <details className="lp-advanced"><summary>Advanced settings {node.advanced&&Object.keys(node.advanced).length?`(${Object.keys(node.advanced).length} overrides)`:''}</summary>
       <p className="lp-hint">Empty fields inherit OpenClaw defaults. Advisory settings may be ignored by the selected runtime. Zero is an explicit value.</p>
       <FailureNotice failure={error} label="Model capability failure"/>
