@@ -1,6 +1,6 @@
 # Capabilities and current release boundaries
 
-The alpha.18 candidate targets **OpenClaw 2026.9.5** and **Node 24.16.0**. It is an external feature plugin with the stable runtime/storage ID `loops-poc`. Runtime imports use public `openclaw/plugin-sdk/*` exports. This package is not a published or accepted 1.0 release. Local ordinary-install, real Codex/Ollama and native readback evidence is recorded separately from compile, package and hosted-matrix qualification on [Bolt #186](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/186). The old capability record is preserved in `CAPABILITIES-0.3.md` for historical reference.
+Alpha.19 targets **OpenClaw 2026.9.5** and **Node 24.16.0**. It is an external feature plugin with the stable runtime/storage ID `loops-poc`. Runtime imports use public `openclaw/plugin-sdk/*` exports. This package is not a published or accepted 1.0 release. [Bolt #196's scoped acceptance](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/196#issuecomment-5754248839) records main `0e0f5915f198f8da35da9a90b3465555ac22ea5d`, tree `fc7b858c`, four-platform source (635), package (83), lifecycle and workload passes. The old capability record is preserved in `CAPABILITIES-0.3.md` for historical reference.
 
 | Surface | Current behavior |
 |---|---|
@@ -8,7 +8,7 @@ The alpha.18 candidate targets **OpenClaw 2026.9.5** and **Node 24.16.0**. It is
 | Authoring | Enabled creation by default; explicit disabled drafts; draft saving separate from publication; immutable versions, publish, restore, archive/delete/recover operations. |
 | Execution | One engine for command, tools and UI; sequential execution with a configurable queue; pinned definition/model/reasoning; manual waits and authenticated admin review. |
 | Data | v2 zero-input and nested JSON contracts, safe traversal, typed equality, explicit budgets, full persisted outputs and paged output/history tools. |
-| Inference | Public isolated-agent-runtime completion; model/agent/reasoning/Advanced overrides; unset values inherit. Actual provider/model and requested/transmitted settings are recorded. Applied values remain unknown unless observable. |
+| Inference | Public isolated-agent-runtime completion; model/agent/reasoning/Advanced overrides. [Bolt #201](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/201) is pending to make explicit node model selection, otherwise the host agent's configured default, the revised 1.0 behavior on every path without copying a new session account override. Actual provider/model and requested/transmitted settings are recorded. Applied values remain unknown unless observable. |
 | Persistence | Plugin-owned SQLite on a serialized worker; immutable revisions and admission/attempt/output/event records; transactional commits, integrity checks, process lock and verified legacy JSON migration. Indexed history pages and authorized lazy loading keep completed/parked output records out of the engine cache. |
 | Recovery | Durable wait/review; explicit checkpoint/retry-node/restart with ancestry. Unknown effects require an explicit choice and are never automatically replayed. |
 | Agent parity | Tools expose discovery, authoring, publication, versions, archive/recovery, execution/test/retry/status/history/full inspection/output. Explicit human review uses authenticated UI or human command authority. |
@@ -28,17 +28,17 @@ Empty Advanced fields inherit. Resetting one field removes only that override; r
 
 Draft saving preserves the active publication. Publishing selects a revision for new runs, and restoring an earlier revision creates a new draft with that revision's settings. Cloning, JSON export/import and model changes retain saved overrides, including values that the new target cannot accept. The editor identifies incompatible overrides and offers a reset; it does not silently discard them. Each admitted run keeps its own settings, including when differently configured runs overlap. Commands and agent tools use the same definition and revision operations.
 
-Some provider/streaming surfaces support these options, but `LlmCompleteCommonParams` in 2026.9.5 does not expose them. Loops does not mutate global provider settings, switch runtimes, or claim requested values were applied. See [upstream requirements](UPSTREAM_REQUIREMENTS.md).
+Some provider/streaming surfaces support these options, but `LlmCompleteCommonParams` in 2026.9.5 does not expose them. Loops does not mutate global provider settings, switch runtimes, or claim requested values were applied. Full Advanced expansion is post-1.0; see [supported-host boundaries](UPSTREAM_REQUIREMENTS.md).
 
 The old forced temperature 0.2, maxTokens 512 and reasoning off are removed. Profile repair backs up and removes only exact single-model policies emitted by the old scaffolders; custom policy is preserved. OpenClaw still enforces model/account authorization.
 
 ## Authority and remaining work
 
-The main-agent-only check is removed. Caller identity comes from trusted host context. Current run inspection/control still requires the exact originating agent, session key and session ID. Conversation-reset recovery, team role authorization and per-person account selection need stronger public host contracts. This alpha does not claim multi-user readiness. Independent customers require isolated Gateways.
+The main-agent-only check is removed. Caller identity comes from trusted host context. Current run inspection/control still requires the exact originating agent, session key and session ID. Same-session reset recovery is supported where the host retains that identity. Independent shared-team principals, new cross-session recovery and automatic conversation model/account inheritance parity are post-1.0 host-dependent enhancements. Current host policy can deny an account override. This alpha does not claim multi-user readiness. Independent customers require isolated Gateways.
 
 Disable blocks new runs. Explicit revoke blocks future dispatch in existing runs. Publishing a different capability set no longer accidentally revokes an older pinned run. UI authoring requires operator write/admin; Review requires admin. Agent lifecycle operations can publish and enable but cannot impersonate a human decision.
 
-Cancellation/timeout stops downstream dispatch while a host call ignoring cancellation retains its physical slot until settlement. No exactly-once external-effect claim is made. Restart currently requires authenticated recovery to continue unparked work; automatic wake and delayed delivery remain open. Invalidation events contain no run IDs, inputs or outputs; clients fetch authorized state separately.
+Cancellation/timeout stops downstream dispatch while a host call ignoring cancellation retains its physical slot until settlement. No exactly-once external-effect claim is made. Restart currently requires authenticated recovery to continue unparked work; delayed durable delivery and outgoing-notification AbortSignal are post-1.0. Persisted results remain available through authorized inspection. Invalidation events contain no run IDs, inputs or outputs; clients fetch authorized state separately.
 
 ## Budgets and compatibility
 
