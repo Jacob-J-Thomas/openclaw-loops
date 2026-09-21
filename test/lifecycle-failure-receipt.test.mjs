@@ -4,12 +4,68 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync,spawnSync} from 'node:child_process';
-import {lifecycleFailureReceipt} from '../scripts/lifecycle-failure-receipt.mjs';
+import {createLifecycleOperations,lifecycleFailureReceipt} from '../scripts/lifecycle-failure-receipt.mjs';
 
 const directories=[];
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
 
 describe('sanitized lifecycle failure receipt',()=>{
+  it.each(['sdk-client-startup','public-session-actions'])('captures a rejected %s callback before successful cleanup',async name=>{
+    let now=0;
+    const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal:1}),()=>now);
+    await recorder.run('gateway-readiness',async()=>{now=3;});
+    const error=Object.assign(new Error('timeout with private credentials'),{code:'ETIMEDOUT'});
+    let reject;
+    const pending=recorder.run(name,()=>new Promise((_,fail)=>{reject=fail;}));
+    expect(recorder.completed().map(item=>item.operation)).toEqual(['gateway-readiness']);
+    const rejected=expect(pending).rejects.toBe(error);
+    now=13;reject(error);await rejected;
+    const primary=recorder.snapshot();
+    await recorder.run('gateway-shutdown',async()=>{now=19;});
+    const receipt=lifecycleFailureReceipt('upgrade',error,undefined,undefined,primary);
+    expect(receipt).toMatchObject({category:'timeout',activeOperation:{operation:name,outcome:'failed',elapsedMs:10,phase:'upgrade',restartOrdinal:1}});
+    expect(receipt.completedOperations.map(item=>item.operation)).toEqual(['gateway-readiness']);
+    expect(recorder.completed().map(item=>item.operation)).toEqual(['gateway-readiness','gateway-shutdown']);
+    expect(JSON.stringify(receipt)).not.toContain('credentials');
+  });
+
+  it('retains the first cleanup failure when later cleanup succeeds',async()=>{
+    let now=0;
+    const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal:1}),()=>now);
+    const primary=Object.assign(new Error('private RPC failure'),{code:'ECONNRESET'});
+    await expect(recorder.run('public-session-actions',async()=>{now=4;throw primary;})).rejects.toBe(primary);
+    const diagnostic=recorder.snapshot();
+    const cleanup=Object.assign(new Error('private client timeout'),{code:'ETIMEDOUT'});
+    await expect(recorder.run('client-shutdown',async()=>{now=9;throw cleanup;})).rejects.toBe(cleanup);
+    const cleanupDiagnostic=recorder.record();
+    await recorder.run('gateway-shutdown',async()=>{now=12;});
+    const receipt=lifecycleFailureReceipt('upgrade',primary,undefined,undefined,{...diagnostic,cleanupError:cleanup,cleanup:cleanupDiagnostic});
+    expect(receipt).toMatchObject({category:'connection',activeOperation:{operation:'public-session-actions',elapsedMs:4},cleanupFailure:{operation:'client-shutdown',elapsedMs:5,category:'timeout'}});
+    const cleanupOnly=lifecycleFailureReceipt('upgrade',cleanup,undefined,undefined,{...cleanupDiagnostic,completedOperations:recorder.completed()});
+    expect(cleanupOnly.activeOperation.operation).toBe('client-shutdown');
+    expect(cleanupOnly.completedOperations.map(item=>item.operation)).toEqual(['gateway-shutdown']);
+  });
+
+  it('keeps recent bounded history, ignores duplicate completion and preserves the starting restart identity',async()=>{
+    let restartOrdinal=-1,now=0;
+    const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal}),()=>now);
+    await recorder.run('gateway-readiness',async()=>{restartOrdinal++;now=2;},{restartOrdinal:restartOrdinal+1});
+    expect(recorder.completed()[0]).toMatchObject({restartOrdinal:0,elapsedMs:2});
+    for(let index=0;index<70;index++)await recorder.run('public-session-actions',async()=>{now++;});
+    await recorder.run('sdk-client-startup',async()=>{now++;});
+    recorder.complete();
+    expect(recorder.completed()).toHaveLength(64);
+    expect(recorder.completed().at(-1).operation).toBe('sdk-client-startup');
+    recorder.begin('client-shutdown');recorder.abandon();recorder.complete();
+    expect(recorder.completed()).toHaveLength(64);
+    const receipt=lifecycleFailureReceipt('upgrade',new Error('failed'),undefined,undefined,recorder.snapshot());
+    expect(receipt.activeOperation.operation).toBe('unknown');
+    expect(receipt.completedOperations.at(-1).operation).toBe('sdk-client-startup');
+    const long=lifecycleFailureReceipt('upgrade',new Error('failed'),undefined,undefined,{...recorder.snapshot(),completedOperations:[...Array(70).fill({operation:'installer',outcome:'completed',elapsedMs:1}),{operation:'client-shutdown',outcome:'completed',elapsedMs:3}]});
+    expect(long.completedOperations).toHaveLength(64);
+    expect(long.completedOperations.at(-1).operation).toBe('client-shutdown');
+  });
+
   it.each([
     [{code:'ENOSPC'},'storage-full','Lifecycle storage capacity was exhausted.'],
     [{code:'EPERM'},'permission-denied','Lifecycle access was denied by the operating system.'],
@@ -20,7 +76,7 @@ describe('sanitized lifecycle failure receipt',()=>{
     [{status:9},'subprocess-exit','A lifecycle subprocess exited unsuccessfully.'],
     [{message:'private unexpected detail'},'unexpected','Lifecycle verification failed unexpectedly.'],
   ])('maps a failure to the bounded %s diagnostic', (error,category,message)=>{
-    expect(lifecycleFailureReceipt('upgrade',error)).toEqual({status:'failed',phase:'upgrade',category,message,activeOperation:{operation:'archive-validation',outcome:'failed',elapsedMs:0},completedOperations:[]});
+    expect(lifecycleFailureReceipt('upgrade',error)).toEqual({status:'failed',phase:'upgrade',category,message});
   });
 
   it('writes an uploaded-path receipt when a child fails without retaining its secret-bearing error',()=>{
@@ -32,18 +88,18 @@ describe('sanitized lifecycle failure receipt',()=>{
     const child=spawnSync(process.execPath,['--input-type=module','--eval',source],{encoding:'utf8',env:{...process.env,RECEIPT_DIR:directory}});
     expect(child.status).toBe(17);
     const text=readFileSync(join(directory,'receipt.json'),'utf8');
-    expect(JSON.parse(text)).toEqual({status:'failed',phase:'uninstall-reinstall',category:'subprocess-exit',message:'A lifecycle subprocess exited unsuccessfully.',activeOperation:{operation:'archive-validation',outcome:'failed',elapsedMs:0},completedOperations:[],artifacts:{previous:{source:artifacts.previous.source,sha256:artifacts.previous.sha256,hostVersion:artifacts.previous.hostVersion},current:{sha256:artifacts.current.sha256,hostVersion:artifacts.current.hostVersion}}});
+    expect(JSON.parse(text)).toEqual({status:'failed',phase:'uninstall-reinstall',category:'subprocess-exit',message:'A lifecycle subprocess exited unsuccessfully.',artifacts:{previous:{source:artifacts.previous.source,sha256:artifacts.previous.sha256,hostVersion:artifacts.previous.hostVersion},current:{sha256:artifacts.current.sha256,hostVersion:artifacts.current.hostVersion}}});
     expect(text).not.toContain(secret);
     expect(text).not.toMatch(/token|profile|config|stderr|stack|path/i);
   });
 
   it('replaces an unrecognized phase instead of serializing caller-controlled text',()=>{
-    expect(lifecycleFailureReceipt('secret phase value',{message:'private'})).toEqual({status:'failed',phase:'unknown',category:'unexpected',message:'Lifecycle verification failed unexpectedly.',activeOperation:{operation:'archive-validation',outcome:'failed',elapsedMs:0},completedOperations:[]});
+    expect(lifecycleFailureReceipt('secret phase value',{message:'private'})).toEqual({status:'failed',phase:'unknown',category:'unexpected',message:'Lifecycle verification failed unexpectedly.'});
   });
 
   it('replaces invalid provenance and omits private metadata without throwing in the failure path',()=>{
     const secret='private-profile-token';
-    expect(lifecycleFailureReceipt('archive-validation',new Error('failed'),{previous:{source:secret,sha256:'short',hostVersion:'bad/version',config:secret},current:{sha256:secret,hostVersion:'',token:secret}})).toEqual({status:'failed',phase:'archive-validation',category:'unexpected',message:'Lifecycle verification failed unexpectedly.',activeOperation:{operation:'archive-validation',outcome:'failed',elapsedMs:0},completedOperations:[],artifacts:{previous:{source:'unknown',sha256:'unknown',hostVersion:'unknown'},current:{sha256:'unknown',hostVersion:'unknown'}}});
+    expect(lifecycleFailureReceipt('archive-validation',new Error('failed'),{previous:{source:secret,sha256:'short',hostVersion:'bad/version',config:secret},current:{sha256:secret,hostVersion:'',token:secret}})).toEqual({status:'failed',phase:'archive-validation',category:'unexpected',message:'Lifecycle verification failed unexpectedly.',artifacts:{previous:{source:'unknown',sha256:'unknown',hostVersion:'unknown'},current:{sha256:'unknown',hostVersion:'unknown'}}});
   });
 
   it('adds only bounded readiness evidence when a lifecycle listener appears after the failed deadline',()=>{
@@ -57,15 +113,8 @@ describe('sanitized lifecycle failure receipt',()=>{
     const secret='private-operation-secret';
     const diagnostics={completedOperations:[{operation:'installer',outcome:'completed',elapsedMs:19},{operation:'sdk-client-startup',outcome:'failed',elapsedMs:99_999_999}],cleanupError:Object.assign(new Error('cleanup'),{code:'ETIMEDOUT'}),cleanup:{operation:'gateway-shutdown',outcome:'failed',elapsedMs:44}};Object.defineProperty(diagnostics,'operation',{get(){throw Error(secret);}});Object.defineProperty(diagnostics,'elapsedMs',{get(){throw Error(secret);}});
     const receipt=lifecycleFailureReceipt('upgrade',Object.assign(new Error('primary'),{code:'ECONNREFUSED'}),undefined,undefined,diagnostics);
-    expect(receipt).toMatchObject({category:'connection',activeOperation:{operation:'archive-validation',outcome:'failed',elapsedMs:0},completedOperations:[{operation:'installer',outcome:'completed',elapsedMs:19}],cleanupFailure:{operation:'gateway-shutdown',outcome:'failed',elapsedMs:44,category:'timeout'}});
+    expect(receipt).toMatchObject({category:'connection',activeOperation:{operation:'unknown',outcome:'failed',elapsedMs:0},completedOperations:[{operation:'installer',outcome:'completed',elapsedMs:19}],cleanupFailure:{operation:'gateway-shutdown',outcome:'failed',elapsedMs:44,category:'timeout'}});
     expect(JSON.stringify(receipt)).not.toContain(secret);
-  });
-
-  it('distinguishes the repaired deterministic archive failure from the legacy ambiguous receipt',()=>{
-    const legacy={status:'failed',phase:'archive-validation',category:'required-file-missing'};
-    expect(legacy).not.toHaveProperty('activeOperation');
-    const repaired=lifecycleFailureReceipt('archive-validation',Object.assign(new Error('private archive'),{code:'ENOENT'}),undefined,undefined,{operation:'archive-validation',outcome:'failed',elapsedMs:7,completedOperations:[{operation:'installer',outcome:'completed',elapsedMs:3}]});
-    expect(repaired).toMatchObject({activeOperation:{operation:'archive-validation',outcome:'failed',elapsedMs:7},completedOperations:[{operation:'installer',outcome:'completed',elapsedMs:3}]});
   });
 
   it('recognizes a connection code after a child runtime failure is wrapped at the lifecycle boundary',()=>{
@@ -73,7 +122,7 @@ describe('sanitized lifecycle failure receipt',()=>{
     try{execFileSync(process.execPath,['--input-type=module','--eval',"throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1'),{code:'ECONNREFUSED'})"],{stdio:'pipe'});}catch(error){runtimeError=error;}
     expect(runtimeError).toMatchObject({status:1});
     const wrapped=new Error(`Gateway client failed: ${runtimeError.stderr}`);
-    expect(lifecycleFailureReceipt('upgrade',wrapped)).toEqual({status:'failed',phase:'upgrade',category:'connection',message:'A lifecycle connection failed.',activeOperation:{operation:'archive-validation',outcome:'failed',elapsedMs:0},completedOperations:[]});
+    expect(lifecycleFailureReceipt('upgrade',wrapped)).toEqual({status:'failed',phase:'upgrade',category:'connection',message:'A lifecycle connection failed.'});
   });
 
   it('writes a sanitized receipt when lifecycle archive preflight fails',()=>{

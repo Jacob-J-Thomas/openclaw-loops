@@ -3,7 +3,7 @@ import {resolve} from 'node:path';
 import {sanitizeGatewayReadiness} from './gateway-readiness-evidence.mjs';
 
 const phases=new Set(['archive-validation','install-previous','backup-previous','upgrade','uninstall-reinstall','matching-predecessor-restore']);
-const operations=new Set(['archive-validation','installer','installed-file-validation','gateway-readiness','sdk-client-startup','public-session-actions','client-shutdown','gateway-shutdown','unknown']);
+const operations=new Set(['archive-validation','installer','installed-file-validation','gateway-readiness','sdk-client-startup','public-session-actions','client-shutdown','gateway-shutdown','profile-backup','profile-restore','state-validation','rollback-staging','receipt-write','unknown']);
 const outcomes=new Set(['completed','failed','timed-out','not-started']);
 const descriptions={
   'storage-full':'Lifecycle storage capacity was exhausted.',
@@ -39,7 +39,7 @@ function category(error){
   return 'unexpected';
 }
 
-function operation(value,fallback='archive-validation'){
+function operation(value,fallback='unknown'){
   const name=own(value,'operation'),outcome=own(value,'outcome');
   const phase=own(value,'phase'),restartOrdinal=own(value,'restartOrdinal');
   return {operation:operations.has(name)?name:fallback,outcome:outcomes.has(outcome)?outcome:'failed',elapsedMs:elapsed(own(value,'elapsedMs')),...(phases.has(phase)?{phase}:{}),...(Number.isSafeInteger(restartOrdinal)&&restartOrdinal>=0&&restartOrdinal<=128?{restartOrdinal:ordinal(restartOrdinal)}:{})};
@@ -47,15 +47,35 @@ function operation(value,fallback='archive-validation'){
 
 function completed(value){
   if(!Array.isArray(value))return [];
-  return value.slice(0,16).map(item=>operation(item)).filter(item=>item.outcome==='completed');
+  const recent=[];
+  for(let index=Math.max(0,value.length-64);index<value.length;index++){
+    const item=operation(own(value,String(index)));
+    if(item.outcome==='completed')recent.push(item);
+  }
+  return recent;
+}
+
+// The verifier uses this recorder around the actual awaited operations. A
+// rejected callback stays active until its failure is captured; beginning
+// cleanup never turns that failed operation into a completed one.
+export function createLifecycleOperations(context=()=>({}),clock=Date.now){
+  let active;
+  const history=[];
+  const begin=(name,extra={})=>{active={operation:name,...context(),...extra,startedAt:clock()};};
+  const record=(outcome='failed')=>operation({...context(),...active,outcome,elapsedMs:active?Math.max(0,Math.min(86_400_000,clock()-active.startedAt)):0});
+  const complete=()=>{if(active){history.push(record('completed'));if(history.length>64)history.shift();}active=undefined;};
+  const abandon=()=>{active=undefined;};
+  const snapshot=()=>({...record(),completedOperations:history.map(item=>({...item}))});
+  const run=async(name,callback,extra)=>{begin(name,extra);const result=await callback();complete();return result;};
+  return {begin,record,complete,abandon,snapshot,run,completed:()=>history.map(item=>({...item}))};
 }
 
 export function lifecycleFailureReceipt(phase,error,artifacts,readiness,diagnostics){
   const safeCategory=category(error),safeReadiness=sanitizeGatewayReadiness(readiness);
-  const activeOperation=operation(diagnostics);
+  const activeOperation=diagnostics?operation(diagnostics):undefined;
   const cleanupError=own(diagnostics,'cleanupError');
-  const cleanupOperation=cleanupError?{...operation(own(diagnostics,'cleanup'), 'gateway-shutdown'),category:category(cleanupError)}:undefined;
-  return {status:'failed',phase:phases.has(phase)?phase:'unknown',category:safeCategory,message:descriptions[safeCategory],activeOperation,completedOperations:completed(own(diagnostics,'completedOperations')),...(cleanupOperation?{cleanupFailure:cleanupOperation}:{}),...(artifacts?{artifacts:provenance(artifacts)}:{}),...(safeReadiness?{readiness:safeReadiness}:{})};
+  const cleanupOperation=cleanupError?{...operation(own(diagnostics,'cleanup')),category:category(cleanupError)}:undefined;
+  return {status:'failed',phase:phases.has(phase)?phase:'unknown',category:safeCategory,message:descriptions[safeCategory],...(activeOperation?{activeOperation,completedOperations:completed(own(diagnostics,'completedOperations'))}:{}),...(cleanupOperation?{cleanupFailure:cleanupOperation}:{}),...(artifacts?{artifacts:provenance(artifacts)}:{}),...(safeReadiness?{readiness:safeReadiness}:{})};
 }
 
 export function writeLifecycleFailureReceipt(directory,phase,error,artifacts,readiness,diagnostics){

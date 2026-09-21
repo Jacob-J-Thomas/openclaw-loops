@@ -4,15 +4,17 @@
 
 Bolt #196 keeps the ordinary package-lifecycle workload, its deadlines, and its
 single-run policy unchanged. Its sanitized receipt now names only a bounded active
-operation (`archive-validation`, installer, installed-file validation, Gateway
-readiness, SDK client startup, public session actions, client shutdown, or Gateway
-shutdown), a bounded elapsed value, and completed operation markers. Archive and
-host identity remain hashed. Raw child errors, profile paths, credentials,
-arguments, and cleanup traces stay in the retained private profile.
+operation, elapsed time, phase and restart ordinal when known. The fixed vocabulary
+covers archive/installed-file validation, installation, Gateway readiness, SDK
+client startup, public session actions, shutdown, profile backup/restore, state
+validation and receipt writing. At most 64 recent completed operation markers are
+retained; unknown operations remain unknown. Archive and host identity remain
+hashed. Raw child errors, profile paths, credentials and arguments are excluded
+from the public receipt.
 
 When cleanup also fails, the receipt preserves the original lifecycle failure as
 the primary category and records only the bounded cleanup operation/category. This
-diagnostic improvement does not identify the intermittent macOS readiness timeout;
+diagnostic improvement does not identify the intermittent macOS lifecycle timeout;
 the first instrumented macOS Node 24.16.0 lifecycle execution remains the capped
 observation for that unresolved cause.
 
