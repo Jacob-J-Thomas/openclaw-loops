@@ -2,7 +2,19 @@
 
 ## Unpublished 1.0.0 candidate
 
-Version 1.0.0 is prepared locally as a release candidate and has not been published, accepted as stable, or installed from a registry. Its final source/archive identity, hosted matrix, migration/rollback receipt, practical accessibility result, ClawHub publisher verification, publication and fresh registry installation remain release work.
+Version 1.0.0 has completed candidate qualification and remains unpublished: it has not been accepted as stable or installed from a public registry. The following immutable receipt identifies the tested candidate baseline; later documentation-only packages have their own archive identities and member comparisons on [Bolt #207](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/207).
+
+| Candidate baseline | Recorded result |
+|---|---|
+| Source | `001a0d6a8ffb77bab4ff71f606a61c73e9f06fce` |
+| Archive SHA-256 | `4f20f36242fa864032d0ed1a59628009f8b5b1973be18cb74704172cc953dae3` |
+| Host and matrix | Released OpenClaw 2026.9.5; macOS/Linux with Node 24.16.0/26.1.0 |
+| Checks | [All four jobs passed](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/runs/35629542189): 646 source tests and 86 extracted-package tests per job; all four archives match the recorded hash. |
+| Lifecycle and workload | Ordinary upgrade, uninstall/reinstall and matched rollback passed on all four platforms; 256 completed and 16 parked runs, with resume/cancel and cleanup integrity checks. Both Linux jobs passed real filesystem-full recovery. These fixture journeys make no model calls. |
+| Local installation | Ordinary public-host installer; all 27 archive members matched; protected host settings unchanged; matched stopped-profile/application backup retained. |
+| Publication preparation | Static ClawHub validation against 2026.9.5 passed with zero findings. Exact-tar publishing dry run passed for the 492,412-byte archive without login, upload or publication. |
+
+The [candidate receipt](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/207#issuecomment-5764565271) distinguishes those completed checks from [final post-landing QA #210](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/210), actual native spoken-navigation qualification under #185, and publisher verification/publication/fresh registry installation under #76. Those remaining outcomes are not established by the matrix or dry run.
 
 [Bolt #201](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/201) supplies scoped runtime qualification. The repair head `3bd05dfa3c879bd3291cccd6f1be2bef7187d6e0` passed 644 source and 86 extracted-package tests in all four jobs of [workflow 35623568419](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/runs/35623568419). Downloaded archives from each job have SHA-256 `fb8831f5513281212fbaca17a189f4406118eb2d8cb4a9145b7f042ca5d8c887`. Ordinary lifecycle and sustained-workload receipts passed on all four; real tmpfs exhaustion/recovery passed on both Linux versions. The mounted editor check ran on Linux Node 24; the other editor jobs and macOS tmpfs jobs are intentionally absent from that matrix.
 
