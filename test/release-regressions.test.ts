@@ -78,7 +78,7 @@ describe('real bridge parameter forwarding (fake host completion)',()=>{
       const a=bridge.actor(context);
       await bridge.host.complete(a,'Prompt',new AbortController().signal,10000);
       const args=(bridge.complete.mock.lastCall as unknown as [{model:string;reasoning:string;temperature?:number;maxTokens?:number}])[0];
-      expect(args.model).toBe('fake/default');expect(args.reasoning).toBe('high');expect(args).not.toHaveProperty('temperature');expect(args).not.toHaveProperty('maxTokens');
+      expect(args.model).toBe('fake/default');expect(args).not.toHaveProperty('reasoning');expect(args).not.toHaveProperty('temperature');expect(args).not.toHaveProperty('maxTokens');
     }
   });
   it('transports legacy execution profile pins and preserves host denial without adopting a new session profile',async()=>{
@@ -88,13 +88,14 @@ describe('real bridge parameter forwarding (fake host completion)',()=>{
     await bridge.host.complete(current,'Prompt',new AbortController().signal,10000);
     expect((bridge.complete.mock.lastCall as unknown as [{execution:object}])[0].execution).not.toHaveProperty('authProfileId');
     bridge.complete.mockRejectedValueOnce(Object.assign(new Error('Legacy account denied.'),{code:'HOST_POLICY_DENIED',status:403}));
-    await expect(bridge.host.complete({...current,authProfileId:'legacy-profile'},'Prompt',new AbortController().signal,10000)).rejects.toMatchObject({code:'HOST_POLICY_DENIED',status:403});
+    await expect(bridge.host.complete({...current,authProfileId:'legacy-profile',reasoning:'high'},'Prompt',new AbortController().signal,10000)).rejects.toMatchObject({code:'HOST_POLICY_DENIED',status:403});
     expect((bridge.complete.mock.lastCall as unknown as [{execution:object}])[0].execution).toMatchObject({mode:'isolated-agent-runtime',authProfileId:'legacy-profile'});
+    expect((bridge.complete.mock.lastCall as unknown as [{reasoning:string}])[0].reasoning).toBe('high');
   });
   it('forwards explicit zero and records requested versus applied settings',async()=>{
     const bridge=bridgeSetup();
-    const result=await bridge.host.complete(actor,'Prompt',new AbortController().signal,10000,{model:'fake/other',advanced:{temperature:0,maxTokens:1200}});
-    expect((bridge.complete.mock.lastCall as unknown[])[0]).toMatchObject({model:'fake/other',temperature:0,maxTokens:1200});
+    const result=await bridge.host.complete(actor,'Prompt',new AbortController().signal,10000,{model:'fake/other',reasoning:'low',advanced:{temperature:0,maxTokens:1200}});
+    expect((bridge.complete.mock.lastCall as unknown[])[0]).toMatchObject({model:'fake/other',reasoning:'low',temperature:0,maxTokens:1200});
     expect(result).toMatchObject({settings:{requested:{advanced:{temperature:0,maxTokens:1200}},transmittedToHost:{temperature:0,maxTokens:1200},applied:'unknown'}});
   });
   it('omits the runtime timeout when the node inherits host behavior',async()=>{

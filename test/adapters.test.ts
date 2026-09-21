@@ -371,7 +371,8 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   },30000);
   it.each(['session-action','command','tool'] as const)('uses the host default or authored model without inheriting session account or tool metadata through %s',async surface=>{
     const captured:Parameters<OpenClawPluginApi['runtime']['llm']['complete']>[0][]=[];
-    const s=await setup({defaultModel:{provider:'host',model:'operator-default'},toolContext:{activeModel:{modelRef:'ambient/conversation'} as never},sessionEntry:()=>({sessionId:'adapter-session',authProfileOverride:'session-account'}),onComplete:async request=>{
+    const s=await setup({defaultModel:{provider:'host',model:'operator-default'},toolContext:{activeModel:{modelRef:'ambient/conversation'} as never},sessionEntry:()=>({sessionId:'adapter-session',authProfileOverride:'session-account',thinkingLevel:'off'}),onComplete:async request=>{
+      if(request.reasoning==='off')throw Object.assign(new Error('Thinking off is unsupported for the selected host default.'),{code:'LLM_ISOLATED_INPUT_REJECTED'});
       captured.push(request);return {text:request.model??'',provider:'host',model:request.model??'',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}};
     }});let sequence=0;
     const invoke=async(op:string,input:Record<string,unknown>)=>{
@@ -387,7 +388,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const explicit=await invoke('run',{slug:definition.slug,input:{text:'explicit'},requestId:'explicit'}) as RunReceipt;
     expect([inherited,explicit]).toMatchObject([{state:'completed',result:'host/operator-default'},{state:'completed',result:'explicit/chosen'}]);
     expect(captured.map(request=>request.model)).toEqual(['host/operator-default','explicit/chosen']);
-    for(const request of captured)expect(request.execution).not.toHaveProperty('authProfileId');
+    for(const request of captured){expect(request.execution).not.toHaveProperty('authProfileId');expect(request).not.toHaveProperty('reasoning');}
     const inspection=await invoke('inspect',{runId:inherited.id}) as {executionSettings:Record<string,unknown>};
     expect(inspection.executionSettings).toEqual({model:'host/operator-default'});
   },30000);

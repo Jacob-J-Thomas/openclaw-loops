@@ -34,7 +34,6 @@ export function createBridge(api:OpenClawPluginApi){
     const canManage=context.source==='session-action'?!!context.action.client?.scopes.some(s=>s==='operator.admin'||s==='operator.write'):
       context.source==='command'&&context.command.isAuthorizedSender&&(!context.command.gatewayClientScopes||context.command.gatewayClientScopes.some(s=>s==='operator.admin'||s==='operator.write'));
     const a:Actor={agentId,sessionKey,sessionId,source:context.source,human,canManage,check:()=>checkActor(agentId,sessionKey,sessionId),...requester?{requester}:{},model,
-      ...entry?.thinkingLevel?{reasoning:entry.thinkingLevel}:{},
       ...context.source==='tool'&&context.signal?{signal:context.signal}:{}};
     a.check();return a;
   }
