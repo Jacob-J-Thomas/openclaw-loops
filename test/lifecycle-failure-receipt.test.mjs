@@ -4,12 +4,68 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync,spawnSync} from 'node:child_process';
-import {lifecycleFailureReceipt} from '../scripts/lifecycle-failure-receipt.mjs';
+import {createLifecycleOperations,lifecycleFailureReceipt} from '../scripts/lifecycle-failure-receipt.mjs';
 
 const directories=[];
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
 
 describe('sanitized lifecycle failure receipt',()=>{
+  it.each(['sdk-client-startup','public-session-actions'])('captures a rejected %s callback before successful cleanup',async name=>{
+    let now=0;
+    const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal:1}),()=>now);
+    await recorder.run('gateway-readiness',async()=>{now=3;});
+    const error=Object.assign(new Error('timeout with private credentials'),{code:'ETIMEDOUT'});
+    let reject;
+    const pending=recorder.run(name,()=>new Promise((_,fail)=>{reject=fail;}));
+    expect(recorder.completed().map(item=>item.operation)).toEqual(['gateway-readiness']);
+    const rejected=expect(pending).rejects.toBe(error);
+    now=13;reject(error);await rejected;
+    const primary=recorder.snapshot();
+    await recorder.run('gateway-shutdown',async()=>{now=19;});
+    const receipt=lifecycleFailureReceipt('upgrade',error,undefined,undefined,primary);
+    expect(receipt).toMatchObject({category:'timeout',activeOperation:{operation:name,outcome:'failed',elapsedMs:10,phase:'upgrade',restartOrdinal:1}});
+    expect(receipt.completedOperations.map(item=>item.operation)).toEqual(['gateway-readiness']);
+    expect(recorder.completed().map(item=>item.operation)).toEqual(['gateway-readiness','gateway-shutdown']);
+    expect(JSON.stringify(receipt)).not.toContain('credentials');
+  });
+
+  it('retains the first cleanup failure when later cleanup succeeds',async()=>{
+    let now=0;
+    const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal:1}),()=>now);
+    const primary=Object.assign(new Error('private RPC failure'),{code:'ECONNRESET'});
+    await expect(recorder.run('public-session-actions',async()=>{now=4;throw primary;})).rejects.toBe(primary);
+    const diagnostic=recorder.snapshot();
+    const cleanup=Object.assign(new Error('private client timeout'),{code:'ETIMEDOUT'});
+    await expect(recorder.run('client-shutdown',async()=>{now=9;throw cleanup;})).rejects.toBe(cleanup);
+    const cleanupDiagnostic=recorder.record();
+    await recorder.run('gateway-shutdown',async()=>{now=12;});
+    const receipt=lifecycleFailureReceipt('upgrade',primary,undefined,undefined,{...diagnostic,cleanupError:cleanup,cleanup:cleanupDiagnostic});
+    expect(receipt).toMatchObject({category:'connection',activeOperation:{operation:'public-session-actions',elapsedMs:4},cleanupFailure:{operation:'client-shutdown',elapsedMs:5,category:'timeout'}});
+    const cleanupOnly=lifecycleFailureReceipt('upgrade',cleanup,undefined,undefined,{...cleanupDiagnostic,completedOperations:recorder.completed()});
+    expect(cleanupOnly.activeOperation.operation).toBe('client-shutdown');
+    expect(cleanupOnly.completedOperations.map(item=>item.operation)).toEqual(['gateway-shutdown']);
+  });
+
+  it('keeps recent bounded history, ignores duplicate completion and preserves the starting restart identity',async()=>{
+    let restartOrdinal=-1,now=0;
+    const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal}),()=>now);
+    await recorder.run('gateway-readiness',async()=>{restartOrdinal++;now=2;},{restartOrdinal:restartOrdinal+1});
+    expect(recorder.completed()[0]).toMatchObject({restartOrdinal:0,elapsedMs:2});
+    for(let index=0;index<70;index++)await recorder.run('public-session-actions',async()=>{now++;});
+    await recorder.run('sdk-client-startup',async()=>{now++;});
+    recorder.complete();
+    expect(recorder.completed()).toHaveLength(64);
+    expect(recorder.completed().at(-1).operation).toBe('sdk-client-startup');
+    recorder.begin('client-shutdown');recorder.abandon();recorder.complete();
+    expect(recorder.completed()).toHaveLength(64);
+    const receipt=lifecycleFailureReceipt('upgrade',new Error('failed'),undefined,undefined,recorder.snapshot());
+    expect(receipt.activeOperation.operation).toBe('unknown');
+    expect(receipt.completedOperations.at(-1).operation).toBe('sdk-client-startup');
+    const long=lifecycleFailureReceipt('upgrade',new Error('failed'),undefined,undefined,{...recorder.snapshot(),completedOperations:[...Array(70).fill({operation:'installer',outcome:'completed',elapsedMs:1}),{operation:'client-shutdown',outcome:'completed',elapsedMs:3}]});
+    expect(long.completedOperations).toHaveLength(64);
+    expect(long.completedOperations.at(-1).operation).toBe('client-shutdown');
+  });
+
   it.each([
     [{code:'ENOSPC'},'storage-full','Lifecycle storage capacity was exhausted.'],
     [{code:'EPERM'},'permission-denied','Lifecycle access was denied by the operating system.'],
@@ -53,6 +109,14 @@ describe('sanitized lifecycle failure receipt',()=>{
     expect(JSON.stringify(receipt)).not.toContain(secret);
   });
 
+  it('records bounded active and completed operations without reading hostile getters',()=>{
+    const secret='private-operation-secret';
+    const diagnostics={completedOperations:[{operation:'installer',outcome:'completed',elapsedMs:19},{operation:'sdk-client-startup',outcome:'failed',elapsedMs:99_999_999}],cleanupError:Object.assign(new Error('cleanup'),{code:'ETIMEDOUT'}),cleanup:{operation:'gateway-shutdown',outcome:'failed',elapsedMs:44}};Object.defineProperty(diagnostics,'operation',{get(){throw Error(secret);}});Object.defineProperty(diagnostics,'elapsedMs',{get(){throw Error(secret);}});
+    const receipt=lifecycleFailureReceipt('upgrade',Object.assign(new Error('primary'),{code:'ECONNREFUSED'}),undefined,undefined,diagnostics);
+    expect(receipt).toMatchObject({category:'connection',activeOperation:{operation:'unknown',outcome:'failed',elapsedMs:0},completedOperations:[{operation:'installer',outcome:'completed',elapsedMs:19}],cleanupFailure:{operation:'gateway-shutdown',outcome:'failed',elapsedMs:44,category:'timeout'}});
+    expect(JSON.stringify(receipt)).not.toContain(secret);
+  });
+
   it('recognizes a connection code after a child runtime failure is wrapped at the lifecycle boundary',()=>{
     let runtimeError;
     try{execFileSync(process.execPath,['--input-type=module','--eval',"throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1'),{code:'ECONNREFUSED'})"],{stdio:'pipe'});}catch(error){runtimeError=error;}
@@ -65,7 +129,7 @@ describe('sanitized lifecycle failure receipt',()=>{
     const directory=mkdtempSync(join(tmpdir(),'loops-lifecycle-preflight-'));directories.push(directory);
     const result=spawnSync(process.execPath,[new URL('../scripts/verify-package-lifecycle.mjs',import.meta.url).pathname,join(directory,'missing-previous.tgz'),join(directory,'missing-current.tgz')],{encoding:'utf8',env:{...process.env,LOOPS_EVIDENCE_DIR:directory,LOOPS_LIFECYCLE_PREVIOUS_REF:'7b2705bc2068f09e68e738ae199889feb69c1680',LOOPS_LIFECYCLE_PREVIOUS_HOST_ROOT:directory}});
     expect(result.status).toBe(1);
-    expect(JSON.parse(readFileSync(join(directory,'package-lifecycle','receipt.json'),'utf8'))).toEqual({status:'failed',phase:'archive-validation',category:'required-file-missing',message:'A required lifecycle file was unavailable.',artifacts:{previous:{source:'7b2705bc2068f09e68e738ae199889feb69c1680',sha256:'unknown',hostVersion:'unknown'},current:{sha256:'unknown',hostVersion:'unknown'}}});
+    expect(JSON.parse(readFileSync(join(directory,'package-lifecycle','receipt.json'),'utf8'))).toMatchObject({status:'failed',phase:'archive-validation',category:'required-file-missing',message:'A required lifecycle file was unavailable.',activeOperation:{operation:'archive-validation',outcome:'failed',phase:'archive-validation'},completedOperations:[],artifacts:{previous:{source:'7b2705bc2068f09e68e738ae199889feb69c1680',sha256:'unknown',hostVersion:'unknown'},current:{sha256:'unknown',hostVersion:'unknown'}}});
   });
 
   it('retains private diagnostics when required lifecycle arguments are missing',()=>{
