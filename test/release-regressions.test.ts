@@ -63,11 +63,11 @@ describe('release fault regressions',()=>{
 });
 
 describe('real bridge parameter forwarding (fake host completion)',()=>{
-  function bridgeSetup(){
+  function bridgeSetup(resolveDefaultModelForAgent=(agentId:string)=>({provider:'fake',model:agentId==='research'?'default':'fallback'})){
     const complete=vi.fn(async()=>({text:'ok'}));
     const cfg={plugins:{entries:{'loops-poc':{enabled:true,llm:{allowModelOverride:true}}}},agents:{defaults:{model:{primary:'fake/default'}}}};
     const entry={sessionId:'test',modelOverride:'active',providerOverride:'fake',thinkingLevel:'high',authProfileOverride:'new-session-profile'};
-    const api={config:cfg,runtime:{config:{current:()=>cfg},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'default'})},agent:{normalizeThinkingLevel:(value:string)=>value,session:{getSessionEntry:()=>entry}}}} as unknown as OpenClawPluginApi;
+    const api={config:cfg,runtime:{config:{current:()=>cfg},llm:{complete},modelConfig:{resolveDefaultModelForAgent:({agentId}:{agentId:string})=>resolveDefaultModelForAgent(agentId)},agent:{normalizeThinkingLevel:(value:string)=>value,session:{getSessionEntry:()=>entry}}}} as unknown as OpenClawPluginApi;
     return {...createBridge(api),api,complete};
   }
   it('uses the configured host default for UI, command and agent tool paths without forcing sampling defaults',async()=>{
@@ -80,6 +80,16 @@ describe('real bridge parameter forwarding (fake host completion)',()=>{
       const args=(bridge.complete.mock.lastCall as unknown as [{model:string;reasoning:string;temperature?:number;maxTokens?:number}])[0];
       expect(args.model).toBe('fake/default');expect(args).not.toHaveProperty('reasoning');expect(args).not.toHaveProperty('temperature');expect(args).not.toHaveProperty('maxTokens');
     }
+  });
+  it('uses an overridden node agent default consistently for capabilities and completion',async()=>{
+    const bridge=bridgeSetup(agentId=>agentId==='worker'?{provider:'worker',model:'configured-default'}:{provider:'invoker',model:'configured-default'});
+    const context={source:'session-action',api:bridge.api,action:{agentId:'research',sessionKey:'agent:research:test',client:{connId:'test',scopes:['operator.admin']}}} as unknown as FeatureInvocationContext;
+    const current=bridge.actor(context);
+    expect(bridge.host.capabilities?.(current,{agentId:'worker'})).toMatchObject({model:'worker/configured-default'});
+    await bridge.host.complete(current,'Prompt',new AbortController().signal,10000,{agentId:'worker'});
+    expect((bridge.complete.mock.lastCall as unknown as [{agentId:string;model:string}])[0]).toMatchObject({agentId:'worker',model:'worker/configured-default'});
+    await bridge.host.complete(current,'Prompt',new AbortController().signal,10000,{agentId:'worker',model:'explicit/chosen'});
+    expect((bridge.complete.mock.lastCall as unknown as [{agentId:string;model:string}])[0]).toMatchObject({agentId:'worker',model:'explicit/chosen'});
   });
   it('transports legacy execution profile pins and preserves host denial without adopting a new session profile',async()=>{
     const bridge=bridgeSetup();

@@ -17,7 +17,8 @@ import {fingerprintJson} from './fingerprint.js';
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string};
-export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:Pick<Actor,'model'|'reasoning'|'authProfileId'>;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
+export type ExecutionSettings=Pick<Actor,'model'|'reasoning'|'authProfileId'>&{agentModels?:Record<string,string>};
+export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
 const legacyGrantGeneration='legacy';
 export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
@@ -313,8 +314,8 @@ export class Engine{
       return run;
     }
     const definition=draft??this.describe(actor,slug);const issues=this.validate(actor,definition).issues;if(issues.length)throw requestError(issues.map(i=>i.message).join(' '));
-    const checkedInput=validateInput(definition,input,this.budgets);
-    const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,requestFingerprintVersion:2,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
+    const checkedInput=validateInput(definition,input,this.budgets),agentModels=this.pinAgentModels(actor,definition);
+    const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,requestFingerprintVersion:2,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{},...Object.keys(agentModels).length?{agentModels}:{}},input:checkedInput,state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
     if(draft)run.testMode=true;else run.grantGeneration=this.state.loops[definition.id].grantGeneration??legacyGrantGeneration;
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
@@ -338,6 +339,13 @@ export class Engine{
     if(this.storage.indexed)return this.storage.indexed.findAdmission(key);
     const run=Object.values(this.state.runs).find(r=>r.requestKey===key);
     return run?{id:run.id,fingerprint:run.requestFingerprint}:undefined;
+  }
+  private pinAgentModels(actor:Actor,definition:Definition){
+    const agentModels:Record<string,string>=Object.create(null);
+    for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)]))if(node.kind==='inference'&&node.agentId&&!node.model&&node.agentId!==actor.agentId&&!Object.hasOwn(agentModels,node.agentId)){
+      const model=this.capabilities(actor,{agentId:node.agentId}).model;if(model)agentModels[node.agentId]=model;
+    }
+    return agentModels;
   }
   async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;r.cursor=this.next(r,r.cursor,'next');this.persist(r);return this.dispatch(actor,r);}
   async review(actor:Actor,id:string,decision:'approve'|'reject'){
@@ -369,7 +377,7 @@ export class Engine{
     if(this.closing)throw requestError('Loops service is stopping.','LOOPS_SERVICE_UNAVAILABLE');
     if(this.occupied()>=(this.options.concurrency??1)){r.state='queued';this.queued.set(r.id,actor);this.options.retainActor?.(actor);try{this.checkpoint(r);}catch(error){this.dropQueued(r.id);throw error;}return structuredClone(r);}
     r.state='running';this.checkpoint(r);
-    actor={...actor,...r.executionSettings};
+    const {agentModels:_agentModels,...execution}=r.executionSettings??{};actor={...actor,...execution};
     const controller=new AbortController();const remaining=r.definition.limits.timeoutMs===undefined?undefined:r.definition.limits.timeoutMs-r.activeMs;
     const signal=actor.signal?AbortSignal.any([controller.signal,actor.signal]):controller.signal;
     if(remaining!==undefined)this.deadlines.set(r.id,Date.now()+remaining);
@@ -425,8 +433,10 @@ export class Engine{
     try{
     this.allowedRun(actor,r);this.host.check(actor,'llm');
     const prompt=display(bind(n.prompt,ctx));if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw executionError('Rendered prompt exceeds the transport budget.','LOOPS_PROMPT_LIMIT');
-    const issues=validateAdvanced(n.advanced,this.capabilities(actor,n).parameters);if(issues.length)throw executionError(issues.join(' '),'UNSUPPORTED_INFERENCE_SETTINGS');
-    const settings:InferenceSettings={...n.model?{model:n.model}:{},...n.agentId?{agentId:n.agentId}:{},...n.reasoning?{reasoning:n.reasoning}:{},...n.advanced?{advanced:n.advanced}:{}};
+    const agentModels=r.executionSettings?.agentModels,agentModel=n.agentId&&agentModels&&Object.hasOwn(agentModels,n.agentId)?agentModels[n.agentId]:undefined;
+    const model=n.model??agentModel??actor.model;
+    const settings:InferenceSettings={...model?{model}:{},...n.agentId?{agentId:n.agentId}:{},...n.reasoning?{reasoning:n.reasoning}:{},...n.advanced?{advanced:n.advanced}:{}};
+    const issues=validateAdvanced(n.advanced,this.capabilities(actor,settings).parameters);if(issues.length)throw executionError(issues.join(' '),'UNSUPPORTED_INFERENCE_SETTINGS');
     const deadline=this.deadlines.get(r.id);
     const remaining=deadline===undefined?undefined:deadline-Date.now();
     if(remaining!==undefined&&remaining<=0)throw executionError('Execution timeout exceeded.','LOOPS_TIMEOUT');
