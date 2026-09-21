@@ -4,12 +4,18 @@ Reviewed September 20, 2026. The active deliverable is the [standalone 1.0 plugi
 
 ## Verified baseline
 
-- Current candidate peer: **OpenClaw 2026.9.5**. The alpha.18 source and package consumers pin this release. The accepted ordinary-install and matched-lifecycle runtime evidence remains on 2026.9.4 until the new candidate's separate runtime and hosted checks complete.
+- Current pinned peer: **OpenClaw 2026.9.5**. [Bolt #186 acceptance](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/186#issuecomment-5753434803) records the merged alpha.18 source, ordinary local upgrade, real Codex/Ollama routes, four-platform lifecycle/workload checks and final archive identity. Alpha.19 retains that peer; changed runtime bytes require their own qualification.
 - Published upstream release under qualification: [v2026.9.5](https://github.com/openclaw/openclaw/releases/tag/v2026.9.5), published September 19, commit `ec9c1a13db8938e5a3eaa51fca2e981cde2395a9`; npm integrity is `sha512-TCO/ImVLh5HkF4tdfo7iriIa7kT6iYkIr/jR5ZOkePGFGhUx5Oe7DE716Y1DzzG2teRAVDdCjgJDu1A24Yta7w==`.
 - The released [2026.9.5 runtime contract](https://github.com/openclaw/openclaw/blob/ec9c1a13db8938e5a3eaa51fca2e981cde2395a9/src/plugins/runtime/types.ts) is unchanged from 2026.9.4 for `subagent`: it exposes `run({disableTools:true})`, idempotency, wait/inspection and `completionDelivery:"current-requester"`, but not `subagent.abortSession`. Declaration presence alone does not establish availability from every external-plugin invocation context or durable requester authority.
 - The [2026.9.5 completion contract](https://github.com/openclaw/openclaw/blob/ec9c1a13db8938e5a3eaa51fca2e981cde2395a9/src/plugins/runtime/types-core.ts) still exposes only advisory temperature/maxTokens and normalized reasoning as isolated generation controls. Results add optional `responseModel` and `stopReason`; `responseFormat` and `requiredAuthMode` are direct-provider-only and isolated completion rejects them. Isolated completion still accepts a fresh single user prompt and an optional host-policy-gated `authProfileId`. A caller-provided account ID is not a host-attested account binding.
 
 Issue state, linked PR state, source behavior and first containing release are separate facts. Recheck them at contribution and adoption time. An open issue may describe already-landed behavior; a related PR may fix only part of the requirement.
+
+## Released completion failure causes
+
+[OpenClaw PR #147901](https://github.com/openclaw/openclaw/pull/147901), merged as `540476db48c9afe200a05f2917bc205d9550cdc3`, retains nonterminal provider failure metadata in nested error causes in released 2026.9.5. The historical information-loss evidence in [Finding #134](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/134) must not be generalized to this release. [Bolt #192](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/192) repairs Loops' remaining classification precedence: a recognized nested service failure takes priority over generic output rejection. No duplicate upstream implementation is required for that repaired propagation path.
+
+[Installed-host qualification](VERIFICATION.md#alpha19-wrapped-provider-failure-diagnostics) compares alpha.18 and alpha.19 against the same released host, exercises controlled success/authentication/model/rate/context/service/tool-output responses, and records the real local Ollama missing-model result separately. It proves those safe error categories and downstream failure boundaries. It does not establish effective account identity, complete settings attribution, physical cancellation or diagnostics from every runtime/provider; the broader SDK requirements below remain open.
 
 ## SDK01 consumer qualification — September 20, 2026
 
