@@ -1,72 +1,66 @@
 # OpenClaw Loops: standalone 1.0 delivery plan
 
-Revised scope, September 12, 2026. This replaces the earlier goal that included every expansion milestone. It incorporates the revised release contract and retains the separately requested Advanced inference settings. The original POC handoff and earlier acceptance entries remain historical evidence.
+Owner scope revision, September 21, 2026. This contract supersedes earlier requirements to extend OpenClaw before releasing Loops. Deliver a practical, public, independently installable plugin using supported released OpenClaw APIs. **Optional host enhancements are post-1.0 work. No OpenClaw issues, PRs, comments or patches are authorized in this delivery.**
 
-Owner scope update, September 20, 2026: complete the stable standalone plugin through all R01–R25/P0–P6 requirements, including resumed [R23 accessibility / Bolt #185](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/185). The owner also authorizes required OpenClaw contributions in a separate upstream checkout and issue-linked PRs. Preserve the plugin-only source/package boundary and adopt only supported released host APIs. The earlier independent-work-only scope and accessibility deferral are historical.
+Follow [AIDLC](AIDLC.md): one scoped Bolt per ready PR to main, bounded independent review, verified merge, separate parent acceptance and post-landing QA. Preserve completed implementation, evidence, data and history. Deferred work stays visible without being counted as a release blocker or as completed functionality.
 
-Execution follows the [Loops AIDLC process](AIDLC.md) and [native GitHub issue index](ROADMAP_ISSUES.json): one Bolt per ready PR to main, at most three independent review runs, verified merge/leaf closure, separate parent acceptance, then post-landing adversarial QA. Missing host contracts remain explicit dependencies with an upstream owner, required decision/release and plugin adoption evidence; they are not permission to lower the release target.
+## 1.0 product contract
 
-## Release sequence and boundaries
+Ship Input, Inference, configured-model Action, Condition, Repeat, manual Wait, Human review, Return and Fail. Action reads configured-model metadata. Inference performs one fresh, tool-free completion; Repeat retains its Inference/Condition body. Full agent control includes authoring enabled loops or drafts, editing, publication, activation, invocation, inspection and deletion. Only an explicitly authored Human review requires a human decision.
 
-**Full release target: deliver and verify OpenClaw Loops 1.0 as a public, independently installable external OpenClaw plugin, using supported OpenClaw APIs for all host integration.** The active goal includes adoption of required released public host contracts and verified installation from ClawHub before declaring 1.0 complete. Upstream contributions run in a separate repository/PR track; they are part of closing those dependencies, not code shipped inside this plugin.
+Individuals can choose an inference model or use a documented configured default. Use the same explicit model through UI, commands and tools where host policy permits it. Automatic inheritance of the invoking conversation's exact model/account/runtime binding is optional; do not silently promise it or copy credentials to simulate it. The host owns authorization and account selection. Keep forced temperature 0.2, 512-token limits, reasoning-off and generated model allowlists removed.
 
-The 1.0 palette is Input, Inference, configured-model Action, Condition, Repeat, manual Wait, Human review, Return and Fail. Action currently reads configured-model metadata; it is not an arbitrary tool or script node. Inference performs one fresh, tool-free completion. Repeat retains its inference/condition body. Full agent control includes creating enabled loops, optional drafts, publication, activation, invocation, inspection and deletion. Only an explicitly authored Human review requires a human decision.
+The 1.0 authority boundary is the host-authorized current agent/conversation and its retained generation. Preserve existing supported reset/restart behavior, waits, explicit recovery, complete outputs and library operations. Independent customers use separate Gateways, state, credentials and workspaces. A shared trusted Gateway has a shared library and its existing operator scopes; per-person team permissions and newly selected cross-session inspection/recovery are post-1.0 when they require host changes.
 
-All R01–R25 outcomes below are release requirements. X01–X29 are a deferred roadmap, not unfinished work in the active 1.0 goal. Their existing 1.0 subsets remain required: conversation invocation, nested JSON, explicit recovery and ordinary shared authoring. Adding an expansion family requires a subsequent goal after 1.0; it must not enter the 1.0 code or release package accidentally.
+Persist completion state and expose results through the inspector, history, commands and tools. Use authorized live invalidation followed by scoped reads. A completion notification is an optional convenience: missing durable delivery authority or an outgoing-notification AbortSignal does not prevent a run completing or its result being retrieved. Do not invent a destination or retry an uncertain send automatically.
 
-Support individual use, a shared team, and independent hosted customers. Use OpenClaw's identity and policy. Independent customers require separate Gateways, credentials, state and workspaces. Deliver the plugin, deployment guidance and validation for those scenarios, not a hosting business's signup, provisioning, billing or operations service.
+Keep conservative cancellation: prevent downstream dispatch, propagate supported cancellation, retain executing/settling capacity until the host promise settles, and require explicit recovery for uncertain work. Remote-provider physical-stop attestation and adoption of a durable host runner are future enhancements; local promise settlement is not proof that remote work stopped.
 
-Distribute under MIT, primarily through ClawHub. Preserve the plugin ID `loops-poc` and existing state identity through migration. Keep the package name separate from storage identity. Public source publication is authorized; the repository will contain the plugin, its tests, examples, documentation and development tooling. EmbodySense, OpenClaw runtime changes, provider implementations, personal profiles and hosting-service code are outside it. See the [repository and release boundary](RELEASE_SCOPE.md).
+Release under MIT through ClawHub and public plugin-only source. Preserve runtime/storage ID `loops-poc`, package identity and migration history. No direct provider clients, OpenClaw patches/private internals, copied profiles, EmbodySense code or hosting-business services belong in the repository/package. See [release boundaries](RELEASE_SCOPE.md).
 
-Loops owns graph semantics, its editor, definitions, SQLite database and execution records. OpenClaw owns credentials, account/model selection, permissions, runtime execution, host sessions and message delivery. Calling a public SDK export does not imply that an external plugin is entitled to every trusted-only method beneath it. Do not import private host internals, call providers directly, patch an installed Gateway or substitute administrator credentials for a missing API.
+## Requirement disposition
 
-Use existing OpenClaw issues as the starting point for upstream work. Check the current source, released contract, issue scope and linked PR before implementing. Help complete an existing contributor's PR when it already covers the requirement; open a focused issue-linked PR only for uncovered work. Some issues are partial matches and some requested behavior has already shipped. The [upstream dependency register](UPSTREAM_REQUIREMENTS.md) records those distinctions and the unresolved requirements. The earlier custom jobs-API proposal is not the selected architecture.
+All 25 original findings remain accounted for. The 1.0 column is the acceptance contract; the final column explicitly separates optional expansion.
 
-## List 1: issues and limitations to resolve for 1.0
-
-These are findings from the 0.3.0 implementation, not claims that every possible defect has been found.
-
-| ID | Current issue | Required outcome |
+| ID | Required for 1.0 | Deferred or qualified boundary |
 |---|---|---|
-| R01 | Dev setup inserts a one-model completion allowlist and overwrites it on repeated setup. | Repair recognizable generated policies with backups; preserve operator policies and settings; allow every host-authorized model by default. |
-| R02 | Inference forces temperature 0.2, 512 output tokens and reasoning off. | Inherit effective host settings; explicit per-node overrides under Advanced; no silent fallback. |
-| R03 | Tools use the active model while commands/UI can use another default. | Resolve the same conversation model, runtime, account and reasoning on all entry paths; persist actual attribution. |
-| R04 | Main-agent restriction and current-session-ID ownership prevent legitimate other-agent/history use. | Host-authorized agent/session selection and recovery across reset; origin identity separate from current control authority. |
-| R05 | Host failures lose structured codes and actionable context. | Stable error code, phase, node, model, retryability and recovery detail, without secrets. |
-| R06 | Bindings accept fields their producer never returns; truthy evaluates an unused right operand. | Producer-aware validation and consistent typed predicates/missing-value behavior. |
-| R07 | Failed saves can change memory while storage remains unchanged. | Transaction commits before success/state visibility; corruption/disk failure and conflict tests. |
-| R08 | Publishing a different capability set can revoke an older parked run accidentally. | Immutable revision grants; disable prevents new starts; explicit revoke prevents future existing dispatch. |
-| R09 | Identical intentional commands deduplicate. | Fresh identity for intentional invocation; stable explicit/transport IDs for retries; canonical input fingerprints. |
-| R10 | One mutable definition combines draft, publication and activation. | Immutable versions; save draft without disabling publication; publish, compare, restore, archive and recover. Preserve legacy `enabled:false` meaning. |
-| R11 | Whole-state JSON and shallow validation provide weak recovery. | Plugin-owned SQLite, serialized access, versioned schema, transactional migration/backup, locking and integrity checks. |
-| R12 | Restart marks all running work uncertain with no committed-checkpoint continuation. | Attempt journal and checkpoint recovery; never automatically replay unknown effects; explicit retry/restart ancestry. |
-| R13 | Two-run rejection and premature cancellation slot release. | Queue with configurable concurrency; retain physical execution accounting until cleanup; cancellation prevents downstream dispatch. |
-| R14 | 20-loop and 50-run caps can reject work or evict useful history. | Pagination and configurable retention; protect active/parked/referenced/settling records; no implicit data deletion. |
-| R15 | Small flat scalar input/output schemas and a 5-iteration maximum. | Version 2 contracts, zero inputs, nested JSON and safe traversal, configurable repeat/budgets; retain version 1 semantics. One internal node-contract registry covers validation, inputs, outputs, execution and editor configuration. |
-| R16 | Large outputs are discarded/clipped without agent retrieval. | Persist complete outputs, paged/ref retrieval and previews; documented transport/storage budgets. |
-| R17 | UI-only inspection, review and history; weak output schemas. | Shared typed operations with agent parity for every non-human-only operation; explicit authenticated human decisions only at review nodes. |
-| R18 | No capability/preflight surface. | Distinguish configured, authorized, supported, available and unknown; diagnose before running where possible. |
-| R19 | Editor lacks versions, undo/redo, duplication, search, layout and typed bindings. | Practical graphical authoring with version compare and those controls. |
-| R20 | Unsaved edits can be lost, conflicts are awkward, and input values leak between selections. | Recoverable local drafts, unload guard, conflict reload/merge, input reset and optional-value controls. |
-| R21 | History/results/queue/recovery are incomplete in the UI. | Full run browsing, output retrieval, cancellation/cleanup state, test unpublished drafts, recovery controls. |
-| R22 | Fixed polling and no durable asynchronous completion delivery. | Scoped invalidation and authorized fetch; durable delivery dedupe through a legitimate requester-bound host capability. |
-| R23 | Accessibility, theme and responsive behavior lack acceptance evidence. | Keyboard and screen-reader authoring paths, contrast/focus, light/dark and small-screen testing. |
-| R24 | Individual-only local evidence, no deployment/upgrade/package CI. | Individual/team/customer isolation tests, macOS/Linux and declared host/Node compatibility, resource/soak/failure/upgrade tests. |
-| R25 | Private POC package, no release governance or registry verification. | Public source/license/notices/contributor docs/CI, installable artifact, migration/rollback/uninstall docs, ClawHub dry run/publication and fresh registry install. |
+| R01 | Back up and repair recognizable generated model policies; preserve operator configuration and authorized models. | Operator policy remains authoritative. |
+| R02 | Omit forced generation/reasoning defaults; preserve existing saved overrides and valid explicit zero. | Full Advanced controls, descriptors and provider enforcement qualification are optional/post-1.0. |
+| R03 | Usable explicit model selection or configured default; accurate requested/returned model attribution through UI, commands and tools. | Automatic conversation model/account/runtime inheritance and two-account parity are post-1.0. |
+| R04 | Supported current-agent/current-session authoring, reads and recovery; preserve origin separately from control. | New cross-session/reassignment and independent-team authorization need future host contracts. |
+| R05 | Safe structured error code, phase, node, model, retryability and recovery detail. | No claim of every provider's error or effective-account attribution. |
+| R06 | Producer-aware bindings, typed predicates and explicit missing-value behavior. | Generalized control flow remains future work. |
+| R07 | Commit before reporting success; transactional consistency and storage/conflict fault coverage. | Process-kill evidence is not physical power-loss evidence. |
+| R08 | Immutable revision grants; disable new starts; revoke future dispatch explicitly. | Ordinary edits must not revoke older pinned runs. |
+| R09 | Separate intentional invocation from stable retry identity; preserve canonical fingerprints. | No exactly-once external-effect guarantee. |
+| R10 | Draft, publish, enable/disable, versions, compare, restore, archive/delete/recover; preserve legacy disabled semantics. | Wider sharing authority remains deferred. |
+| R11 | Plugin-owned SQLite worker, migration, backups, locking and integrity checks. | No shared/network database or custom host state replacement. |
+| R12 | Persist attempts/checkpoints; preserve waits/reviews and explicit retry/restart ancestry. | No automatic replay of uncertain effects or mandatory durable host-runner adoption. |
+| R13 | Queue with configurable concurrency; honest cleanup accounting; cancel downstream work. | Remote-provider physical settlement receipts remain optional future host work. |
+| R14 | Paginated history and configurable retention protecting active/parked/referenced/settling records. | No implicit history deletion. |
+| R15 | V2 JSON/nested bindings, zero-input loops, configurable Repeat/budgets and node contracts; retain v1 compatibility. | New node families and general Repeat bodies remain deferred. |
+| R16 | Complete persisted outputs, references/paging and documented configurable transport/storage budgets. | Host context capacity still bounds any single conversation. |
+| R17 | One typed backend for UI, commands and agent lifecycle operations; authenticated human review. | Agents cannot impersonate an explicitly required human decision. |
+| R18 | Useful configured/authorized/supported/available/unknown diagnostics; do not block models for unset optional controls. | Full runtime parameter discovery and effective-account attestation are post-1.0. |
+| R19 | Versions, undo/redo, duplication, search, layout and typed binding authoring. | Advanced workbench remains future scope. |
+| R20 | Recoverable edits, navigation guard, conflict handling and input reset between selections. | Retain invalid drafts for correction. |
+| R21 | Run history, complete outputs, queue/cancel status, draft tests and authorized recovery controls. | Recovery into a different session is not promised. |
+| R22 | Scoped live invalidation, authorized result retrieval and persisted completion/delivery state. | Delayed/restart notifications, outgoing-send cancellation and cross-session delivery are optional/post-1.0. |
+| R23 | Practical keyboard/screen-reader authoring, focus/contrast, themes and responsive qualification. | Record exact observed coverage; do not infer spoken behavior from fixture labels. |
+| R24 | Individual and separate-Gateway deployments; real model journeys, macOS/Linux, declared Node/host versions, fault/resource/lifecycle qualification. | Distinct shared-team principals and unavailable durable delivery/remote settlement are not 1.0 gates. |
+| R25 | Public source/license/notices/CI, exact installable artifact, deployment/migration/rollback/uninstall docs, ClawHub publication and fresh registry verification. | No stable-release claim before the actual publication and install checks pass. |
 
-## Advanced inference controls (R02/R03/R18)
+## Optional Advanced settings
 
-Inference nodes have a collapsible **Advanced settings** category. Include every generation setting exposed by the selected OpenClaw runtime/provider: temperature, top_p, top_k, min_p, typical_p, frequency penalty, presence penalty, repetition penalty, seed, stop sequences, output-token limit and other declared provider options. Reasoning is selectable alongside the model. Preserve per-node agent and system-instruction configuration within the fresh, tool-free completion contract.
+Existing Inference/Repeat Advanced editing and saved values remain compatible. Unset means inherit host/provider behavior, including an unspecified default. Preserve explicit zero, individual/section reset, import/export/version round trips and incompatibility diagnostics. Never erase overrides on a model switch or change shared configuration for one invocation.
 
-Store only explicit overrides. Unset means inherit host behavior, including when the effective numeric default is unknown. Zero is a valid explicit value and must survive all persistence and transmission paths. Allow reset of one setting or all settings. Model switches and imports preserve settings and surface compatibility problems rather than silently discarding values.
+The pinned OpenClaw 2026.9.5 isolated completion contract exposes temperature/output-token hints and normalized reasoning. Other stored fields may be unsupported. Unset unsupported controls must not block an otherwise usable model; incompatible explicit overrides need a clear reason and reset path. Requested or transmitted-to-host values are not proof of provider enforcement.
 
-Typed capability descriptors provide type, range/enum, effective default where known, and supported/advisory/unsupported/unknown status. Unsupported explicit overrides fail preflight with a reason. Merely leaving unsupported controls unset must not block an otherwise usable model. Never label a setting enforced when the runtime only accepts it as a hint. Never mutate global provider configuration to implement a node override.
+Full top-p/top-k/min-p/typical-p, penalty, seed/stop forwarding, complete dynamic descriptors and actual applied-value/account attribution are post-1.0. No upstream contribution or extra provider control is needed just to complete this release.
 
-Expose the same definitions and controls to agents. Verify draft, publish, clone, import, export and restore round trips. Record requested, normalized and transmitted settings where observable, separately from applied settings. Assert actual transport parameters in tests; do not infer enforcement from a model's prose. On the pinned OpenClaw 2026.9.5 release, `llm.complete` publicly types temperature/maxTokens as advisory and reasoning as normalized; top_p and penalties are not present on that API despite support in other host surfaces. Track the exact SDK gap and minimum version required to close it.
+## Post-1.0 expansion inventory
 
-## List 2: deferred expansion and mechanism validation
-
-This list preserves the broader product direction. It does not authorize expansion implementation before 1.0 or make those milestones a condition of completing this goal. Basic nested JSON/output paging (X05), human and agent invocation (X18), manual waits/reviews (X19/X22), explicit uncertain-outcome recovery (X23), definition import/export (X27), and the 1.0 team/deployment requirements (X28) remain covered by the R requirements. Only their additional capabilities are deferred.
+The existing 29 expansion families remain preserved. Conversation invocation, nested JSON/output paging, manual wait/review, explicit uncertain recovery, import/export and ordinary authoring already have the 1.0 subsets above. New families require a later goal and combined acceptance.
 
 | ID | Capability family | Required behavior and combined proof |
 |---|---|---|
@@ -100,73 +94,32 @@ This list preserves the broader product direction. It does not authorize expansi
 | X28 | Operations and collaboration | Remote workers, shared authoring/conflicts, observability, resource/cost usage and deployment compatibility. |
 | X29 | Optimization | Measured scheduling/model/context optimizations, caching with correct identity and repeatable quality comparisons. |
 
-## Delivery packages and dependencies
+## Delivery packages
 
-The alpha already implements substantial parts of these packages. Continue from [verified status](DELIVERY_STATUS.md); do not restart completed work or count fixture evidence as live acceptance.
-
-| Package | Deliverable and requirement mapping | Completion gate |
+| Package | Current deliverable | Completion gate |
 |---|---|---|
-| P0 — Public plugin baseline | Publish the reviewed plugin-only tree and its existing history; MIT, notices, source metadata, contributor guide and CI (R25). Keep alpha status explicit. | Remote tree/history match the reviewed commit; source/package boundary audit and exact-commit CI pass. No claim of a stable release. |
-| P1 — Upstream contract qualification | Refresh released SDK and existing issues/PRs; specify failing plugin-facing cases for SDK01–04 and SDK06. Reuse public model-only execution where it satisfies the semantics. | An issue-linked contract and test plan for every host gap, with existing PR ownership, residual coverage and required release tracked separately. |
-| P2 — Finish plugin hardening | Complete R01–R16: defaults, structured errors, immutable versions, SQLite transactions, queue/cleanup/recovery, v2 graph contracts and full outputs. | Reproduced defects, failure boundaries, migration and workloads exceeding POC limits pass. No hidden model or authoring restrictions. |
-| P3 — Upstream contributions and adoption | Contribute to existing PRs for cancellation/session state; implement uncovered, agreed issue scope in separate OpenClaw PRs. Finish sampling, account/session authority and delivery contracts without a private host fork (R02–R04, R12/R13/R18/R22). | Upstream tests, owner review and merge; released public exports; plugin adapter tests and real runtime evidence against that release. A merged PR alone is insufficient. |
-| P4 — Complete 1.0 experience | Finish Advanced, effective agent/session/model/reasoning, versions, recovery, binding/editor tools, accessibility and UI/command/agent parity (R17–R23). | Equivalent authenticated lifecycle journeys through all three interfaces; requested settings verified at transport; human review remains explicit. |
-| P5 — Qualify release candidate | Individual/team/separate-customer deployments, macOS/Linux, declared Node/OpenClaw combinations, resource/fault/soak/upgrade tests (R24 and all remaining acceptance). | All mandatory capabilities work through an ordinary external-plugin install on unmodified released OpenClaw. Tested version matrix and limitations are published. |
-| P6 — Registry release | Versioned artifact, migration/deployment/capability/release docs, hashes, ClawHub validation/dry run, verified publisher upload and fresh registry installation (R25). | Public artifact is installable; fresh installations and migration pass on the published bytes; then mark 1.0 released and this goal complete. |
+| P0 | Public plugin source, preserved history, MIT/notices/contributor guide and CI. | Exact reviewed source/package boundary; no host code or private state. |
+| P1 | Qualify the pinned public SDK and document usable fallbacks and capability limits. | Distinguish 1.0 behavior from optional SDK01–04/06 enhancements; no upstream posting. |
+| P2 | Finish plugin-owned execution/data/default/error hardening (R01–R16). | Meaningful defect, storage, migration, queue and beyond-POC workload checks. |
+| P3 | Supported-API integration and explicit-model/default qualification. | Actual UI/command/tool behavior on unmodified released OpenClaw; no missing optional API gate. |
+| P4 | Complete authoring, inspection, recovery, parity and accessibility (R17–R23). | Practical authenticated lifecycle journeys; existing optional controls remain compatible. |
+| P5 | Qualify the final candidate (R24). | Exact source/package CI, real runtime/browser, faults, isolated deployment and lifecycle evidence. |
+| P6 | Publish and verify registry release (R25). | Verified publisher, exact artifact/hashes, ClawHub validation/dry run, publication and fresh installation/migration. |
 
-P0 and independent P2/P4 work can proceed while upstream contracts are reviewed. P3 adoption depends on P1 and actual upstream releases. P5/P6 cannot waive missing authority or settings contracts by narrowing the agreed 1.0 requirements silently. There is no promise that upstream will accept a particular design or release date.
+Proceed through all independent plugin work. For a failing requirement, first test a supported, practical alternative. A blocker must prevent an in-scope 1.0 outcome after those alternatives, with concrete evidence and a named next action. An optional enhancement, unknown attribution, theoretical guarantee or unanswered upstream proposal is not such a blocker.
 
-### Work available before upstream contributions
+Defaults: explicit node model when selected, otherwise the documented effective configured model; generation controls/active timeout inherit unless overridden; Repeat 3; node budget 1,000; local concurrency 1 on the 16 GB Mac; extra work queues; no retention deletion until configured; complete outputs with references/pagination. Do not infer that a configured model is currently available or permitted.
 
-Continue these plugin-owned packages against the pinned, unmodified OpenClaw release. They do not require an OpenClaw issue or PR to begin:
+## Migration and acceptance
 
-| Work | Next acceptance evidence |
-|---|---|
-| Transport storage failures (R05/R07/R16) | Safe errors and recovery through uploads, snapshots, UI, commands and tools; committed files survive partial writes, damaged records and actual filesystem exhaustion. This is the first independent hardening item. |
-| Persistence, cleanup and resource hardening (R07/R11–R16) | Further crash/backup-restoration and bounded workload tests; reduce synchronous storage barriers; design explicit document/staging maintenance while preserving active work and referenced evidence. No automatic deletion until configured. |
-| Editor and interface quality (R17/R19–R23) | Remaining keyboard and screen-reader journeys, responsive/browser coverage, conflict/draft recovery and complete-output journeys through the existing public adapters. Host identity and delivery gaps remain separately tracked. |
-| Packaging and deployment preparation (R24/R25) | Repeatable ordinary plugin installation, upgrade/rollback and uninstall/reinstall; sustained resource tests and platform CI; current artifact documentation and ClawHub dry run. Full team/customer authority acceptance and stable publication still depend on the required released host contracts. |
+Validate/back up legacy JSON and transactionally preserve IDs, revisions, timestamps and known attribution. Keep the original file. Retain legacy execution semantics for existing runs. Rollback restores a matching stopped application/profile/database/document backup; never let an older plugin open an incompatible store or rewrite identity to bypass authorization.
 
-Keep each result tied to its tested source/package. Fixture tests for unavailable host contracts are design evidence; they do not substitute for P3 adoption or final release acceptance.
+Use exact source, host, package and evidence identities. Reuse unchanged evidence with an explicit equivalence argument. Deterministic fixtures prove mechanics; real host/browser/transport checks prove their exercised paths. Do not repeatedly rerun unchanged broad suites or exhausted host-context experiments.
 
-### Upstream execution order
+The combined 1.0 journey covers an agent authoring/enabling/invoking a loop, explicit model/default execution, concurrent draft editing with pinned publication, the nine-node palette, restart-preserved Wait/Human review, and complete stored-result retrieval. Companion paths cover rejection, cancellation, revocation, conflict and uncertain recovery. A push notification is not required to retrieve or accept the result.
 
-1. Qualify the current installed release and current upstream release without changing either personal profile. `disableTools` already exists in 2026.9.3 and 2026.9.4; test its semantics before proposing another implementation for #122172. Retain the current single-completion node semantics even if a host-owned durable runner is used internally.
-2. Start from the existing cancellation PR #120140 and session-extension PR #127982, rather than opening duplicate implementations. Prepare plugin-facing cancellation, ownership, restart and negative-scope tests. Session-extension access is for a host session association, not a replacement for Loops' database or proof of session authorization.
-3. Resolve SDK01/02 contracts: use #127561 for the exact sampling-alias defect; use #90193 only for its agreed transport scope. Full per-call sampling/capability forwarding and account-bound invocation remain explicit residual work. Contribute focused generic SDK tests and implementation after the owner contract is settled.
-4. Resolve SDK03/04 with the existing identity and delivery owners. #115902's accepted approval-attribution work is only partial coverage; #145021 adds delivery cancellation, not durable delivery authority. Specify the missing session-access/reset and request-retention cases separately. Do not describe those issues as complete solutions for Loops.
-5. Integrate only released supported APIs, raise the host version explicitly, and repeat plugin acceptance. Track issue, PR, merge SHA, first containing release, package version/hash and Loops consumer commit for each dependency. Keep source inspection, fixture tests and real runtime receipts distinct.
+After all implementation PRs merge, finish adversarial QA, fix admitted plugin defects, and complete P6 on the exact final bytes. Publish tested limitations, including supported session scope and host context limits. Source publication, local acceptance and verified stable registry release remain separate states.
 
-### Defaults and public contracts
+## Upstream hold
 
-Defaults remain host-inherited model, generation settings and active timeout; Repeat 3; node budget 1,000; local inference concurrency 1 on the 16 GB Mac; queued extra work; no retention deletion until configured; complete persisted results with references/pagination. Operator-configurable transport, storage and run budgets replace small POC constants.
-
-Use explicit schemas for Definition, Advanced overrides/capabilities, Publication, Run/Attempt/Checkpoint, OutputReference and Error. Separate origin attribution, current control authority and pinned execution settings. Pin revision, execution-contract version and resolved settings at admission, and recheck current host permissions before dispatch, recovery and private reads. Keep existing `loops_*` names as compatibility adapters over one backend contract.
-
-### After 1.0, under a subsequent goal
-
-The dependency order remains context/data (X01–X05), scripts/tools/agents (X06–X10), control flow/subloops (X11–X14), triggers/signals (X15–X19), evaluation/recovery (X20–X23), and authoring/operations (X24–X29). Each later milestone must include semantics, public API, UI, persistence and a combined workflow. None is included in P0–P6 beyond the explicit 1.0 subsets above.
-
-## Storage migration and rollback
-
-Validate legacy JSON before modification. Retain an exact backup, then import in one transaction, preserving IDs/revisions/timestamps and known origin. Do not invent missing identity. Verify counts and representative content before switching stores. Existing runs retain their v1 execution contract. Future revisions use v2 deliberately. Version restores create new revisions. Archive/delete preserve referenced history through tombstones. Rollback restores a matched application/database pair; never run an older application against a newer unsupported database schema.
-
-## Acceptance and evidence
-
-Track every R ID in `DELIVERY_STATUS.md` with evidence and remaining work. Keep all X IDs explicitly deferred, with their 1.0 overlaps mapped above. Automated deterministic fakes prove mechanics; live host/UI/transport tests prove integration. Keep those claims distinct.
-
-- Fault regressions: provider/account/model mismatch, zero/inherited/invalid/advisory Advanced settings, binding producer errors, unused operands, failed storage commits, stale saves, pinned revisions and duplicate admission.
-- Durability: queue concurrency, cancel/timeout physical cleanup, process restart at every transition, uncertain side effects, disk-full/corruption/lock contention, backup restore and upgrade rollback.
-- Limits: more than 20 loops and 50 runs, complete large outputs, configured budgets, pagination and protected retention.
-- Journeys: UI and agent create/read/edit/enable/disable/draft/publish/run/inspect/output/recover/archive/delete; direct commands; explicit human approval cannot be impersonated by an agent.
-- Deployment: individual, shared team with distinct host roles, two isolated customers, declared OpenClaw/Node releases, macOS/Linux, repeatable installation/uninstall/reinstall.
-- Release: source hygiene, exact artifact hash, CI gates, ClawHub dry run and publication under a verified owner, fresh registry installation and smoke test.
-- Combined 1.0 workflow: an agent authors/enables/invokes a loop, the user edits a draft while its pinned run continues, inference/condition/Repeat operate with inherited and overridden settings, Wait and Human review survive restart, and the result is completely retrieved with one authorized completion notification. Exercise rejection, cancellation, revocation and uncertain-outcome recovery as companion paths.
-
-Deferred combined workflows remain scheduled research with retrieval/subagents, iterative development with scripts/tests and evidence-gated exit, external signals across restart, richer collaborative review and agent-authored loop improvement. Every later capability must participate before that later milestone is complete; these workflows are not 1.0 release gates.
-
-## Release completion and current goal
-
-Declare the 1.0 release complete only when P0–P6 and R01–R25 pass, the required host contracts are available in declared released OpenClaw versions, and the exact public 1.0 package passes fresh installation/migration. The active completion contract in [AIDLC.md](AIDLC.md) includes all of those release requirements, resumed R23 accessibility and post-landing adversarial QA. A documented API gap, pending maintainer decision or submitted upstream PR does not complete its required capability. Continue independent plugin work while those external dependencies are resolved; retain exact source, release and adoption evidence. Keep source publication, upstream PR submission/merge, local alpha acceptance and a registry release as separate states. The owner has authorized GitHub publication and pushing the reviewed plugin history; there is no remaining request for that same authorization.
-
-No estimated date or unverified SDK availability is an acceptance substitute. Record genuine upstream or publication blockers explicitly while continuing independent work.
+SDK01–04/06 expansions and X01–X29/SDK05 remain visible in the future roadmap and [SDK register](UPSTREAM_REQUIREMENTS.md). No OpenClaw PR, issue, comment, patch or maintainer coordination is part of the current goal. Adopt an already released supported API only when useful, scoped and tested. The owner will decide when to review any future upstream work.
