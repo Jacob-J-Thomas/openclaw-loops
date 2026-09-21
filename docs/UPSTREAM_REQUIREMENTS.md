@@ -69,7 +69,7 @@ completion transports. Neither supplies the full per-call forwarding,
 capability discovery or settings-attribution contract. Full SDK01 adoption is post-1.0; a later released public contract and actual transport qualification would be needed for those enhanced claims. This qualification adds no host patch, provider client,
 shared-configuration change or new compatibility claim.
 
-## SDK02 consumer qualification — September 20, 2026
+## Historical SDK02 consumer qualification — September 20, 2026
 
 The [compile-only consumer](https://github.com/Jacob-J-Thomas/openclaw-loops/blob/main/test/contracts/sdk02-consumer.ts)
 checks `openclaw/plugin-sdk/core` and `feature-plugin` against the pinned
@@ -83,15 +83,17 @@ provider/model/agent/runtime owner and caller, plus optional provider response
 model and terminal reason, without effective-account or applied-reasoning
 attestation.
 
-Accepted [PR #160](https://github.com/Jacob-J-Thomas/openclaw-loops/pull/160)
-retains six actual Codex/Ollama routes for the same inherited node. Its Codex
+The accepted [PR #160](https://github.com/Jacob-J-Thomas/openclaw-loops/pull/160)
+baseline records six actual Codex/Ollama routes for the same inherited node. Its Codex
 agent-tool route first returned `HOST_POLICY_DENIED` after a host session
 account binding; after the dedicated profile explicitly granted
 `plugins.entries.loops-poc.llm.allowAuthProfileOverride`, fresh agent-tool and
 native UI routes completed. The preserved receipt identifies actual
 provider/model/agent/runtime owner and requested reasoning, while effective
 account and applied reasoning remain `unknown`. It proves neither two-account
-isolation nor transparent account inheritance.
+isolation nor transparent account inheritance. This historical command-bound
+route is not the #201 candidate behavior, which uses generic public-plugin
+completion and does not copy new session account or reasoning overrides.
 
 Bolt #57's retained ordinary-install evidence records a real post-turn
 `HOST_ABORTED` loop attempt and restart-preserved uncertainty when the public
