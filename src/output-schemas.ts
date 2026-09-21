@@ -40,7 +40,7 @@ const receipt=Type.Unsafe<RunReceipt>(Type.Object({
 const runData=Type.Object({
   id:text,requestKey:text,requestFingerprint:text,owner,source:enums(['command','tool','session-action']),requester:Type.Optional(text),
   requestFingerprintVersion:Type.Optional(Type.Literal(2)),
-  executionSettings:Type.Optional(Type.Object({model:Type.Optional(text),reasoning:Type.Optional(text),authProfileId:Type.Optional(text)},strict)),
+  executionSettings:Type.Optional(Type.Object({model:Type.Optional(text),reasoning:Type.Optional(text),authProfileId:Type.Optional(text),agentModels:Type.Optional(Type.Record(text,text))},strict)),
   cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),
   grantGeneration:Type.Optional(grantGeneration),
   definition:DefinitionSchema,input:Type.Record(text,Type.Unknown()),state:runState,cursor:text,outputs:Type.Record(text,Type.Unknown()),

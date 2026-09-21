@@ -31,7 +31,7 @@ No required installation step may patch OpenClaw, whitelist Loops as trusted/bun
 
 Inference remains one fresh, tool-free completion. An existing host-owned durable model-only API may implement an attempt if qualification proves those semantics, settings and authority; choosing that API does not introduce full-agent or subagent nodes. Do not select it solely to evade a request-lifetime restriction.
 
-[Bolt #201](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/201) is the pending revised-1.0 model-default change: use an explicit node model first, otherwise the host agent's configured default on every path through generic public-plugin completion. It does not copy a new session account override, and it preserves legacy pinned accounts and current host-policy denials. This description is a target, not a claim about the current alpha runtime.
+[Bolt #201](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/201) implements this source candidate's revised 1.0 rule: use an explicit node model first, otherwise the host agent's configured default on every path through generic public-plugin completion. New runs do not copy session account or reasoning overrides; unset reasoning follows the selected runtime. Legacy pinned execution overrides and current host-policy denials remain preserved. Earlier alpha qualification does not establish this changed behavior or final release acceptance.
 
 ## Deferred host enhancements
 

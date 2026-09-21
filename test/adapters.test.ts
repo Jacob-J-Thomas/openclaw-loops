@@ -31,8 +31,8 @@ const directories:string[]=[];
 const shutdowns:Array<()=>Promise<void>>=[];
 afterEach(async()=>{for(const shutdown of shutdowns.splice(0))await shutdown();for(const dir of directories.splice(0))rmSync(dir,{recursive:true,force:true});});
 type AdapterActor={agentId:string;sessionKey:string;sessionId:string};
-type SessionEntry={sessionId:string};
-async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin;maxConcurrentRuns?:number;onComplete?:OpenClawPluginApi['runtime']['llm']['complete'];actor?:AdapterActor;additionalActors?:readonly AdapterActor[];sessionEntry?:({agentId,sessionKey}:{agentId:string;sessionKey:string},sessions:Map<string,SessionEntry>)=>SessionEntry|undefined}){
+type SessionEntry={sessionId:string;thinkingLevel?:string;authProfileOverride?:string};
+async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin;maxConcurrentRuns?:number;onComplete?:OpenClawPluginApi['runtime']['llm']['complete'];defaultModel?:{provider:string;model:string};actor?:AdapterActor;additionalActors?:readonly AdapterActor[];sessionEntry?:({agentId,sessionKey}:{agentId:string;sessionKey:string},sessions:Map<string,SessionEntry>)=>SessionEntry|undefined}){
   const root=options?.root??mkdtempSync(join(tmpdir(),'loops-adapters-'));if(!options?.root)directories.push(root);
   const commands=new Map<string,OpenClawPluginCommandDefinition>(),actions=new Map<string,PluginSessionActionRegistration>(),registered:ToolRegistration[]=[];const services:OpenClawPluginService[]=[];
   const selected=options?.actor??{agentId:'main',sessionKey:'agent:main:adapter-test',sessionId:'adapter-session'};
@@ -40,8 +40,8 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   const sessions=new Map<string,SessionEntry>([selected,...options?.additionalActors??[]].map(actor=>[`${actor.agentId}:${actor.sessionKey}`,{sessionId:actor.sessionId}]));
   // The real published feature SDK registers these adapters. Only host capabilities are faked.
   const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async request=>options?.onComplete?options.onComplete(request):({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
-  const config={plugins:{entries:{'loops-poc':{enabled:true}}}};
-  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>options?.sessionEntry?options.sessionEntry({agentId,sessionKey},sessions):sessions.get(`${agentId}:${sessionKey}`)}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>({provider:'fake',model:'test-only'})}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
+  const config={plugins:{entries:{'loops-poc':{enabled:true}}}},defaultModel=options?.defaultModel??{provider:'fake',model:'test-only'};
+  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>options?.sessionEntry?options.sessionEntry({agentId,sessionKey},sessions):sessions.get(`${agentId}:${sessionKey}`)}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>defaultModel}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
   (options?.plugin??plugin).register(api);
   if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
   const toolContext:OpenClawPluginToolContext={agentId,sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
@@ -368,6 +368,29 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     else expect(await invoke('test',unsupportedInput)).toMatchObject({kind:'loops-error',error:{message:'Temperature: The host model catalog marks temperature unsupported for this model.'}});
     expect(inference(incompatible)).toMatchObject({advanced:{temperature:0,maxTokens:96}});
     expect(s.complete.mock.calls).toHaveLength(3);
+  },30000);
+  it.each(['session-action','command','tool'] as const)('uses the host default or authored model without inheriting session account or tool metadata through %s',async surface=>{
+    const captured:Parameters<OpenClawPluginApi['runtime']['llm']['complete']>[0][]=[];
+    const s=await setup({defaultModel:{provider:'host',model:'operator-default'},toolContext:{activeModel:{modelRef:'ambient/conversation'} as never},sessionEntry:()=>({sessionId:'adapter-session',authProfileOverride:'session-account',thinkingLevel:'off'}),onComplete:async request=>{
+      if(request.reasoning==='off')throw Object.assign(new Error('Thinking off is unsupported for the selected host default.'),{code:'LLM_ISOLATED_INPUT_REJECTED'});
+      captured.push(request);return {text:request.model??'',provider:'host',model:request.model??'',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}};
+    }});let sequence=0;
+    const invoke=async(op:string,input:Record<string,unknown>)=>{
+      if(surface==='command')return commandJson(s,op,input);
+      if(surface==='tool')return toolJson(s,op==='load'?'read':op,input,`model-default-${++sequence}`);
+      const response=await s.action(op,input);if(!response?.ok)throw Error(JSON.stringify(response));return response.result;
+    };
+    const definition={slug:`model-default-${surface}`,name:'Model default',description:'Use host defaults unless a node selects a model.',inputSchema:[{name:'text',label:'Text',type:'text',required:true}],capabilities:['llm'],nodes:[{id:'input',kind:'input',label:'Input'},{id:'summary',kind:'inference',label:'Summary',prompt:'{{input.text}}',output:'text'},{id:'return',kind:'return',label:'Return',value:'{{nodes.summary.text}}'}],edges:[{id:'a',source:'input',target:'summary',port:'next'},{id:'b',source:'summary',target:'return',port:'next'}],layout:{},limits:{maxExecutions:1000,maxOutputBytes:1048576}};
+    const created=await invoke('create',{definition}) as {record:LoopRecord},id=created.record.definition.id;
+    const inherited=await invoke('run',{slug:definition.slug,input:{text:'default'},requestId:'default'}) as RunReceipt;
+    const explicitNodes=structuredClone(created.record.definition).nodes.map(node=>node.kind==='inference'?{...node,model:'explicit/chosen'}:node);
+    await invoke('edit',{id,expectedRevision:1,changes:{nodes:explicitNodes},enabled:true});
+    const explicit=await invoke('run',{slug:definition.slug,input:{text:'explicit'},requestId:'explicit'}) as RunReceipt;
+    expect([inherited,explicit]).toMatchObject([{state:'completed',result:'host/operator-default'},{state:'completed',result:'explicit/chosen'}]);
+    expect(captured.map(request=>request.model)).toEqual(['host/operator-default','explicit/chosen']);
+    for(const request of captured){expect(request.execution).not.toHaveProperty('authProfileId');expect(request).not.toHaveProperty('reasoning');}
+    const inspection=await invoke('inspect',{runId:inherited.id}) as {executionSettings:Record<string,unknown>};
+    expect(inspection.executionSettings).toEqual({model:'host/operator-default'});
   },30000);
   it.each(['ui','command','tool'] as const)('preserves current and published slug reservations through %s lifecycle operations',async surface=>{
     const s=await setup();let sequence=0;
@@ -734,7 +757,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('load',{id})).toMatchObject({result:{kind:'loops-error'}});
     expect(s.complete).not.toHaveBeenCalled();
   },30_000);
-  it('uses command-bound inference and fresh or explicit retry identities for JSON invocation and recovery',async()=>{
+  it('uses plugin-runtime inference and fresh or explicit retry identities for JSON invocation and recovery',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler,bound=vi.fn(s.complete.getMockImplementation()!);
     const context={...s.commandContext,runtimeContext:{llm:{complete:bound}}};
     const command=async(op:string,input:unknown={})=>JSON.parse((await handler({...context,args:`${op} ${JSON.stringify(input)}`})).text!);
@@ -744,17 +767,17 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(first).toMatchObject({state:'completed',source:'command'});expect(second.id).not.toBe(first.id);
     const intentional=await command('run',{...input,requestId:'one-admission'});
     expect(await command('run',{...input,requestId:'one-admission'})).toEqual(intentional);
-    expect(bound).toHaveBeenCalledTimes(3);expect(s.complete).not.toHaveBeenCalled();
+    expect(bound).not.toHaveBeenCalled();expect(s.complete).toHaveBeenCalledTimes(3);
     expect(await command('history',{limit:1})).toMatchObject({total:3,nextCursor:1,items:[expect.any(Object)]});
     expect(await command('inspect',{runId:first.id})).toMatchObject({id:first.id,outputs:{summary:{text:'An actual adapter result.'}}});
     expect(await command('output',{runId:first.id})).toMatchObject({text:'An actual adapter result.',nextOffset:null});
-    bound.mockRejectedValueOnce(new Error('Synthetic failed provider call'));
+    s.complete.mockRejectedValueOnce(new Error('Synthetic failed provider call'));
     const failed=await command('run',input);expect(failed.state).toBe('failed');
     const retry=await command('retry',{runId:failed.id,mode:'retry-node'});
     expect(retry).toMatchObject({state:'completed',parentRunId:failed.id});
     const definition=(await command('read',{id:'summarize-text'})).definition;
     const tested=await command('test',{definition,input:input.input});
-    expect(tested).toMatchObject({state:'completed',testMode:true});expect(bound).toHaveBeenCalledTimes(6);
+    expect(tested).toMatchObject({state:'completed',testMode:true});expect(bound).not.toHaveBeenCalled();expect(s.complete).toHaveBeenCalledTimes(6);
   });
   it('validates command identity and authority before mutation and retains optimistic conflicts',async()=>{
     const s=await setup(),handler=s.commands.get('loops')!.handler;
