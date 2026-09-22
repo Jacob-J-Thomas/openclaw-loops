@@ -1,10 +1,10 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {execFileSync,spawnSync} from 'node:child_process';
-import {createLifecycleOperations,lifecycleFailureReceipt} from '../scripts/lifecycle-failure-receipt.mjs';
+import {execFileSync,fork,spawn,spawnSync} from 'node:child_process';
+import {createLifecycleOperations,lifecycleChildProcessState,lifecycleFailureReceipt,sanitizeLifecycleClientStartup} from '../scripts/lifecycle-failure-receipt.mjs';
 
 const directories=[];
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
@@ -107,6 +107,43 @@ describe('sanitized lifecycle failure receipt',()=>{
     const receipt=lifecycleFailureReceipt('upgrade',new Error('private'),undefined,{restartOrdinal:1,deadlineElapsedMs:15000,deadlineProcessState:'alive',postDeadlineAttempts:3,postDeadlineWindowMs:200,listenerAfterDeadline:true,listenerElapsedMs:15200,finalProcessState:'alive',secret});
     expect(receipt).toMatchObject({status:'failed',phase:'upgrade',category:'unexpected',readiness:{restartOrdinal:1,listenerAfterDeadline:true,listenerElapsedMs:15200}});
     expect(JSON.stringify(receipt)).not.toContain(secret);
+  });
+
+  it('retains only bounded public client-startup timing and process evidence',()=>{
+    const secret='token=private-client-token ws://private.gateway/profile';
+    const timings=Array.from({length:9},(_,index)=>({phase:index===0?'socket-open':'challenge',generation:index,durationMs:index,phaseDurationMs:index,hasChallenge:index>0,usedFallback:false,plan:secret}));
+    const receipt=lifecycleFailureReceipt('upgrade',new Error('Gateway client startup timed out.'),undefined,undefined,{clientStartup:{restartOrdinal:1,budgetMs:15_000,listening:true,gatewayProcessState:'alive',clientProcessState:'alive',elapsedMs:15_000,timings,endpoint:secret}});
+    expect(receipt).toMatchObject({category:'timeout',clientStartup:{restartOrdinal:1,budgetMs:15_000,listening:true,gatewayProcessState:'alive',clientProcessState:'alive',elapsedMs:15_000}});
+    expect(receipt.clientStartup.timings.slice(0,2)).toMatchObject([{phase:'socket-open',generation:0},{phase:'challenge',generation:1,hasChallenge:true}]);
+    expect(receipt.clientStartup.timings).toHaveLength(8);
+    expect(JSON.stringify(receipt)).not.toContain(secret);
+    const hostile={get timings(){throw Error(secret);},get gatewayProcessState(){throw Error(secret);}};
+    expect(sanitizeLifecycleClientStartup(hostile)).toMatchObject({gatewayProcessState:'unavailable',clientProcessState:'unavailable',timings:[]});
+  });
+
+  it('forwards an allowlisted public client timing without a timeout override',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-client-worker-'));directories.push(root);
+    const packageRoot=join(root,'node_modules','openclaw');mkdirSync(packageRoot,{recursive:true});
+    writeFileSync(join(root,'package.json'),JSON.stringify({name:'worker-fixture',private:true,type:'module'}));
+    writeFileSync(join(packageRoot,'package.json'),JSON.stringify({name:'openclaw',private:true,type:'module',exports:{'./plugin-sdk/gateway-runtime':'./gateway-runtime.mjs'}}));
+    writeFileSync(join(packageRoot,'gateway-runtime.mjs'),"export class GatewayClient { constructor(options){ this.options=options; } start(){ queueMicrotask(()=>{ this.options.onTiming({phase:'challenge',generation:2,durationMs:7,phaseDurationMs:3,hasChallenge:true,usedFallback:false,plan:'token=private'}); this.options.onHelloOk(); }); } async stopAndWait(){} }");
+    const {LOOPS_GATEWAY_STARTUP_BUDGET_MS:_timeoutOverride,...env}=process.env;
+    const worker=fork(new URL('./helpers/gateway-client-worker.mjs',import.meta.url),[],{cwd:root,env:{...env,LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:root,LOOPS_GATEWAY_URL:'ws://127.0.0.1:21961',LOOPS_GATEWAY_TOKEN:'private-token'},silent:true});
+    const messages=[];
+    await new Promise((resolveDone,reject)=>{const timer=setTimeout(()=>reject(Error('Worker did not stop.')),5_000);worker.on('message',message=>{messages.push(message);if(message?.type==='ready')worker.send({type:'stop'});});worker.once('error',reject);worker.once('exit',code=>{clearTimeout(timer);if(code===0)resolveDone();else reject(Error(`Worker exited ${code}.`));});});
+    expect(messages).toEqual(expect.arrayContaining([{type:'timing',timing:{phase:'challenge',generation:2,durationMs:7,phaseDurationMs:3,hasChallenge:true,usedFallback:false}},{type:'ready'},{type:'stopped'}]));
+    expect(JSON.stringify(messages)).not.toContain('private');
+  });
+
+  it('classifies an unspawned child before alive and preserves live, exit, and signal states',async()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-child-state-'));directories.push(directory);
+    const failed=spawn(join(directory,'missing-worker-command'));await new Promise(resolveDone=>failed.once('error',resolveDone));
+    expect(lifecycleChildProcessState(failed)).toBe('unavailable');
+    const live=spawn(process.execPath,['--input-type=module','--eval','setInterval(()=>{},1000)'],{stdio:'ignore'});
+    expect(lifecycleChildProcessState(live)).toBe('alive');live.kill('SIGTERM');await new Promise(resolveDone=>live.once('exit',resolveDone));
+    expect(lifecycleChildProcessState(live)).toBe('signaled');
+    const exited=spawn(process.execPath,['--input-type=module','--eval','process.exit(0)'],{stdio:'ignore'});await new Promise(resolveDone=>exited.once('exit',resolveDone));
+    expect(lifecycleChildProcessState(exited)).toBe('exited');
   });
 
   it('records bounded active and completed operations without reading hostile getters',()=>{
