@@ -56,7 +56,7 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/ab8a966ffbade3ad8e5e1eb08e2ae8b7112781ae18e30e4dede70da69cf80c41/index.js"
+    "entry": "dist/control-ui/1d4834f093dd7f6372f7ef9a37f59080b3267af8fc548d13aa035cbaca135a55/index.js"
   },
   "contracts": {
     "tools": [
