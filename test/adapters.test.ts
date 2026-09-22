@@ -127,6 +127,18 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('test',{definition:incompatible,input:{text:'Must not dispatch'},requestId:'capability-unsupported'})).toMatchObject({ok:true,result:{kind:'loops-error',operation:'test',error:{code:'LOOPS_INVALID_REQUEST',message:expect.stringMatching(/public isolated completion/)}}});
     expect(s.complete).toHaveBeenCalledOnce();
   });
+  it('executes a saved v3 zero patch and consuming Return through the registered UI adapter, retaining ordered journal provenance',async()=>{
+    const s=await setup();
+    const definition={schemaVersion:3 as const,slug:'adapter-context-return',name:'Adapter context Return',description:'Registered adapter context regression.',inputSchema:[],capabilities:[] as const,nodes:[
+      {id:'input',kind:'input' as const,label:'Input',context:{version:1 as const,projection:{mode:'omit' as const},patch:{mode:'replace' as const,target:'/answer',source:{kind:'literal' as const,value:{literalJson:'0'}}}}},
+      {id:'return',kind:'return' as const,label:'Return',value:'{{context.answer}}',context:{version:1 as const,projection:{mode:'consume' as const,paths:['/answer']},patch:{mode:'omit' as const}}},
+    ],edges:[{id:'input-return',source:'input',target:'return',port:'next' as const}],layout:{},limits:{maxExecutions:2,maxOutputBytes:1024}};
+    const created=await s.action('create',{definition,enabled:true});expect(created).toMatchObject({ok:true,result:{record:{definition:{schemaVersion:3,slug:definition.slug}}}});
+    const admission=await s.action('run',{slug:definition.slug,input:{},requestId:'adapter-context-return'}) as {ok:boolean;result:{id:string;state:string;result:unknown;contextVersion?:number}};
+    expect(admission).toMatchObject({ok:true,result:{state:'completed',result:0,contextVersion:1}});
+    const inspection=await s.action('inspect',{runId:admission.result.id});expect(inspection).toMatchObject({ok:true,result:{state:'completed',result:0,context:{version:1,value:{input:{},answer:0},journal:[{nodeId:'input',baseVersion:0,version:1,mode:'replace',target:'/answer',source:{kind:'literal',value:{literalJson:'0'}},valueBytes:1}]}}});
+    const journal=(inspection as {result:Run}).result.context!.journal;expect(journal[0]!.valueSha256).toMatch(/^[a-f0-9]{64}$/);expect(s.complete).not.toHaveBeenCalled();
+  });
   it('protects actual parked, queued and settling run snapshots after reader release, including a parked restart',async()=>{
     let s=await setup(),release!:()=>void;const entered:AbortSignal[]=[];
     const implementation=s.complete.getMockImplementation()!;

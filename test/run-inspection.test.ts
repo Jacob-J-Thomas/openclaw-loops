@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {inspectionOutput,readOnlyGraphAriaLabelConfig,RunInspection} from '../src/run-inspection.js';
+import {contextPage,inspectionOutput,journalSource,readOnlyGraphAriaLabelConfig,RunInspection} from '../src/run-inspection.js';
 import {parseDefinition} from '../src/graph.js';
 import type {Run} from '../src/engine.js';
 
@@ -10,6 +10,20 @@ const run:Run={id:'child-run',requestKey:'request',requestFingerprint:'fingerpri
 const render=(value=run)=>renderToStaticMarkup(React.createElement(RunInspection,{run:value,onSelectRun:()=>{},onExport:()=>{}}));
 
 describe('run inspection',()=>{
+  it('pages Unicode by code point and bounds literal provenance previews without splitting an emoji',()=>{
+    expect(contextPage('🧪x',1)).toMatchObject({visible:'🧪',incomplete:true});
+    const source=journalSource({kind:'literal',value:{literalJson:JSON.stringify('🧪'.repeat(600))}});
+    expect(source).toContain('…');expect(source.slice(0,-1)).not.toMatch(/[\uD800-\uDBFF]$/);
+  });
+  it('renders escaped v3 context value and ordered committed provenance without treating it as markup',()=>{
+    const definition=parseDefinition({...pinned,schemaVersion:3});
+    const contextual:Run={...run,definition,context:{version:2,value:{input:{name:'🧪<script>alert(1)</script>'},result:{count:0,nullable:null}},journal:[
+      {nodeId:'input',baseVersion:0,version:1,mode:'replace',target:'/result',source:{kind:'literal',value:{literalJson:'{"count":0}'}},valueSha256:'a'.repeat(64),valueBytes:11},
+      {nodeId:'return',baseVersion:1,version:2,mode:'merge',target:'/result',source:{kind:'output',path:'/value'},valueSha256:'b'.repeat(64),valueBytes:4},
+    ]}};
+    const html=render(contextual);expect(html).toContain('Shared context provenance');expect(html).toContain('Context version 2');expect(html).toContain('Current shared context value');expect(html).toContain('Committed patch journal');expect(html).toContain('v0 → v1 · input');expect(html).toContain('v1 → v2 · return');expect(html).toContain('Resolved value SHA-256');expect(html).toContain('🧪&lt;script&gt;alert(1)&lt;/script&gt;');expect(html).toContain('/value');
+  });
+  it('states when an older run did not retain shared context',()=>expect(render()).toContain('This run has no shared context'));
   it('renders the pinned definition, Repeat body settings, and readonly graph handles',()=>{
     const html=render();expect(html).toContain('Pinned published workflow');expect(html).toContain('Pinned repeat');expect(html).toContain('Pinned body');expect(html).toContain('read-only');expect(html).toContain('data-handleid="next"');
   });
