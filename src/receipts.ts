@@ -14,7 +14,7 @@ export function receipt(run:Run){
   return {id,state,owner,source,...requester?{requester}:{},definition:{id:definition.id,slug:definition.slug,name:definition.name,revision:definition.revision},executions,createdAt,updatedAt,models,
     ...run.result===undefined?{}:clipped?{resultPreview:truncateCodePoints(text,1000),resultTruncated:true}:{result:run.result},
     ...pending===undefined?{}:{pending,pendingTruncated:pending!==run.pending},
-    ...run.cleanupPending?{cleanupPending:true}:{},...run.parentRunId?{parentRunId:run.parentRunId}:{},...run.testMode?{testMode:true}:{},...error?{error}:{},...run.errorDetail?{errorDetail:run.errorDetail}:{},...uncertainty?{uncertainty}:{},...review?{review}:{},
+    ...run.cleanupPending?{cleanupPending:true}:{},...run.parentRunId?{parentRunId:run.parentRunId}:{},...run.testMode?{testMode:true}:{},...run.context?{contextVersion:run.context.version}:{},...error?{error}:{},...run.errorDetail?{errorDetail:run.errorDetail}:{},...uncertainty?{uncertainty}:{},...review?{review}:{},
     steps:run.trace.slice(-8).map(({nodeId,state,iteration})=>({nodeId,state,...iteration?{iteration}:{}})),
     inspection:'Use loops_inspect with this run ID, or open the Loops page, for the full pinned definition and node evidence.',
   };
