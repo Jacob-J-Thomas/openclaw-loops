@@ -6,6 +6,26 @@ const strict={additionalProperties:false} as const;
 const bindingSegment=/^[a-z][a-z0-9_-]{0,47}$/;
 const arrayIndex=/^(?:0|[1-9][0-9]*)$/;
 const bytes=(value:string)=>new TextEncoder().encode(value).byteLength;
+export type BindingToken={raw:string;start:number;end:number};
+
+/** Scan {{bindings}} without treating braces inside a quoted bracket segment
+ * as a token close. This keeps RFC 6901 keys such as `a}}` addressable. */
+export function bindingTokens(template:string):{tokens:BindingToken[];unclosed:boolean}{
+  const tokens:BindingToken[]=[];let cursor=0,unclosed=false;
+  while(true){
+    const start=template.indexOf('{{',cursor);if(start<0)break;
+    let index=start+2,quoted=false,escaped=false,end=-1;
+    for(;index<template.length;index++){
+      const character=template[index];
+      if(quoted){if(escaped){escaped=false;continue;}if(character==='\\'){escaped=true;continue;}if(character==='"')quoted=false;continue;}
+      if(character==='"'){quoted=true;continue;}
+      if(character==='}'&&template[index+1]==='}'){end=index+2;break;}
+    }
+    if(end<0){unclosed=true;break;}
+    tokens.push({raw:template.slice(start+2,end-2),start,end});cursor=end;
+  }
+  return {tokens,unclosed};
+}
 export const ContextPathSchema=Type.String({minLength:1,maxLength:1024,description:'RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected.'});
 export type ContextPath=Static<typeof ContextPathSchema>;
 export const ContextProjectionSchema=Type.Union([
@@ -100,8 +120,29 @@ export function projectContext(state:ContextState,config:ContextNodeConfig|undef
 }
 
 export function contextPathForBinding(binding:string):string|undefined{
-  const parts=binding.split('.');if(parts[0]!=='context'||parts.length<2||parts.slice(1).some(part=>!bindingSegment.test(part)&&!arrayIndex.test(part)))return undefined;
-  return `/${parts.slice(1).join('/')}`;
+  const parts=contextBindingSegments(binding);if(!parts)return undefined;
+  return `/${parts.map(part=>part.replace(/~/g,'~0').replace(/\//g,'~1')).join('/')}`;
+}
+
+/** Parse only the context binding namespace. Dot segments preserve the legacy
+ * grammar; bracketed JSON strings make every RFC 6901 object key addressable. */
+export function contextBindingSegments(binding:string):string[]|undefined{
+  if(!binding.startsWith('context'))return undefined;
+  const parts:string[]=[];let index='context'.length;
+  while(index<binding.length){
+    if(binding[index]==='.'){
+      const start=++index;while(index<binding.length&&binding[index]!=='.'&&binding[index]!=='[')index++;
+      const part=binding.slice(start,index);if(!bindingSegment.test(part)&&!arrayIndex.test(part))return undefined;parts.push(part);continue;
+    }
+    if(binding[index]!=='['||binding[index+1]!=='"')return undefined;
+    const start=++index;let escaped=false,closed=false;
+    while(++index<binding.length){const character=binding[index];if(escaped){escaped=false;continue;}if(character==='\\'){escaped=true;continue;}if(character==='"'){closed=true;break;}}
+    if(!closed||binding[index+1]!==']')return undefined;
+    let part:unknown;try{part=JSON.parse(binding.slice(start,index+1));}catch{return undefined;}
+    if(typeof part!=='string'||['__proto__','prototype','constructor'].includes(part))return undefined;
+    parts.push(part);index+=2;
+  }
+  return parts.length?parts:undefined;
 }
 
 export function contextPatchLiteral(config:ContextNodeConfig):NodeValue|undefined{
