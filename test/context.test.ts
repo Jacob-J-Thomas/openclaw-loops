@@ -5,9 +5,10 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {createHash} from 'node:crypto';
 import {Engine,type Actor,type HostCapabilities} from '../src/engine.js';
-import {initialContext,projectContext,type ContextPatch,type ContextProjection} from '../src/context.js';
+import {contextPathForBinding,initialContext,projectContext,type ContextPatch,type ContextProjection} from '../src/context.js';
 import {SqliteStorage} from '../src/storage.js';
-import {parseDefinition,validateGraph,type Definition} from '../src/graph.js';
+import {bind,parseDefinition,validateGraph,type Definition} from '../src/graph.js';
+import {duplicateNode} from '../src/editor-operations.js';
 
 const cleanups:Array<()=>void|Promise<void>>=[];
 afterEach(async()=>{for(const cleanup of cleanups.splice(0).reverse())await cleanup();});
@@ -62,6 +63,19 @@ describe('version 3 shared context',()=>{
     const immutable=definition();immutable.nodes[0].context!.patch={mode:'merge',target:'/input',source:{kind:'literal',value:{literalJson:'{}'}}};expect(validateGraph(immutable).map(issue=>issue.message).join(' ')).toMatch(/immutable/);
     const malformed=definition();malformed.nodes[0].context!.patch={mode:'replace',target:'/bad~2path',source:{kind:'output'}};expect(validateGraph(malformed).map(issue=>issue.message).join(' ')).toMatch(/escape/);
   });
+  it('binds projected RFC 6901 punctuation keys with explicit bracket-string segments',async()=>{
+    const projected=projectContext({version:0,value:{'a/b':0,'tilde~key':false,'space key':'','dot.key':{nested:'🙂'},'close}}key':'brace','bracket]key':'bracket','quote"key':'quote','slash\\key':'backslash','雪':'unicode',input:{}},journal:[]},context({mode:'consume',paths:['/a~1b','/tilde~0key','/space key','/dot.key/nested','/close}}key','/bracket]key','/quote"key','/slash\\key','/雪']},{mode:'omit'}))!;
+    const bindings={input:{},nodes:{},context:projected};
+    expect(bind('{{context["a/b"]}}',bindings)).toBe(0);expect(bind('{{context["tilde~key"]}}',bindings)).toBe(false);expect(bind('{{context["space key"]}}',bindings)).toBe('');expect(bind('{{context["dot.key"].nested}}',bindings)).toBe('🙂');expect(bind('{{context["close}}key"]}}',bindings)).toBe('brace');expect(bind('{{context["bracket]key"]}}',bindings)).toBe('bracket');expect(bind('{{context["quote\\"key"]}}',bindings)).toBe('quote');expect(bind('{{context["slash\\\\key"]}}',bindings)).toBe('backslash');expect(bind('{{context["雪"]}}',bindings)).toBe('unicode');
+    expect(contextPathForBinding('context["close}}key"]')).toBe('/close}}key');expect(contextPathForBinding('context["__proto__"]')).toBeUndefined();
+    const d:Definition={schemaVersion:3,id:'escaped-binding',slug:'escaped-binding',name:'Escaped binding',description:'RFC 6901 binding fixture.',revision:0,inputSchema:[],capabilities:[],limits:{maxExecutions:2,maxOutputBytes:1024},nodes:[
+      {id:'input',kind:'input',label:'Input',context:context({mode:'omit'},{mode:'replace',target:'/close}}key',source:{kind:'literal',value:{literalJson:'0'}}})},
+      {id:'return',kind:'return',label:'Return',value:'{{context["close}}key"]}}',context:context({mode:'consume',paths:['/close}}key']},{mode:'omit'})},
+    ],edges:[{id:'input-return',source:'input',target:'return',port:'next'}],layout:{}};
+    expect(parseDefinition(d)).toEqual(d);expect(validateGraph(d)).toEqual([]);
+    const protectedKey=structuredClone(d),protectedReturn=protectedKey.nodes[1];if(protectedReturn.kind!=='return')throw Error();protectedReturn.value='{{context["__proto__"]}}';expect(validateGraph(protectedKey)).toContainEqual({nodeId:'return',message:'Unsupported binding: context["__proto__"]'});
+    const {value}=storage(),engine=new Engine(value,host());expect((await engine.test(actor,d,{},'escaped-binding')).result).toBe(0);
+  });
   it('rolls back a rejected context checkpoint and retains the failed admission across restart without replaying it',async()=>{
     const {file,value}=storage(),engine=new Engine(value,host()),fault=new DatabaseSync(file);cleanups.push(()=>{try{fault.close();}catch{/* closed after the restart assertion */}});
     fault.exec("CREATE TRIGGER reject_first_context BEFORE UPDATE ON runs WHEN json_extract(NEW.record,'$.context.version')=1 BEGIN SELECT RAISE(ABORT,'Injected context commit failure'); END;");
@@ -98,6 +112,22 @@ describe('version 3 shared context',()=>{
     const valid=repeatChildValidationDefinition(),validRepeat=valid.nodes.find(node=>node.kind==='repeat')!,validDraft=validRepeat.body[0] as typeof validRepeat.body[0]&{context:ReturnType<typeof context>};
     validRepeat.context=context({mode:'omit'},{mode:'omit'});validDraft.context=context({mode:'consume',paths:['/allowed']},{mode:'replace',target:'/child',source:{kind:'literal',value:'{{context.allowed}}'}});validDraft.prompt='{{repeat.index}} {{context.allowed}}';validRepeat.body[1].predicate={left:'{{nodes.draft.text}}',op:'contains',right:'ok'};
     expect(parseDefinition(valid)).toEqual(valid);expect(validateGraph(valid)).toEqual([]);
+  });
+  it('remaps Repeat child context literal bindings and executes the copied loop',async()=>{
+    const source={schemaVersion:3,id:'repeat-copy-context',slug:'repeat-copy-context',name:'Repeat copy context',description:'Copy fixture.',revision:0,inputSchema:[],capabilities:['llm'],limits:{maxExecutions:8,maxOutputBytes:1024},nodes:[
+      {id:'input',kind:'input',label:'Input'},
+      {id:'repeat',kind:'repeat',label:'Repeat',maxIterations:1,body:[
+        {id:'draft',kind:'inference',label:'Draft',prompt:'Emit copied context',output:'text'},
+        {id:'check',kind:'condition',label:'Check',predicate:{left:'true',op:'truthy',right:''},context:context({mode:'omit'},{mode:'replace',target:'/copied',source:{kind:'literal',value:'{{nodes.draft.text}}'}})},
+      ]},
+      {id:'return',kind:'return',label:'Return',value:'{{context.copied}}',context:context({mode:'consume',paths:['/copied']},{mode:'omit'})},
+    ],edges:[{id:'input-repeat',source:'input',target:'repeat',port:'next'},{id:'repeat-return',source:'repeat',target:'return',port:'next'}],layout:{}} as Definition;
+    let sequence=0;const duplicate=duplicateNode(source,'repeat',prefix=>`${prefix}-${++sequence}`),copy=duplicate.nodes.find(node=>node.kind==='repeat'&&node.id!=='repeat');if(!copy||copy.kind!=='repeat')throw Error();
+    expect((copy.body[1] as typeof copy.body[1]&{context?:ReturnType<typeof context>}).context?.patch).toMatchObject({source:{kind:'literal',value:`{{nodes.${copy.body[0].id}.text}}`}});
+    const copied:Definition={...duplicate,nodes:[duplicate.nodes[0],copy,duplicate.nodes[2]],edges:[{id:'input-copy',source:'input',target:copy.id,port:'next'},{id:'copy-return',source:copy.id,target:'return',port:'next'}],layout:{}};
+    expect(parseDefinition(copied)).toEqual(copied);expect(validateGraph(copied)).toEqual([]);
+    const {value}=storage(),capabilities=host();vi.mocked(capabilities.complete).mockResolvedValue({text:'copied output'});const engine=new Engine(value,capabilities);
+    expect((await engine.test(actor,copied,{},'copied-repeat-context')).result).toBe('copied output');expect(capabilities.complete).toHaveBeenCalledOnce();
   });
   it('round-trips the public v3 definition schema',()=>{expect(parseDefinition(definition())).toMatchObject({schemaVersion:3});});
   it('keeps ordinary creation at v2 and requires an explicit v3 selection for context',()=>{

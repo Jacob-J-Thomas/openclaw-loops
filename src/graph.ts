@@ -3,7 +3,7 @@ import { Type, type Static, type TObject } from 'typebox';
 import { Value } from 'typebox/value';
 import {defaultBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {identifierSchema as key,NodeSchema,ContextNodeSchema,LegacyNodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
-import {assertMutableContextPath,contextPatchLiteral,contextPathForBinding,pathSegments,type ContextNodeConfig} from './context.js';
+import {assertMutableContextPath,bindingTokens,contextBindingSegments,contextPatchLiteral,contextPathForBinding,pathSegments,type ContextNodeConfig} from './context.js';
 import {isJson,literalValue,type NodeValue} from './node-values.js';
 export {isJson} from './node-values.js';
 export {NodeSchema,PredicateSchema,type GraphNode,type Predicate,type Json} from './node-contracts.js';
@@ -107,8 +107,9 @@ export function validateGraph(d:Definition):Issue[] {
       else try{literalValue(s.literalJson);}catch(cause){report(cause instanceof Error?cause.message:'Invalid literal JSON.');}
       return;
     }
-    for(const match of s.matchAll(/\{\{(.*?)\}\}/g)){
-      const path=match[1].trim();
+    const bindings=bindingTokens(s);
+    for(const binding of bindings.tokens){
+      const path=binding.raw.trim();
       const contextPath=d.schemaVersion===3?contextPathForBinding(path):undefined;
       const pattern=d.schemaVersion===1?/^(input\.[a-z][\w-]*|nodes\.[a-z][\w-]*\.(text|value|succeeded|iterations|exhausted|provider|model|agentId)|repeat\.index)$/:/^(input\.[a-z][\w-]*(?:\.[\w-]+)*|nodes\.[a-z][\w-]*\.[a-z][\w-]*(?:\.[\w-]+)*|repeat\.index)$/;
       if(!contextPath&&(!pattern.test(path)||path.split('.').some(p=>['__proto__','constructor','prototype'].includes(p)))){report(`Unsupported binding: ${path}`);continue;}
@@ -127,7 +128,7 @@ export function validateGraph(d:Definition):Issue[] {
         if(producer&&!fields.includes(field))report(`Node ${id} (${producer.kind}) does not produce ${field}.`);
       }
     }
-    if(s.replace(/\{\{.*?\}\}/g,'').includes('{{'))report('Unclosed binding.');
+    if(bindings.unclosed)report('Unclosed binding.');
   };
   for(const node of d.nodes){
     if(node.kind!=='repeat')for(const binding of nodeContract(node.kind).bindings(node))checkText(binding.text,node,{bodyPrior:binding.prior});
@@ -156,9 +157,12 @@ export function validateInput(d:Definition,value:unknown,budgets:Budgets=default
 export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;context?:Record<string,Json>;repeat?:{index:number}};
 export function bind(template:NodeValue,ctx:BindingContext):Json{
   if(typeof template!=='string')return literalValue(template.literalJson);
-  const resolve=(raw:string):Json=>{let value:unknown=ctx;for(const part of raw.trim().split('.')){if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');value=(value as Record<string,unknown>)[part];}if(value===undefined)throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');return value as Json;};
-  const exact=/^\{\{([^{}]+)\}\}$/.exec(template);if(exact)return resolve(exact[1]);
-  return template.replace(/\{\{([^{}]+)\}\}/g,(_,p:string)=>{const v=resolve(p);return typeof v==='string'?v:JSON.stringify(v);});
+  const resolve=(raw:string):Json=>{const contextParts=contextBindingSegments(raw.trim()),parts=contextParts?['context',...contextParts]:raw.trim().split('.');let value:unknown=ctx;for(const part of parts){if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');value=(value as Record<string,unknown>)[part];}if(value===undefined)throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');return value as Json;};
+  const bindings=bindingTokens(template);
+  if(bindings.tokens.length===1&&bindings.tokens[0].start===0&&bindings.tokens[0].end===template.length)return resolve(bindings.tokens[0].raw);
+  let rendered='',cursor=0;
+  for(const binding of bindings.tokens){rendered+=template.slice(cursor,binding.start);const value=resolve(binding.raw);rendered+=typeof value==='string'?value:JSON.stringify(value);cursor=binding.end;}
+  return rendered+template.slice(cursor);
 }
 export const display=(value:Json):string=>typeof value==='string'?value:JSON.stringify(value);
 export function compare(p:Predicate,ctx:BindingContext,version:1|2|3=1):boolean{
