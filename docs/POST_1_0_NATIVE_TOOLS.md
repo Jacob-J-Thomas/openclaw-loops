@@ -1,0 +1,15 @@
+# Native tool and goal qualification
+
+Run the disposable no-model proof only through the lead-owned Gateway slot:
+
+```sh
+node scripts/verify-native-tools.mjs
+```
+
+The verifier creates a token-authenticated loopback Gateway in a new ignored `.dev-profile/native-tools-*` profile and loads a copied manifest-bearing fixture package from that profile. It uses port 21971 when free, otherwise an unused private fallback port. Its only direct filesystem fixture is `workspace/seed.txt`; all exercised read and write effects use the native factory inside that disposable workspace. Raw action responses, configuration, and Gateway logs remain private. The sanitized result is written to ignored `evidence/post-1.0/issue-235/` only after all owned clients stop and the owned Gateway exits.
+
+The fixture registers a write-scoped current-session action. It resolves the host-supplied session and agent identity, reads the current runtime configuration through `api.runtime.config.current()`, resolves the configured workspace and session store through `api.runtime.agent`, then calls `runWithWorkAdmission`. Inside that admission it calls `api.runtime.sandbox.prepareWorkspaceAuthority` and `createOpenClawCodingTools` with the current host config, agent, session, workspace, cwd, and admission signal. It does not fabricate a sender, approval, operational run, sandbox context, model, or caller capability. Failed current-session work retains its actual stage and sanitized host error fact; it is not reported as an authorization denial by default.
+
+The selected subset is `read`, `write`, `get_goal`, `create_goal`, and `update_goal`; selecting `exec` is a fixture-level no-effect denial and does not claim a host exec denial. The real proof starts with the disposable profile's `tools.profile: "coding"`, checks a workspace read and write/readback, then restarts with the profile's real `tools.deny: ["write"]` policy. It requires the newly built native surface to omit `write`, requires the write attempt to return `TOOL_UNAVAILABLE`, and confirms that a native read still contains the earlier content rather than the denied write. It also checks native goal create, exact duplicate rejection, exact goal ID/status/token-budget readback before and after completion, current-session restart persistence, a Gateway read-only scope rejection, and unavailable-session work-admission rejection. It invokes no model, process, browser, network, MCP, subagent, or provider route. This qualifies a practical public-file and session-goal path for X07/X09, while full-agent caller binding, retained-generation revalidation for later scheduled work, and the other tool families remain separate work.
+
+`test/contracts/native-tools-consumer.ts` pins the typed public factory and current-session/admission helpers to OpenClaw 2026.9.5. `test/native-tools-sdk.test.mjs` verifies the receipt boundary and that the fixture selection cannot turn an unavailable name into execution authority. Declarations prove the public shape; the disposable Gateway receipt is the runtime evidence.
