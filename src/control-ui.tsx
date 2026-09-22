@@ -8,5 +8,5 @@ export default defineControlUiPlugin({id:'loops-poc',activate(host){
     const shadow=container.shadowRoot??container.attachShadow({mode:'open'});shadow.replaceChildren();const style=document.createElement('style');style.textContent=styles;const app=document.createElement('div');shadow.append(style,app);
     const root=createRoot(app);root.render(<Editor host={host}/>);
     return {dispose:()=>root.unmount()};
-  }});const nav=host.ui.registerNavigation({id:'loops',label:'Loops',page:{id:'loops'},icon:'workflow',order:5});return()=>{nav();page();};
+  }});const nav=host.ui.registerNavigation({id:'loops',label:'Loops',page:{id:'loops'},icon:'repeat',order:5});return()=>{nav();page();};
 }});
