@@ -151,6 +151,9 @@ export function Editor({host}:{host:ControlUiHost}){
     try{
       const response=enabled?await feature.invoke('save',{definition:savedDefinition,expectedRevision:savedDefinition.revision,enabled:true},options):await feature.invoke('draft',{definition:savedDefinition,expectedRevision:savedDefinition.revision},options);
       if(!acceptsSave())return;
+      // Undo/Redo restore authored content, never an obsolete optimistic-lock token.
+      const rebaseHistory=(history:Definition[])=>history.map(snapshot=>snapshot.id===savedDefinition.id?{...snapshot,revision:response.record.definition.revision}:snapshot);
+      setUndo(rebaseHistory);setRedo(rebaseHistory);
       if(acceptsExactSnapshot()){
         removeOwnedLocalDraft(localStorage,savingDraft);
         if(ownedDraft.current?.storageKey===savingDraft?.storageKey)ownedDraft.current=null;
