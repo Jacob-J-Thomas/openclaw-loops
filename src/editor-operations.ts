@@ -17,7 +17,7 @@ function remapBindingTokens(value:string,previous:string,next:string):string{
 
 export function copyDefinition(definition:Definition,id:string,templateDefaults?:Pick<Definition['limits'],'maxExecutions'|'maxOutputBytes'>):Definition{
   const copy={...structuredClone(definition),id,slug:id,revision:0};
-  return templateDefaults?{...copy,schemaVersion:2,limits:{...copy.limits,...templateDefaults}}:copy;
+  return templateDefaults?{...copy,schemaVersion:definition.schemaVersion===3?3:2,limits:{...copy.limits,...templateDefaults}}:copy;
 }
 
 export function autoLayout(definition:Definition):Definition{

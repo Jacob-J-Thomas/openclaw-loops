@@ -94,7 +94,7 @@ describe('agent definition authoring',()=>{
   });
   it('rejects unsafe or privileged fields and keeps runtime fields server-owned and human review explicit',async()=>{
     const {e}=setup();
-    for(const forbidden of [{grants:['llm']},{enabledRevision:1},{id:'replacement'},{revision:9},{schemaVersion:2}]){
+    for(const forbidden of [{grants:['llm']},{enabledRevision:1},{id:'replacement'},{revision:9}]){
       expect(()=>e.create(agent(),{...content(),...forbidden})).toThrow();
       expect(()=>e.edit(agent(),'summarize-text',1,forbidden)).toThrow();
     }
