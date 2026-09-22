@@ -17,10 +17,13 @@ export function validateChecks(response,head){
 // attests that the owner reconciled the review and dispositions for this diff.
 // This wrapper enforces fresh mutable metadata rather than trusting old CI.
 export async function mergeCandidate(number,reviewed,{request=github,merge=mergeOnGithub,collect=collectContract}={}){
+  let initialDestination;
   const checkContract=async()=>{
     const result=validateContract(await collect(number,request));
     if(!result.ok)throw new Error(result.errors.join(' '));
     if(result.head!==reviewed.head||result.base!==reviewed.base)throw new Error('The candidate differs from the owner-reviewed head/base.');
+    if(initialDestination&&(result.baseRef!==initialDestination.baseRef||result.prBase!==initialDestination.prBase))throw new Error('The candidate destination changed between merge checks.');
+    initialDestination??={baseRef:result.baseRef,prBase:result.prBase};
     if(result.reviewRequests<1)throw new Error('A recorded independent review is required.');
     return result;
   };
