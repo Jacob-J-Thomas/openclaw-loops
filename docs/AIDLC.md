@@ -10,7 +10,7 @@ Use supported released host APIs and practical alternatives such as explicit mod
 
 **Upstream contributions are on hold.** Do not create OpenClaw issues, PRs or comments, post coordination requests, or patch the host. The plugin repository/package stays free of host code, provider clients and personal profiles. Earlier upstream authorization and historical contract prose are superseded by this owner instruction.
 
-The owner authorizes GitHub issue maintenance, commits, pushes, non-draft PRs, `@codex review`, autonomous verified merges directly into main, closure and adversarial QA. No repeated permission request is needed for these actions. New source changes go through a PR; the earlier direct-push alpha history remains intact.
+The owner authorizes GitHub issue maintenance, commits, pushes, non-draft PRs, `@codex review`, autonomous verified merges directly into main, closure and adversarial QA. No repeated permission request is needed for these actions. New source changes go through a PR; the earlier direct-push alpha history remains intact. The narrowly admitted post-1.0 integration exception is recorded in [POST_1_0_DELIVERY.md](POST_1_0_DELIVERY.md); it permits only the named integration branch as a temporary feature-PR base.
 
 ## Native work graph
 
@@ -27,7 +27,7 @@ Each Bolt records its outcome, finite source/environment write set, dependencies
 1. Refresh the owner goal, worktree, remote main, issue/parent states, existing PRs, checks and remaining review budget. Classify the previous goal turn as progress, verified wait or no progress using actual state.
 2. Admit one Bolt. Use a `codex/issue-<number>-<purpose>` branch and a finite diff. Reproduce defects before repairing them. Keep unrelated findings separate and preserve failed evidence.
 3. Run focused verification and then the current applicable gate inventory. The baseline includes `npm run check`, four macOS/Linux and Node 24.16.0/26.1.0 Verify plugin jobs, and extracted-package SDK tests. Linux jobs also run real dedicated-tmpfs exhaustion/recovery. Changed UI/runtime/storage paths require their corresponding live or fault acceptance, not just builds.
-4. Open a ready, non-draft PR directly to `main`, with one GitHub closing reference to its Bolt. Keep its title/body about the final change. `AIDLC contract` checks the live closing references, native hierarchy, draft/base state and visible review budget. It does not approve code or replace semantic review.
+4. Open a ready, non-draft PR directly to `main`, with one GitHub closing reference to its Bolt. Keep its title/body about the final change. The admitted post-1.0 exception permits a ready Bolt PR to `codex/post-1.0-local-expansion` only when its body has exactly `<!-- loops-bolt:<Bolt number> -->`. GitHub does not reliably expose a closing reference for a non-default base, so the guard reads all paginated open PR ownership metadata, cross-checks any GitHub references, and rejects any duplicate or ambiguous candidate. A PR to `main` remains governed by GitHub's authoritative closing reference and may only use an optional matching marker. `AIDLC contract` checks the live ownership, native hierarchy, draft/base state and visible review budget. It does not approve code or replace semantic review.
 5. Record exact source, host and artifact identity; test inventory, skips and failures; environment; workflow/run/attempt and result. Fake model adapters prove mechanics; actual runtime, browser and transport tests prove their exercised integration. Treat missing evidence as incomplete.
 
 `node scripts/verify-aidlc.mjs <PR number>` reads metadata through GitHub's API or the authenticated `gh` CLI. It makes no GitHub mutations. The GitHub Actions job uses a read-only token. Re-run it after issue/PR metadata changes and immediately before merge. A maliciously modified verifier cannot supply its own approval: the delivery owner must review changes to checks, their applicability and the current base/head.
@@ -40,7 +40,7 @@ After applicable tests pass, post a request like this in the PR conversation:
 @codex review
 
 AIDLC review round 1/3 for Bolt #42.
-Review head <full SHA> against main at <full base SHA>.
+Review head <full SHA> against its actual base at <full base SHA>.
 Scope: <one outcome>. Checks: <exact workflow/receipt links>.
 Report reachable defects and remaining uncertainty for this patch.
 ```
@@ -57,15 +57,27 @@ Use the first review for the full patch; use later requests for meaningful repai
 
 The Codex reviewer is independent of the implementation author. Retain the actual reviewed commit and response, not just the request or a `COMMENTED` state. An explicit clean Codex review can be evidence without being a formal GitHub approval; describe it accurately. Reuse prior review for demonstrably unchanged code and retain the equivalence proof. Material new scope requires review within the remaining budget.
 
+A trusted owner or collaborator may record a separately delegated independent review, but must never represent it as a Codex bot response. The Bolt comment must contain one receipt in this exact form, with a named independently assigned reviewer identity and immutable evidence:
+
+```text
+<!-- loops-agent-review:<unique receipt ID> -->
+<!-- loops-agent-reviewer:<named independent reviewer> -->
+<!-- loops-agent-review-head:<full SHA> -->
+<!-- loops-agent-review-base:<full SHA> -->
+<!-- loops-agent-review-evidence:<permalink or immutable receipt ID> -->
+```
+
+The guard accepts this only from the owner or a GitHub collaborator, retains its exact reviewed head/base as historical evidence, and counts it as its own round. It never reconciles this receipt with a GitHub bot request or bot review. Untrusted, self-authored, malformed, or conflicting same-ID receipts do not establish independent review. Every distinct trusted delegated receipt counts toward the same three-round cap, including earlier rounds before a repair or rebase.
+
 At the cap, stop requesting reviews. The owner's three-run limit still permits addressing the final feedback: a bounded repair implementing the reviewer's specific prescription can proceed with regression coverage, fresh full checks and an explicit owner assessment of that final delta. Record both the last independently reviewed SHA and the final repaired SHA; never claim Codex reviewed the latter. This exception does not permit new scope, redesign or unresolved blockers. Preserve a candidate needing those broader changes while continuing independent work; do not silently reset the cap or invent a response.
 
 ## Merge and closure
 
 Before each merge, read current PR head/base, effective diff, required check runs and latest attempts, exact review receipt and finding dispositions, issue parentage, closing references and remaining blockers. An empty protection ruleset does not make acceptance vacuously green. A stale pass, cancelled run, pending response, mergeable flag or author reply is insufficient.
 
-Use `node scripts/merge-aidlc.mjs <PR> <reviewed head SHA> <reviewed main SHA>` for every merge. This is the required merge mechanism: it refreshes the live issue/PR/review contract, verifies the latest required CI checks on that head, reads the mutable contract again, and immediately sends GitHub's expected-head merge. Supplying the SHAs attests that the owner checked the independent review and dispositions; this command cannot replace that judgment. Unlike the read-only verifier and Actions job, this command performs the authorized merge. Do not queue auto-merge against a past green snapshot. GitHub does not offer an atomic comparison of every issue field or base, so report current observations without claiming a transactional metadata lock.
+Use `node scripts/merge-aidlc.mjs <PR> <reviewed head SHA> <reviewed base SHA>` for every merge. This is the required merge mechanism: it refreshes the live issue/PR/review contract, verifies the latest required CI checks on that head, reads the mutable contract again, and immediately sends GitHub's expected-head merge. Supplying the SHAs attests that the owner checked the independent review and dispositions; this command cannot replace that judgment. Unlike the read-only verifier and Actions job, this command performs the authorized merge. The command validates the exact current base SHA whether that base is `main` or the admitted feature branch; expected-head merge remains unchanged. Do not queue auto-merge against a past green snapshot. GitHub does not offer an atomic comparison of every issue field or base, so report current observations without claiming a transactional metadata lock.
 
-Read back the merge result, main ancestry/tree and issue closure. Record the merge SHA, final head/base, check/review links and remaining limitations on the Bolt. Close only its proven outcome and remove active status labels. Assess each parent separately against all of its clauses and current child evidence; no PR may auto-close a parent.
+Read back the merge result, destination ancestry/tree and issue closure. Record the merge SHA, final head/base, check/review links and remaining limitations on the Bolt. A merge to `main` relies on GitHub's authoritative closing rule. During the admitted post-1.0 exception, a guarded merge to the named feature base may close only its explicitly marked Bolt; it must not close a parent. Assess each parent separately against all of its clauses and current child evidence; no PR may auto-close a parent.
 
 ## Adversarial QA and completion
 

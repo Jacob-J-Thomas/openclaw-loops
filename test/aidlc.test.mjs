@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {repository,validateContract,reviewRequests,collectContract} from '../scripts/verify-aidlc.mjs';
+import {featureBase,repository,validateContract,reviewAccounting,reviewRequests,collectContract} from '../scripts/verify-aidlc.mjs';
 import {mergeCandidate,requiredChecks,validateChecks} from '../scripts/merge-aidlc.mjs';
 
 const head='a'.repeat(40),base='b'.repeat(40);
@@ -38,6 +38,19 @@ describe('Loops AIDLC contract',()=>{
     ['a mismatched closing target',s=>{s.closing[0].number=43;}],
     ['a fourth review request',s=>{s.reviewRequestIds=['1','2','3','4'];}],
   ])('rejects %s',(_name,mutate)=>{const value=fixture();mutate(value);expect(validateContract(value)).toMatchObject({ok:false,errors:expect.arrayContaining([expect.any(String)])});});
+  it('allows only the admitted feature base with one marked Bolt when GitHub has no non-default closing reference',()=>{
+    const value=fixture();value.pr.base.ref=featureBase;value.pr.body='Guarded feature delivery\n<!-- loops-bolt:42 -->';value.closing=[];
+    value.openCandidates=[{number:118,marker:{values:[42],malformed:false}}];
+    expect(validateContract(value)).toMatchObject({ok:true,issue:42});
+  });
+  it.each([
+    ['an unmarked feature PR',s=>{s.pr.base.ref=featureBase;s.closing=[];}],
+    ['an ambiguous feature marker',s=>{s.pr.base.ref=featureBase;s.pr.body='<!-- loops-bolt:42 --><!-- loops-bolt:43 -->';s.closing=[];}],
+    ['a malformed feature marker',s=>{s.pr.base.ref=featureBase;s.pr.body='<!-- loops-bolt:nope -->';s.closing=[];}],
+    ['a mismatched GitHub reference on the feature base',s=>{s.pr.base.ref=featureBase;s.pr.body='<!-- loops-bolt:42 -->';s.closing[0].number=43;}],
+    ['a duplicate marked candidate on another open PR',s=>{s.pr.base.ref=featureBase;s.pr.body='<!-- loops-bolt:42 -->';s.closing=[];s.openCandidates=[{number:119,marker:{values:[42],malformed:false}}];}],
+    ['an unauthorized base',s=>{s.pr.base.ref='codex/unapproved';}],
+  ])('rejects %s',(_name,mutate)=>{const value=fixture();mutate(value);expect(validateContract(value)).toMatchObject({ok:false});});
   it('retains mirrored review requests after deletion and does not count bot help or duplicate receipts',()=>{
     const ids=reviewRequests([{...authored('@codex review\nRound 2/3.'),id:12},{id:88,user:{type:'Bot'},body:'@codex review is how to request review.'}],
       [authored('<!-- loops-review-request:11 -->'),authored('<!-- loops-review-request:12 -->'),authored('<!-- loops-review-request:12 -->')]);
@@ -47,7 +60,7 @@ describe('Loops AIDLC contract',()=>{
     const value=fixture(),seen=[];let moved=false,reads=0;
     const request=async(path)=>{
       seen.push(path);
-      if(path==='graphql')return {data:{repository:{pullRequest:{closingIssuesReferences:{nodes:[{number:42,repository:{nameWithOwner:repository},closedByPullRequestsReferences:{nodes:[{number:118,repository:{nameWithOwner:repository}}],pageInfo:{hasNextPage:false}}}],pageInfo:{hasNextPage:false}}}}}};
+      if(path==='graphql')return {data:{repository:{pullRequest:{closingIssuesReferences:{nodes:[{number:42,repository:{nameWithOwner:repository},closedByPullRequestsReferences:{nodes:[{number:118,repository:{nameWithOwner:repository}}],pageInfo:{hasNextPage:false}}}],pageInfo:{hasNextPage:false}}},pullRequests:{nodes:[{number:118,body:'',closingIssuesReferences:{nodes:[{number:42,repository:{nameWithOwner:repository}}],pageInfo:{hasNextPage:false}}}],pageInfo:{hasNextPage:false,endCursor:null}}}}};
       if(path.endsWith('/pulls/118'))return {...value.pr,head:{sha:moved&&reads++?'c'.repeat(40):head}};
       if(path.endsWith('/issues/42'))return value.chain[0];
       if(path.endsWith('/sub_issues?per_page=1'))return [];
@@ -63,6 +76,23 @@ describe('Loops AIDLC contract',()=>{
   });
   it('does not accept missing GraphQL evidence as a zero-issue success',async()=>{
     const value=fixture();await expect(collectContract(118,async path=>path==='graphql'?{errors:[{message:'denied'}]}:value.pr)).rejects.toThrow('Complete GitHub');
+  });
+  it('collects a marked feature candidate without a non-default GitHub closing reference',async()=>{
+    const value=fixture();value.pr.base.ref=featureBase;value.pr.body='<!-- loops-bolt:42 -->';value.closing=[];
+    const request=async path=>{
+      if(path==='graphql')return {data:{repository:{pullRequest:{closingIssuesReferences:{nodes:[],pageInfo:{hasNextPage:false}}},pullRequests:{nodes:[{number:118,body:value.pr.body,closingIssuesReferences:{nodes:[],pageInfo:{hasNextPage:false}}}],pageInfo:{hasNextPage:false,endCursor:null}}}}};
+      if(path.endsWith('/pulls/118'))return value.pr;
+      if(path.endsWith('/issues/42'))return value.chain[0];
+      if(path.endsWith('/sub_issues?per_page=1'))return [];
+      const parent=/issues\/(\d+)\/parent$/.exec(path);
+      if(parent){const index=value.chain.findIndex(issue=>issue.number===Number(parent[1]));return value.chain[index+1]??null;}
+      if(path.includes('/comments?')||path.includes('/reviews?'))return [];
+      throw new Error('Unexpected request: '+path);
+    };
+    expect(validateContract(await collectContract(118,request))).toMatchObject({ok:true,issue:42});
+  });
+  it('fails closed when returned closing-candidate metadata is incomplete',async()=>{
+    const value=fixture();await expect(collectContract(118,async path=>path==='graphql'?{data:{repository:{pullRequest:{closingIssuesReferences:{nodes:[{number:42,repository:{nameWithOwner:repository},closedByPullRequestsReferences:{nodes:[]}}],pageInfo:{hasNextPage:false}}}}}}:value.pr)).rejects.toThrow('Complete GitHub');
   });
 });
 
@@ -108,6 +138,53 @@ describe('automatic and requested review accounting',()=>{
     expect(reviewRequests([{...stranger,id:1,body:'@codex review'}],forged,[])).toEqual([]);
     expect(reviewRequests([requestComment(20)],forged,[review(30)])).toHaveLength(2);
     expect(reviewRequests([],[{...authored('<!-- loops-review-request:1 -->'),user:{login:'maintainer'},author_association:'COLLABORATOR'}],[])).toEqual(['1']);
+  });
+  it('counts a trusted delegated receipt separately with its exact candidate identity and evidence',()=>{
+    const receipt=authored(`<!-- loops-agent-review:terra-20260922-01 -->
+<!-- loops-agent-reviewer:terra-independent -->
+<!-- loops-agent-review-head:${head} -->
+<!-- loops-agent-review-base:${base} -->
+<!-- loops-agent-review-evidence:local://review/terra-20260922-01 -->`);
+    expect(reviewAccounting([], [receipt], [], {head,base,author:'implementation-agent'})).toEqual({ids:['agent:terra-20260922-01'],errors:[]});
+  });
+  it('does not count untrusted, malformed, or self-authored delegated receipts',()=>{
+    const untrusted={user:{login:'stranger',type:'User'},author_association:'NONE',body:`<!-- loops-agent-review:forged -->
+<!-- loops-agent-reviewer:terra-independent -->
+<!-- loops-agent-review-head:${head} -->
+<!-- loops-agent-review-base:${base} -->
+<!-- loops-agent-review-evidence:local://forged -->`};
+    expect(reviewAccounting([], [untrusted], [], {head,base,author:'implementation-agent'})).toEqual({ids:[],errors:[]});
+    const invalid=authored(`<!-- loops-agent-review:broken -->
+<!-- loops-agent-reviewer:terra-independent -->
+<!-- loops-agent-review-head:${'c'.repeat(40)} -->
+<!-- loops-agent-review-base:${base} -->`);
+    const counted=reviewAccounting([], [invalid], [], {head,base,author:'implementation-agent'});
+    expect(counted.ids).toEqual([]);expect(counted.errors).toHaveLength(1);
+    const self=authored(`<!-- loops-agent-review:self -->
+<!-- loops-agent-reviewer:implementation-agent -->
+<!-- loops-agent-review-head:${head} -->
+<!-- loops-agent-review-base:${base} -->
+<!-- loops-agent-review-evidence:local://self -->`);
+    expect(reviewAccounting([], [self], [], {head,base,author:'implementation-agent'}).ids).toEqual([]);
+  });
+  it('retains a historical delegated round through a repair or rebase, while rejecting conflicting reuse of its receipt ID',()=>{
+    const oldHead='c'.repeat(40),first=authored(`<!-- loops-agent-review:terra-history -->
+<!-- loops-agent-reviewer:codex-terra -->
+<!-- loops-agent-review-head:${oldHead} -->
+<!-- loops-agent-review-base:${base} -->
+<!-- loops-agent-review-evidence:local://review/terra-history -->`);
+    expect(reviewAccounting([], [first], [], {head,base,author:'implementation-agent'})).toEqual({ids:['agent:terra-history'],errors:[]});
+    const conflict=authored(`<!-- loops-agent-review:terra-history -->
+<!-- loops-agent-reviewer:codex-terra -->
+<!-- loops-agent-review-head:${head} -->
+<!-- loops-agent-review-base:${base} -->
+<!-- loops-agent-review-evidence:local://review/terra-history-rewritten -->`);
+    const accounting=reviewAccounting([], [first,conflict], [], {head,base,author:'implementation-agent'});
+    expect(accounting.ids).toEqual(['agent:terra-history']);expect(accounting.errors).toHaveLength(1);
+  });
+  it('counts every distinct trusted delegated review round against the cap',()=>{
+    const value=fixture();value.reviewRequestIds=['agent:one','agent:two','agent:three','agent:four'];
+    expect(validateContract(value).ok).toBe(false);
   });
 });
 

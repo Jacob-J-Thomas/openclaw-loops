@@ -42,7 +42,7 @@ function mergeOnGithub(number,head){
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
   const [, ,number,head,base]=process.argv;
   try{
-    if(!/^[a-f0-9]{40}$/.test(head??'')||! /^[a-f0-9]{40}$/.test(base??''))throw new Error('Usage: node scripts/merge-aidlc.mjs <PR> <reviewed head SHA> <reviewed main SHA>');
+    if(!/^[a-f0-9]{40}$/.test(head??'')||! /^[a-f0-9]{40}$/.test(base??''))throw new Error('Usage: node scripts/merge-aidlc.mjs <PR> <reviewed head SHA> <reviewed base SHA>');
     console.log(JSON.stringify(await mergeCandidate(Number(number),{head,base}),null,2));
   }catch(error){console.error(error.message);process.exitCode=1;}
 }
