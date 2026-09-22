@@ -1,18 +1,25 @@
 import {outputFields,type Definition,type GraphNode} from './graph.js';
 import {requestError} from './errors.js';
 import {truncateCodePoints} from './unicode.js';
+import {bindingTokens} from './context.js';
 
 // Keep duplication aligned with bind(): only its {{...}} token form has
 // binding semantics. Text outside a token, including a string that resembles
 // a node path, remains authored literal data.
 function remapBindingTokens(value:string,previous:string,next:string):string{
   const prefix=`nodes.${previous}.`;
-  return value.replace(/\{\{([^{}]+)\}\}/g,(token,raw:string)=>{
-    const path=raw.trim();
-    if(!path.startsWith(prefix))return token;
-    const offset=raw.indexOf(path);
-    return `{{${raw.slice(0,offset)}nodes.${next}.${path.slice(prefix.length)}${raw.slice(offset+path.length)}}}`;
-  });
+  const bindings=bindingTokens(value);let result='',cursor=0;
+  for(const binding of bindings.tokens){
+    result+=value.slice(cursor,binding.start);const path=binding.raw.trim();
+    if(!path.startsWith(prefix)){result+=value.slice(binding.start,binding.end);cursor=binding.end;continue;}
+    const offset=binding.raw.indexOf(path);
+    result+=`{{${binding.raw.slice(0,offset)}nodes.${next}.${path.slice(prefix.length)}${binding.raw.slice(offset+path.length)}}}`;cursor=binding.end;
+  }
+  return result+value.slice(cursor);
+}
+function remapContextLiteral(node:GraphNode,previous:string,next:string){
+  const source=node.context?.patch;
+  if(source&&source.mode!=='omit'&&source.source.kind==='literal'&&typeof source.source.value==='string')source.source.value=remapBindingTokens(source.source.value,previous,next);
 }
 
 export function copyDefinition(definition:Definition,id:string,templateDefaults?:Pick<Definition['limits'],'maxExecutions'|'maxOutputBytes'>):Definition{
@@ -45,6 +52,7 @@ export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:
   if(duplicate.kind==='repeat'){
     const previous=duplicate.body[0].id;duplicate.body[0].id=fresh('inference');duplicate.body[1].id=fresh('condition');
     for(const operand of ['left','right'] as const){const value=duplicate.body[1].predicate[operand];if(typeof value==='string')duplicate.body[1].predicate[operand]=remapBindingTokens(value,previous,duplicate.body[0].id);}
+    for(const child of duplicate.body)remapContextLiteral(child,previous,duplicate.body[0].id);
   }
   const position=definition.layout[nodeId]??{x:0,y:0};
   return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}}};
