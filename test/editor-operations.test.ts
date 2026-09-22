@@ -89,9 +89,9 @@ describe('automatic graph layout',()=>{
 
   it('keeps v1 coordinates within its frozen range while v2 accepts finite JavaScript-safe coordinates',()=>{
     const legacy=chain(1,2),v2=chain(2,2);
-    expect(()=>parseDefinition({...legacy,layout:{input:{x:Number.MAX_SAFE_INTEGER,y:0},return:{x:0,y:0}}})).toThrow('Definition does not match schemaVersion 1 or 2.');
+    expect(()=>parseDefinition({...legacy,layout:{input:{x:Number.MAX_SAFE_INTEGER,y:0},return:{x:0,y:0}}})).toThrow('Definition does not match schemaVersion 1, 2 or 3.');
     const safe={...v2,layout:{input:{x:Number.MAX_SAFE_INTEGER,y:-Number.MAX_SAFE_INTEGER},return:{x:0,y:0}}};
     expect(parseDefinition(safe)).toEqual(safe);
-    for(const value of [Number.MAX_SAFE_INTEGER+1,NaN,Infinity,-Infinity])expect(()=>parseDefinition({...safe,layout:{...safe.layout,input:{x:value,y:0}}})).toThrow('Definition does not match schemaVersion 1 or 2.');
+    for(const value of [Number.MAX_SAFE_INTEGER+1,NaN,Infinity,-Infinity])expect(()=>parseDefinition({...safe,layout:{...safe.layout,input:{x:value,y:0}}})).toThrow('Definition does not match schemaVersion 1, 2 or 3.');
   });
 });

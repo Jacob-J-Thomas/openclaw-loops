@@ -43,7 +43,7 @@ describe('explicit JSON node values',()=>{
     const source='['.repeat(100)+'0'+']'.repeat(100);expect(JSON.stringify(literalValue(source))).toBe(source);
     expect(createHash('sha256').update(readFileSync('examples/schema-v1.json')).digest('hex')).toBe('5c390b84f114329b893e93c15ee218323752fb0ad547dd2b2616c80fffec62d9');
     for(const legacy of examples)expect(parseDefinition(legacy)).toEqual(legacy);
-    expect(()=>parseDefinition({...definition(),schemaVersion:1,limits:{...definition().limits,timeoutMs:1000}})).toThrow('Definition does not match schemaVersion 1 or 2');
+    expect(()=>parseDefinition({...definition(),schemaVersion:1,limits:{...definition().limits,timeoutMs:1000}})).toThrow('Definition does not match schemaVersion 1, 2 or 3');
   });
   it('encodes the version relationship in the public schema before invoking an operation',()=>{
     const d=definition();d.limits.timeoutMs=1000;
