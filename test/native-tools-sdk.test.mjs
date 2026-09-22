@@ -28,4 +28,10 @@ describe('native tools SDK qualification harness',()=>{
     expect(projected).toEqual({operation:'found',goal:{id:'goal-1',objective:'Native tool state qualification',status:'complete',tokenBudget:17}});
     expect(projectGoalResult({details:{status:'missing'}})).toEqual({operation:'missing',goal:null});
   });
+
+  it('labels an unavailable current-session read as a fixture guard, not a host admission denial',()=>{
+    const receipt=sanitizeNativeToolsReceipt({source:'848f880',verifierSha256:'verifier',fixturePluginSha256:'fixture',node:'v24.16.0',openclaw:'2026.9.5',port:21971,portSelection:'21971',observations:[{label:'invalid-session-current-read-guard',allowed:false,hostDenied:false,code:'SESSION_UNAVAILABLE'}],cleanup:{clientsStopped:true,clientCount:1,gateway:{exited:true,signal:'SIGTERM'}}});
+    expect(receipt.observations).toEqual([{label:'invalid-session-current-read-guard',allowed:false,hostDenied:false,code:'SESSION_UNAVAILABLE'}]);
+    expect(receipt.limits[1]).toMatch(/host admitted/i);
+  });
 });
