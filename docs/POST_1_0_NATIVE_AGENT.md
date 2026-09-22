@@ -12,6 +12,8 @@ node scripts/verify-native-agent.mjs /absolute/path/to/lead-native-agent-config.
 
 The explicitly supplied JSON has exactly `selection` and `models`. Selection requires `agentId`, `provider`, `model`, `thinking`, `timeoutMs` (1000–180000), and `contextTokenBudget` (4096–65536). `models` is the lead's OpenClaw model configuration, including the selected provider endpoint, explicit disposable provider key and selected model catalog row. The verifier does not infer a provider, inspect credentials, copy a personal profile or call provider APIs. It strips inherited provider-secret environment variables and configures a new workspace/state directory. Raw supplied configuration remains private. Do not supply personal credentials for this fixture.
 
+Preflight requires exactly Node 24.16.0 or 26.1.0 and a clean Git worktree/index, including no untracked source files. It rejects a dirty candidate before creating the disposable profile or starting Gateway/client processes. Keep the explicit configuration in an ignored private path. The selected provider's `baseUrl` must parse as HTTP or HTTPS with a loopback host (`localhost`, IPv4 127/8 or IPv6 `::1`); an optional port and API path are supported. Remote hosts, malformed or empty URLs, URL credentials, query strings and fragments fail preflight. These restrictions define this local-model qualification; they do not change the plugin's native execution route or admission budgets.
+
 Example selection (the lead must supply the real matching model configuration):
 
 ```json

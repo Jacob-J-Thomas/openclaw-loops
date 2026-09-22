@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {parseNativeAgentSelection,compareNativeAgentOwner,projectNativeAgentResult,nativeAgentRunParams,awaitNativeAgentAction} from './helpers/native-agent-plugin.mjs';
-import {validateNativeAgentLeadConfig,nativeHistoryFacts,assertNativeAgentRead,assertNativeAgentCancellation,sanitizeNativeAgentReceipt,nativeAgentExecutionTimeoutMs} from '../scripts/verify-native-agent.mjs';
+import {validateNativeAgentLeadConfig,validateNativeAgentEndpoint,assertNativeAgentNodeVersion,assertNativeAgentCleanSource,nativeHistoryFacts,assertNativeAgentRead,assertNativeAgentCancellation,sanitizeNativeAgentReceipt,nativeAgentExecutionTimeoutMs} from '../scripts/verify-native-agent.mjs';
 const selection={agentId:'main',provider:'fixture-provider',model:'fixture-model',thinking:'off',timeoutMs:120000,contextTokenBudget:32768};
 const owner={agentId:'main',sessionId:'host-id',sessionKey:'host-key',lifecycleRevision:'host-generation',storePath:'/disposable/store'};
 const read={state:'completed',settled:true,modelCallStarted:true,tools:[{toolName:'read',isError:false,text:'observed-seed'}],result:{aborted:false,error:null,text:'NATIVE_AGENT_READ observed-seed',attribution:{provider:selection.provider,model:selection.model,usage:{input:23,output:9}}}};
@@ -20,6 +20,26 @@ describe('native agent qualification contract',()=>{
     expect(compareNativeAgentOwner(owner,{...owner})).toEqual({ok:true});
     expect(compareNativeAgentOwner(owner,{...owner,sessionKey:'foreign'})).toMatchObject({code:'FOREIGN_SESSION',hostDenied:false,stage:'fixture-owner'});
     for(const changed of [{sessionId:'new-id'},{lifecycleRevision:'new-generation'},{lifecycleRevision:null},{storePath:'/different-store'}])expect(compareNativeAgentOwner(owner,{...owner,...changed})).toMatchObject({code:'SESSION_GENERATION_CHANGED',hostDenied:false});
+  });
+  it('admits HTTP(S) loopback endpoints and rejects remote, ambiguous or credential-bearing URLs',()=>{
+    for(const baseUrl of ['http://127.0.0.1:11437','https://localhost:11439/v1','http://[::1]:11437/v1','http://127.12.34.56:11437']){
+      expect(validateNativeAgentEndpoint(baseUrl)).toBe(baseUrl);
+      const config={selection,models:{providers:{[selection.provider]:{baseUrl,apiKey:'disposable',models:[{id:selection.model}]}}}};
+      expect(validateNativeAgentLeadConfig(config)).toBe(config);
+    }
+    for(const baseUrl of ['',null,'not a url','http://','http:///localhost','http:localhost','ftp://localhost','file:///tmp/model','http://example.com','https://127.0.0.1.example.com','http://192.168.1.3:11437','http://[::2]:11437','http://localhost:99999','http://user:secret@localhost','http://@localhost','http://localhost?token=secret','http://localhost?','http://localhost#fragment',' http://localhost','http://local\nhost','http:\\localhost']){
+      expect(()=>validateNativeAgentEndpoint(baseUrl)).toThrow();
+      const config={selection,models:{providers:{[selection.provider]:{baseUrl,apiKey:'disposable',models:[{id:selection.model}]}}}};
+      expect(()=>validateNativeAgentLeadConfig(config)).toThrow();
+    }
+  });
+  it('admits only the exact declared Node releases',()=>{
+    for(const version of ['v24.16.0','v26.1.0'])expect(()=>assertNativeAgentNodeVersion(version)).not.toThrow();
+    for(const version of ['v24.0.0','v24.16.1','v26.0.0','v26.1.1','v26.1.0-rc.1','v22.16.0','24.16.0','',null])expect(()=>assertNativeAgentNodeVersion(version)).toThrow(/exactly Node/);
+  });
+  it('refuses tracked, staged and untracked source changes before native admission',()=>{
+    expect(()=>assertNativeAgentCleanSource('')).not.toThrow();
+    for(const status of [' M scripts/verify-native-agent.mjs\n','M  test/helpers/native-agent-plugin.mjs\n','?? untracked-source.mjs\n','UU conflicted.mjs\n',null])expect(()=>assertNativeAgentCleanSource(status)).toThrow(/clean Git/);
   });
   it('builds a public durable agent request without pre-admitted identity, sender authority or provider client',()=>{
     const signal=new AbortController().signal,params=nativeAgentRunParams({config:{},selection,owner,workspaceDir:'/disposable/workspace',signal,runId:'caller-correlation',prompt:'fixture read',callbacks:{}});

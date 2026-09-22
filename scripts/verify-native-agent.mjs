@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {spawn,execFileSync} from 'node:child_process';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
-import {createServer,createConnection} from 'node:net';
+import {createServer,createConnection,isIP} from 'node:net';
 import {copyFileSync,createWriteStream,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -13,6 +13,21 @@ const errorFact=e=>({name:e?.name??'Error',message:String(e?.message??e),code:ty
 const write=(file,value)=>writeFileSync(file,JSON.stringify(value,null,2)+'\n',{mode:0o600});
 const safeText=value=>typeof value==='string'?value.slice(0,256):null;
 const safeNumber=value=>typeof value==='number'&&Number.isFinite(value)?value:null;
+export function validateNativeAgentEndpoint(value){
+  assert(typeof value==='string'&&value.length>0&&value===value.trim()&&!/[\s\\]/.test(value),'Supply a valid local provider baseUrl.');
+  let endpoint;try{endpoint=new URL(value);}catch{assert.fail('Supply a valid local provider baseUrl.');}
+  assert(['http:','https:'].includes(endpoint.protocol)&&/^https?:\/\/[^/]/i.test(value),'Provider baseUrl must use HTTP or HTTPS with an explicit host.');
+  assert(!endpoint.username&&!endpoint.password&&!value.split('/')[2].includes('@')&&!value.includes('?')&&!value.includes('#'),'Provider baseUrl must not contain credentials, query or fragment.');
+  const host=endpoint.hostname;
+  assert(host==='localhost'||host==='[::1]'||(isIP(host)===4&&host.startsWith('127.')),'Provider baseUrl must use a loopback host.');
+  return value;
+}
+export function assertNativeAgentNodeVersion(version){
+  assert(['v24.16.0','v26.1.0'].includes(version),'Use exactly Node 24.16.0 or 26.1.0.');
+}
+export function assertNativeAgentCleanSource(status){
+  assert(typeof status==='string'&&status.trim()==='','Native agent qualification requires a clean Git worktree and index.');
+}
 export function validateNativeAgentLeadConfig(value){
   assert(value&&typeof value==='object'&&!Array.isArray(value),'A lead-authored config object is required.');
   assert(Object.keys(value).every(key=>['selection','models'].includes(key)),'Config accepts only selection and explicit models.');
@@ -22,6 +37,7 @@ export function validateNativeAgentLeadConfig(value){
   assert(Number.isInteger(selection.timeoutMs)&&selection.timeoutMs>=1000&&selection.timeoutMs<=180000);
   assert(Number.isInteger(selection.contextTokenBudget)&&selection.contextTokenBudget>=4096&&selection.contextTokenBudget<=65536);
   const provider=value.models?.providers?.[selection.provider];assert(provider&&typeof provider.baseUrl==='string','Supply the configured provider endpoint explicitly.');
+  validateNativeAgentEndpoint(provider.baseUrl);
   assert(typeof provider.apiKey==='string'&&provider.apiKey.length>0&&!provider.apiKey.startsWith('${'),'Supply the disposable provider key explicitly; no credential/environment discovery.');
   assert(Array.isArray(provider.models)&&provider.models.some(model=>model.id===selection.model),'Selected model must be present in the supplied catalog.');
   return value;
@@ -67,7 +83,9 @@ async function clientWorker(){
 }
 async function main(){
   assert(process.argv[2],'Usage: node scripts/verify-native-agent.mjs <explicit-lead-model-config.json>');
+  assertNativeAgentNodeVersion(process.version);
   const suppliedBytes=readFileSync(resolve(process.argv[2])),lead=validateNativeAgentLeadConfig(JSON.parse(suppliedBytes)),selection=lead.selection;
+  const sourceStatus=execFileSync('git',['status','--porcelain','--untracked-files=all'],{encoding:'utf8'});assertNativeAgentCleanSource(sourceStatus);
   const startAt=Date.now(),deadline=startAt+10*60*1000,remaining=()=>{assert(Date.now()<deadline,'Ten-minute proof budget exhausted.');return deadline-Date.now();};
   const runId=randomUUID(),profile=resolve('.dev-profile',`native-agent-${runId}`),raw=resolve(profile,'raw'),workspace=resolve(profile,'workspace'),pluginRoot=resolve(profile,'plugin'),configPath=resolve(profile,'openclaw.json'),stateDir=resolve(profile,'state'),evidence=resolve('evidence','post-1.0','issue-242'),fixture=resolve('test/helpers/native-agent-plugin.mjs'),cli=resolve('node_modules/openclaw/openclaw.mjs');
   for(const dir of [raw,workspace,pluginRoot,evidence])mkdirSync(dir,{recursive:true,mode:0o700});
@@ -80,7 +98,7 @@ async function main(){
   const clients=[],children=[],streams=[],handles=[],executions=[];
   const record=(label,value)=>write(resolve(raw,`${String(++seq).padStart(4,'0')}-${label.replace(/[^a-z0-9_-]/gi,'_')}.json`),value);
   const receipt={status:'failed',source:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),verifierSha256:sha(readFileSync(own)),fixtureSha256:sha(readFileSync(fixture)),node:process.version,configSha256:sha(suppliedBytes),requested:selection,observations:[],cleanup:{clientsStopped:false,ownedProcessesExited:false,hostPromisesSettled:false,hostRequestsSettled:false}};
-  receipt.installedFixtureSha256=sha(readFileSync(resolve(pluginRoot,'index.mjs')));receipt.fixtureManifestSha256=sha(readFileSync(resolve(pluginRoot,'openclaw.plugin.json')));receipt.sourceDirty=!!execFileSync('git',['status','--porcelain'],{encoding:'utf8'}).trim();
+  receipt.installedFixtureSha256=sha(readFileSync(resolve(pluginRoot,'index.mjs')));receipt.fixtureManifestSha256=sha(readFileSync(resolve(pluginRoot,'openclaw.plugin.json')));receipt.sourceDirty=sourceStatus.trim()!=='';
   const sourceFiles=['test/contracts/native-agent-consumer.ts','test/helpers/native-agent-plugin.mjs','scripts/verify-native-agent.mjs','test/native-agent-sdk.test.mjs','docs/POST_1_0_NATIVE_AGENT.md'].map(file=>({file,sha256:sha(readFileSync(resolve(file)))}));receipt.sourceFilesSha256=sha(JSON.stringify(sourceFiles));record('source-files',sourceFiles);record('lead-config',lead);
   const observe=(label,classification,extra={})=>receipt.observations.push({label,classification,passed:true,...extra});
   const free=p=>new Promise(done=>{const s=createServer();s.once('error',()=>done(false));s.listen({host:'127.0.0.1',port:p},()=>s.close(()=>done(true)));});
@@ -104,7 +122,7 @@ async function main(){
   try{
     assert.equal(receipt.installedFixtureSha256,receipt.fixtureSha256,'Fixture copy differs from declared source.');
     for(port=22271;port<22371;port++)if(await free(port))break;assert(port<22371,'No unused proof port.');writeConfig(false);
-    const req=createRequire(resolve('package.json'));receipt.host={version:JSON.parse(readFileSync(resolve('node_modules/openclaw/package.json'),'utf8')).version,manifestSha256:sha(readFileSync(resolve('node_modules/openclaw/package.json'))),cliSha256:sha(readFileSync(cli)),clientSha256:sha(readFileSync(req.resolve('openclaw/plugin-sdk/gateway-runtime')))};assert.equal(receipt.host.version,'2026.9.5');assert.match(process.version,/^v(?:24|26)\./,'Use declared Node 24/26 runtime.');
+    const req=createRequire(resolve('package.json'));receipt.host={version:JSON.parse(readFileSync(resolve('node_modules/openclaw/package.json'),'utf8')).version,manifestSha256:sha(readFileSync(resolve('node_modules/openclaw/package.json'))),cliSha256:sha(readFileSync(cli)),clientSha256:sha(readFileSync(req.resolve('openclaw/plugin-sdk/gateway-runtime')))};assert.equal(receipt.host.version,'2026.9.5');
     phase='public-session-create';await start(0);admin=await connect(['operator.admin','operator.read','operator.write'],'admin-0');readOnly=await connect(['operator.read'],'readonly-0');executor=await connect(['operator.admin','operator.read','operator.write'],'executor-0');session=await request(admin,'sessions.create',{agentId:selection.agentId,label:`Native agent read ${runId.slice(0,8)}`});cancelSession=await request(admin,'sessions.create',{agentId:selection.agentId,label:`Native agent cancel ${runId.slice(0,8)}`});assert(session?.key&&session?.sessionId&&cancelSession?.key&&cancelSession?.sessionId);
     phase='current-policy-preflight';const policy=await action(admin,session.key,{operation:'policy'});assert.equal(policy.ok,true);assert.deepEqual(policy.available,{read:true,write:false});observe('write-excluded-by-current-host-policy','host-tool-factory-policy-exclusion');
     phase='readonly-denial';let denied=false;try{await action(readOnly,session.key,{operation:'policy'});}catch(error){assert(['MISSING_SCOPE','FORBIDDEN','UNAUTHORIZED'].includes(error.code));denied=true;observe('readonly-action-denied','host-gateway-scope',{code:error.code});}assert(denied);
