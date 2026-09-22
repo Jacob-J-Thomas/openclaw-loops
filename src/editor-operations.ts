@@ -1,5 +1,19 @@
 import {outputFields,type Definition,type GraphNode} from './graph.js';
 import {requestError} from './errors.js';
+import {truncateCodePoints} from './unicode.js';
+
+// Keep duplication aligned with bind(): only its {{...}} token form has
+// binding semantics. Text outside a token, including a string that resembles
+// a node path, remains authored literal data.
+function remapBindingTokens(value:string,previous:string,next:string):string{
+  const prefix=`nodes.${previous}.`;
+  return value.replace(/\{\{([^{}]+)\}\}/g,(token,raw:string)=>{
+    const path=raw.trim();
+    if(!path.startsWith(prefix))return token;
+    const offset=raw.indexOf(path);
+    return `{{${raw.slice(0,offset)}nodes.${next}.${path.slice(prefix.length)}${raw.slice(offset+path.length)}}}`;
+  });
+}
 
 export function copyDefinition(definition:Definition,id:string,templateDefaults?:Pick<Definition['limits'],'maxExecutions'|'maxOutputBytes'>):Definition{
   const copy={...structuredClone(definition),id,slug:id,revision:0};
@@ -27,10 +41,10 @@ export function autoLayout(definition:Definition):Definition{
 }
 export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:string)=>string):Definition{
   const original=definition.nodes.find(n=>n.id===nodeId);if(!original)return definition;
-  const duplicate=structuredClone(original);duplicate.id=fresh(original.kind);duplicate.label=`${duplicate.label} copy`.slice(0,100);
+  const duplicate=structuredClone(original);duplicate.id=fresh(original.kind);duplicate.label=truncateCodePoints(`${duplicate.label} copy`,100);
   if(duplicate.kind==='repeat'){
     const previous=duplicate.body[0].id;duplicate.body[0].id=fresh('inference');duplicate.body[1].id=fresh('condition');
-    for(const operand of ['left','right'] as const){const value=duplicate.body[1].predicate[operand];if(typeof value==='string')duplicate.body[1].predicate[operand]=value.replaceAll(`nodes.${previous}.`,`nodes.${duplicate.body[0].id}.`);}
+    for(const operand of ['left','right'] as const){const value=duplicate.body[1].predicate[operand];if(typeof value==='string')duplicate.body[1].predicate[operand]=remapBindingTokens(value,previous,duplicate.body[0].id);}
   }
   const position=definition.layout[nodeId]??{x:0,y:0};
   return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}}};

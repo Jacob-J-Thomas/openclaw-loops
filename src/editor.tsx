@@ -96,7 +96,7 @@ export function Editor({host}:{host:ControlUiHost}){
   const [measurements,setMeasurements]=useState<Record<string,{width:number;height:number}>>({});
   const options=useMemo(()=>({agentId,sessionKey}),[agentId,sessionKey]);
   const draftScope=JSON.stringify([agentId,sessionKey]);
-  const currentScope=useRef(draftScope);currentScope.current=draftScope;const loadSerial=useRef(0),loadingSelection=useRef<number|null>(null);
+  const currentScope=useRef(draftScope);currentScope.current=draftScope;const loadSerial=useRef(0),loadingSelection=useRef<number|null>(null),mounted=useRef(true);
   const runRefreshGate=useRef(new RunRefreshGate()).current;runRefreshGate.select({agentId,sessionKey,runId:activeId});
   const changedRefreshTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
   const historyView=useRef('');historyView.current=JSON.stringify([agentId,sessionKey,historyCursor]);
@@ -120,6 +120,7 @@ export function Editor({host}:{host:ControlUiHost}){
     }
   },[connected,feature,options,sessionKey,receive,receivePublication,historyCursor,agentId,draftScope,refreshSelectedRun]);
   const refreshRef=useRef(refresh);refreshRef.current=refresh;
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   useEffect(()=>{if(!sessionKey)return;let live=true;void feature.invoke('capabilities',{},options).then(result=>{if(live)setBudgets(result.budgets);},error=>{if(live)setError(displayFailure(error));});return()=>{live=false;};},[feature,options,sessionKey]);
   const scheduleChangedRefresh=useCallback(()=>{runRefreshGate.invalidateInspection();if(!host.connection.connected||!sessionKey||changedRefreshTimer.current)return;changedRefreshTimer.current=setTimeout(()=>{changedRefreshTimer.current=undefined;void refreshRef.current().catch(e=>setError(displayFailure(e)));},50);},[host,sessionKey,runRefreshGate]);
   useEffect(()=>{const dispose=feature.on('changed',scheduleChangedRefresh);return()=>{dispose();if(changedRefreshTimer.current){clearTimeout(changedRefreshTimer.current);changedRefreshTimer.current=undefined;}};},[feature,scheduleChangedRefresh]);
@@ -140,7 +141,50 @@ export function Editor({host}:{host:ControlUiHost}){
   const recoverLocal=(draft:LocalDraft)=>perform(async()=>{const request=++loadSerial.current;loadingSelection.current=request;recoveredDraft.current=draft;editorScope.current=draftScope;baseDefinition.current=draft.base;setDefinition(draft.definition);setPublication(null);setEnabledRevision(null);setGrants([]);setRevisions([]);setSelectedRevision(undefined);setUndo([]);setRedo([]);setSelected(draft.definition.nodes[0]?.id??null);setSelectedEdge(null);setNotice('Local draft recovered. Save checks the current server revision.');try{if(draft.definition.revision>0){const record=await feature.invoke('load',{id:draft.definition.id},options);if(currentScope.current===draftScope&&loadSerial.current===request)receivePublication(record);}}finally{if(loadingSelection.current===request)loadingSelection.current=null;}});
   const newDefinition=(d:Definition,fromTemplate=false)=>{if(dirty&&!window.confirm('Discard unsaved edits?'))return;const id=unique(d.id);editorScope.current=draftScope;baseDefinition.current=null;setDefinition(copyDefinition(d,id,fromTemplate?{maxExecutions:budgets.defaultExecutions,maxOutputBytes:budgets.defaultOutputBytes}:undefined));setUndo([]);setRedo([]);setGrants([]);setEnabledRevision(null);setPublication(null);setRevisions([]);setSelectedRevision(undefined);setSelected(d.nodes[0]?.id??null);setSelectedEdge(null);setNotice('New loop. Choose Save & publish to make it runnable, or Save draft to keep it disabled.');};
   const create=()=>{const d=structuredClone(examples[0]);d.name='Untitled loop';d.description='';d.nodes=[d.nodes[0],{id:'return',kind:'return',label:'Return input',value:'{{input.text}}'}];d.edges=[{id:'e1',source:'input',target:'return',port:'next'}];d.capabilities=[];delete d.limits.timeoutMs;newDefinition(d,true);};
-  const save=(enabled=false)=>perform(async()=>{if(!definition)return;const savingDraft=ownedLocalDraftReceipt(ownedDraft.current,draftScope,draftWriterId,definition);setBusy(true);try{const response=enabled?await feature.invoke('save',{definition,expectedRevision:definition.revision,enabled:true},options):await feature.invoke('draft',{definition,expectedRevision:definition.revision},options);removeOwnedLocalDraft(localStorage,savingDraft);ownedDraft.current=null;refreshDrafts();receive(response.record,true);setNotice(response.issues.length?'Draft saved. Resolve validation issues before enabling.':`Revision ${response.record.definition.revision} saved${enabled?' and enabled for chat and UI': ' as a draft; publication unchanged'}.`);await refresh();}catch(error){if(/conflict|revision changed/i.test(errorText(error))){const remote=await feature.invoke('load',{id:definition.id},options);setConflict({base:baseDefinition.current,local:definition,remote});setMergeChoices({});setError(displayFailure(error,'This loop changed while you were editing. Merge your draft with the saved revision below'));}else throw error;}finally{setBusy(false);}});
+  const save=(enabled=false)=>perform(async()=>{
+    if(!definition)return;
+    const savedDefinition=definition,savedScope=draftScope,savedSelection=loadSerial.current;
+    const savingDraft=ownedLocalDraftReceipt(ownedDraft.current,savedScope,draftWriterId,savedDefinition);
+    const acceptsSave=()=>mounted.current&&currentScope.current===savedScope&&loadSerial.current===savedSelection&&editorScope.current===savedScope&&editorState.current.definition?.id===savedDefinition.id;
+    const acceptsExactSnapshot=()=>acceptsSave()&&editorState.current.definition===savedDefinition;
+    setBusy(true);
+    try{
+      const response=enabled?await feature.invoke('save',{definition:savedDefinition,expectedRevision:savedDefinition.revision,enabled:true},options):await feature.invoke('draft',{definition:savedDefinition,expectedRevision:savedDefinition.revision},options);
+      if(!acceptsSave())return;
+      // Undo/Redo restore authored content, never an obsolete optimistic-lock token.
+      const rebaseHistory=(history:Definition[])=>history.map(snapshot=>snapshot.id===savedDefinition.id?{...snapshot,revision:response.record.definition.revision}:snapshot);
+      setUndo(rebaseHistory);setRedo(rebaseHistory);
+      if(acceptsExactSnapshot()){
+        removeOwnedLocalDraft(localStorage,savingDraft);
+        if(ownedDraft.current?.storageKey===savingDraft?.storageKey)ownedDraft.current=null;
+        refreshDrafts();receive(response.record,true);
+        setNotice(response.issues.length?'Draft saved. Resolve validation issues before enabling.':`Revision ${response.record.definition.revision} saved${enabled?' and enabled for chat and UI': ' as a draft; publication unchanged'}.`);
+      }else{
+        // The acknowledged snapshot is the new base, not the user's latest edits.
+        // Keep its recovery record until syncLocalDraft can persist the rebase.
+        const newer=editorState.current.definition!;
+        baseDefinition.current=response.record.definition;setConflict(null);setMergeChoices({});
+        setDefinition({...newer,revision:response.record.definition.revision});receivePublication(response.record);
+        setNotice(`Revision ${response.record.definition.revision} saved; newer draft edits are retained.`);
+      }
+      if(acceptsSave())await refresh();
+    }catch(error){
+      if(!acceptsSave())return;
+      const conflictError=/conflict|revision changed/i.test(errorText(error));
+      if(!acceptsExactSnapshot()){
+        setError(displayFailure(error,conflictError?'The earlier save conflicted; newer draft edits were retained.':'The earlier save failed; newer draft edits were retained.'));
+        return;
+      }
+      if(conflictError){
+        let remote:LoopRecord;
+        try{remote=await feature.invoke('load',{id:savedDefinition.id},options);}
+        catch(loadError){if(acceptsExactSnapshot())setError(displayFailure(loadError,'Could not load the conflicting revision; your draft is retained.'));return;}
+        if(!acceptsExactSnapshot())return;
+        setConflict({base:baseDefinition.current,local:savedDefinition,remote});setMergeChoices({});
+        setError(displayFailure(error,'This loop changed while you were editing. Merge your draft with the saved revision below'));
+      }else setError(displayFailure(error));
+    }finally{if(mounted.current)setBusy(false);}
+  });
   const acceptPublication=(record:LoopRecord)=>{if(currentScope.current===draftScope&&editorState.current.definition?.id===record.definition.id)receivePublication(record);};
   const publishVersion=(revision:number,expectedRevision=publication?.definition.revision)=>perform(async()=>{if(!definition||expectedRevision===undefined)return;setBusy(true);try{acceptPublication(await feature.invoke('publish',{id:definition.id,revision,expectedRevision},options));await refresh();setNotice(`Revision ${revision} published and enabled. Draft edits are preserved.`);}finally{setBusy(false);}});
   const togglePublication=()=>perform(async()=>{if(!publication||!published)return;setBusy(true);try{const record=enabledRevision!==null?await feature.invoke('enable',{id:publication.definition.id,revision:publication.definition.revision,enabled:false},options):await feature.invoke('publish',{id:publication.definition.id,revision:published.revision,expectedRevision:publication.definition.revision},options);acceptPublication(record);await refresh();setNotice(enabledRevision!==null?'New runs are disabled. Draft edits and parked runs are preserved.':`Published revision ${published.revision} enabled. Draft edits are preserved.`);}finally{setBusy(false);}});
@@ -197,7 +241,7 @@ export function Editor({host}:{host:ControlUiHost}){
         {run.cleanupPending&&<p role="status">Cancellation is recorded. Waiting for the host call to finish cleanup; its execution slot remains occupied.</p>}
         <FailureNotice failure={run.errorDetail??run.error??''} label="Run failure"/>
         {run.uncertainty&&<p className="lp-uncertainty">{run.uncertainty}</p>}
-        {run.pending&&<div className="lp-pending"><h3>{run.state==='review'?'Review the actual proposal':'Waiting at a checkpoint'}</h3><pre>{run.pending}</pre>{run.state==='review'&&<><button className="primary" onClick={event=>void runAction(()=>feature.invoke('review',{runId:run.id,decision:'approve'},options),event.currentTarget)} disabled={busy}>Approve</button><button className="danger" onClick={event=>void runAction(()=>feature.invoke('review',{runId:run.id,decision:'reject'},options),event.currentTarget)} disabled={busy}>Reject</button></>}{run.state==='waiting'&&<button className="primary" onClick={event=>void runAction(()=>feature.invoke('resume',{runId:run.id},options),event.currentTarget)} disabled={busy}>Continue</button>}</div>}
+        {run.pending!==undefined&&['waiting','review'].includes(run.state)&&<div className="lp-pending"><h3>{run.state==='review'?'Review the actual proposal':'Waiting at a checkpoint'}</h3><pre>{run.pending}</pre>{run.state==='review'&&<><button className="primary" onClick={event=>void runAction(()=>feature.invoke('review',{runId:run.id,decision:'approve'},options),event.currentTarget)} disabled={busy}>Approve</button><button className="danger" onClick={event=>void runAction(()=>feature.invoke('review',{runId:run.id,decision:'reject'},options),event.currentTarget)} disabled={busy}>Reject</button></>}{run.state==='waiting'&&<button className="primary" onClick={event=>void runAction(()=>feature.invoke('resume',{runId:run.id},options),event.currentTarget)} disabled={busy}>Continue</button>}</div>}
         {['queued','running','waiting','review'].includes(run.state)&&<button className="danger" onClick={event=>void runAction(()=>feature.invoke('cancel',{runId:run.id},options),event.currentTarget)}>Cancel run</button>}
         {['failed','interrupted','cancelled'].includes(run.state)&&!run.cleanupPending&&<div className="lp-recovery-actions"><button onClick={event=>void runAction(()=>feature.invoke('retry',{runId:run.id,mode:'checkpoint',requestId:crypto.randomUUID()},options),event.currentTarget)}>Resume checkpoint</button><button onClick={event=>void runAction(()=>feature.invoke('retry',{runId:run.id,mode:'retry-node',requestId:crypto.randomUUID()},options),event.currentTarget)}>Retry current node</button><button onClick={event=>void runAction(()=>feature.invoke('retry',{runId:run.id,mode:'restart',requestId:crypto.randomUUID()},options),event.currentTarget)}>Restart run</button></div>}{run.result!==undefined&&<div className="lp-result"><h3>Result</h3><pre>{typeof run.result==='string'?run.result:JSON.stringify(run.result,null,2)}</pre></div>}
         {run.review&&<p className="lp-hint">Human decision: {run.review.decision} · {new Date(run.review.at).toLocaleString()}</p>}
