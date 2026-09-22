@@ -26,6 +26,14 @@ const elapsed=value=>Number.isSafeInteger(value)&&value>=0&&value<=86_400_000?va
 const ordinal=value=>Number.isSafeInteger(value)&&value>=0&&value<=128?value:0;
 const timing=value=>({phase:timingPhases.has(own(value,'phase'))?own(value,'phase'):'unknown',generation:ordinal(own(value,'generation')),durationMs:elapsed(own(value,'durationMs')),phaseDurationMs:elapsed(own(value,'phaseDurationMs')),hasChallenge:own(value,'hasChallenge')===true,usedFallback:own(value,'usedFallback')===true});
 const processState=value=>processStates.has(value)?value:'unavailable';
+export function lifecycleChildProcessState(child){
+  try{
+    if(!child||typeof child!=='object'||!Number.isSafeInteger(child.pid)||child.pid<1)return 'unavailable';
+    if(child.exitCode!==null)return 'exited';
+    if(child.signalCode!==null)return 'signaled';
+    return 'alive';
+  }catch{return 'unavailable';}
+}
 const provenance=value=>({
   previous:{source:clean(own(own(value,'previous'),'source'),/^[0-9a-f]{40}$/),sha256:clean(own(own(value,'previous'),'sha256'),/^[0-9a-f]{64}$/),hostVersion:clean(own(own(value,'previous'),'hostVersion'),/^[0-9A-Za-z.+-]{1,64}$/)},
   current:{sha256:clean(own(own(value,'current'),'sha256'),/^[0-9a-f]{64}$/),hostVersion:clean(own(own(value,'current'),'hostVersion'),/^[0-9A-Za-z.+-]{1,64}$/)},

@@ -3,8 +3,8 @@ import {mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} fro
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {execFileSync,fork,spawnSync} from 'node:child_process';
-import {createLifecycleOperations,lifecycleFailureReceipt,sanitizeLifecycleClientStartup} from '../scripts/lifecycle-failure-receipt.mjs';
+import {execFileSync,fork,spawn,spawnSync} from 'node:child_process';
+import {createLifecycleOperations,lifecycleChildProcessState,lifecycleFailureReceipt,sanitizeLifecycleClientStartup} from '../scripts/lifecycle-failure-receipt.mjs';
 
 const directories=[];
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
@@ -133,6 +133,17 @@ describe('sanitized lifecycle failure receipt',()=>{
     await new Promise((resolveDone,reject)=>{const timer=setTimeout(()=>reject(Error('Worker did not stop.')),5_000);worker.on('message',message=>{messages.push(message);if(message?.type==='ready')worker.send({type:'stop'});});worker.once('error',reject);worker.once('exit',code=>{clearTimeout(timer);if(code===0)resolveDone();else reject(Error(`Worker exited ${code}.`));});});
     expect(messages).toEqual(expect.arrayContaining([{type:'timing',timing:{phase:'challenge',generation:2,durationMs:7,phaseDurationMs:3,hasChallenge:true,usedFallback:false}},{type:'ready'},{type:'stopped'}]));
     expect(JSON.stringify(messages)).not.toContain('private');
+  });
+
+  it('classifies an unspawned child before alive and preserves live, exit, and signal states',async()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-child-state-'));directories.push(directory);
+    const failed=spawn(join(directory,'missing-worker-command'));await new Promise(resolveDone=>failed.once('error',resolveDone));
+    expect(lifecycleChildProcessState(failed)).toBe('unavailable');
+    const live=spawn(process.execPath,['--input-type=module','--eval','setInterval(()=>{},1000)'],{stdio:'ignore'});
+    expect(lifecycleChildProcessState(live)).toBe('alive');live.kill('SIGTERM');await new Promise(resolveDone=>live.once('exit',resolveDone));
+    expect(lifecycleChildProcessState(live)).toBe('signaled');
+    const exited=spawn(process.execPath,['--input-type=module','--eval','process.exit(0)'],{stdio:'ignore'});await new Promise(resolveDone=>exited.once('exit',resolveDone));
+    expect(lifecycleChildProcessState(exited)).toBe('exited');
   });
 
   it('records bounded active and completed operations without reading hostile getters',()=>{
