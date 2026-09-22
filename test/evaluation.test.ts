@@ -31,6 +31,7 @@ describe('deterministic evaluation worker',()=>{
   });
   it('distinguishes invalid schemas from failed evaluations and rejects remote refs and bounded input/output',async()=>{
     await expect(runtime.evaluate('x',{kind:'json-schema-2020',version:'2020-12',schema:{$ref:'https://example.test/schema'}},{workerUrl})).rejects.toMatchObject({detail:{code:'LOOPS_EVALUATION_REMOTE_REF'}});
+    for(const key of ['$dynamicRef','$recursiveRef'])for(const target of ['#local','https://example.test/schema'])await expect(runtime.evaluate('x',{kind:'json-schema-2020',version:'2020-12',schema:{[key]:target}},{workerUrl})).rejects.toMatchObject({detail:{code:'LOOPS_EVALUATION_REMOTE_REF'}});
     await expect(runtime.evaluate('x',{kind:'json-schema-2020',version:'2020-12',schema:{type:'not-a-real-type'}},{workerUrl})).rejects.toMatchObject({detail:{code:'LOOPS_EVALUATION_SCHEMA_INVALID'}});
     await expect(runtime.evaluate('abc',{kind:'predicate',version:'p1',predicate:{op:'truthy'}},{workerUrl,limits:{maxInputBytes:2}})).rejects.toMatchObject({detail:{code:'LOOPS_EVALUATION_RESOURCE_LIMIT'}});
     await expect(runtime.evaluate('x',{kind:'json-schema-2020',version:'2020-12',schema:{type:'string'}},{workerUrl,limits:{maxSchemaBytes:2}})).rejects.toMatchObject({detail:{code:'LOOPS_EVALUATION_RESOURCE_LIMIT'}});

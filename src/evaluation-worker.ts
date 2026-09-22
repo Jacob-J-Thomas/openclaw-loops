@@ -7,7 +7,7 @@ const error=(code:string,message:string,extra:Partial<EvaluationError>={}):Evalu
 function isRemoteReference(value:EvaluationJson):boolean{
   if(Array.isArray(value))return value.some(isRemoteReference);
   if(!value||typeof value!=='object')return false;
-  return Object.entries(value).some(([key,item])=>['$ref','$dynamicRef','$recursiveRef'].includes(key)&&typeof item==='string'&&!item.startsWith('#')||isRemoteReference(item));
+  return Object.entries(value).some(([key,item])=>key==='$dynamicRef'||key==='$recursiveRef'||key==='$ref'&&typeof item==='string'&&!item.startsWith('#')||isRemoteReference(item));
 }
 function contains(value:EvaluationJson,expected:EvaluationJson):boolean{
   if(typeof value==='string'&&typeof expected==='string')return value.includes(expected);
