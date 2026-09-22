@@ -19,6 +19,8 @@ export function inspectionOutput(run:Run,nodeId:string):OutputState{
   const node=run.definition.nodes.find(item=>item.id===nodeId);
   const hasOutput=Object.hasOwn(run.outputs,nodeId),value=run.outputs[nodeId];
   const recorded={label:run.parentRunId?evidence?.state==='completed'&&Object.hasOwn(evidence,'output')?'Recorded in this recovery':'Inherited from parent run':'Recorded output',value};
+  if(node?.kind==='evaluate'&&hasOutput&&value&&typeof value==='object'&&!Array.isArray(value)&&value.kind==='loops-evaluation')return {label:`Committed evaluation evidence · ${value.passed===true?'passed':'failed'}`,value};
+  if(node?.kind==='gate'&&hasOutput&&value&&typeof value==='object'&&!Array.isArray(value)&&typeof value.passed==='boolean')return {label:`Evidence gate · ${value.passed?'pass route':'fail route'}`,value};
   if(node?.kind==='wait'||node?.kind==='review'){
     const title=node.kind==='wait'?'Wait checkpoint':'Human review proposal';
     const pending=run.cursor===nodeId&&run.pending!==undefined&&((node.kind==='wait'&&run.state==='waiting')||(node.kind==='review'&&run.state==='review'));

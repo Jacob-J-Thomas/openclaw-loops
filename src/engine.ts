@@ -14,6 +14,7 @@ import {DocumentStore} from './document-store.js';
 import {type DocumentLinks, type MaintenancePolicy, type TransportRelease, emptyDocumentLinks} from './document-maintenance.js';
 import {fingerprintJson} from './fingerprint.js';
 import {applyContextPatch,assertContextState,contextBytes,initialContext,projectContext,type ContextState} from './context.js';
+import {commitEvaluation,evaluate as evaluateDeterministically,isCommittedEvaluation,type Evaluator} from './evaluation.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
@@ -70,7 +71,7 @@ export class Engine{
   private closing=false;
   private deadlines=new Map<string,number>();
   private active=new Map<string,{controller:AbortController;promise:Promise<Run>}>();
-  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>;documentDirectory?:string;retainActor?:(actor:Actor)=>void;releaseActor?:(actor:Actor)=>void}={}){
+  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>;documentDirectory?:string;retainActor?:(actor:Actor)=>void;releaseActor?:(actor:Actor)=>void;evaluationWorkerUrl?:URL}={}){
     this.budgets=resolveBudgets(options.budgets);
     this.state=(storage.indexed?storage.indexed.readWorkingState():storage.read())??{version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}};
     if(this.state.version!==1)throw new Error('Unsupported state store version.');
@@ -417,7 +418,7 @@ export class Engine{
       };
       const execution:NodeExecutionContext={
         signal,input:r.input,bind:(template,node=n)=>bind(template,contextFor(node)),compare:(predicate,node=n,iteration)=>compare(predicate,contextFor(node,iteration),r.definition.schemaVersion),
-        infer:(node,iteration)=>this.infer(actor,r,node,contextFor(node,iteration),signal),modelInfo:()=>this.host.modelInfo(actor),
+        infer:(node,iteration)=>this.infer(actor,r,node,contextFor(node,iteration),signal),evaluate:async(value:Json,evaluator:Evaluator,nodeId:string)=>commitEvaluation(await evaluateDeterministically(value,evaluator,{signal,...this.options.evaluationWorkerUrl?{workerUrl:this.options.evaluationWorkerUrl}:{}}),nodeId),modelInfo:()=>this.host.modelInfo(actor),readOutput:id=>{const output=r.outputs[id];if(n.kind==='gate'&&!isCommittedEvaluation(output,n.evaluationId))throw executionError('Evidence gate requires an intact committed evaluation result from this run.','LOOPS_EVIDENCE_UNAVAILABLE');return output;},
         requireCapability:capability=>this.host.check(actor,capability),checkAuthority:()=>this.allowedRun(actor,r),
         begin:(node,iteration)=>{this.begin(r,node,iteration);return r.trace.length-1;},
         finish:(sequence,output)=>this.finish(r,r.trace[sequence],output),setOutput:(id,output)=>{assertBudget(r.context,{...r.outputs,[id]:output});r.outputs[id]=output;},commitContext,

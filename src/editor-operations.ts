@@ -61,6 +61,7 @@ export function bindingChoices(definition:Definition,consumer:GraphNode):string[
 export function insertBinding(node:GraphNode,binding:string):GraphNode{
   const replaceOrAppend=(value:unknown)=>typeof value==='string'?value+binding:binding;
   if(node.kind==='inference')return {...node,prompt:replaceOrAppend(node.prompt)};
+  if(node.kind==='evaluate')return {...node,value:replaceOrAppend(node.value)};
   if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
   if(node.kind==='return')return {...node,value:binding};
   if(node.kind==='condition')return {...node,predicate:{...node.predicate,left:binding}};

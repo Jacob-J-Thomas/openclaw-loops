@@ -5,6 +5,7 @@ import {defaultBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {identifierSchema as key,NodeSchema,ContextNodeSchema,LegacyNodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 import {assertMutableContextPath,contextPatchLiteral,contextPathForBinding,pathSegments,type ContextNodeConfig} from './context.js';
 import {isJson,literalValue,type NodeValue} from './node-values.js';
+import {evaluatorConfigurationIssue} from './evaluation-authoring.js';
 export {isJson} from './node-values.js';
 export {NodeSchema,PredicateSchema,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 const obj={additionalProperties:false} as const;
@@ -62,6 +63,7 @@ export function validateGraph(d:Definition):Issue[] {
     for(const b of childNodes(n)){if(ids.has(b.id)||d.nodes.some(x=>x.id===b.id))error('Body node IDs must be unique.',n.id);ids.add(b.id);}
   }
   if(d.schemaVersion===3)for(const node of d.nodes.flatMap(node=>[node,...childNodes(node)])){
+    if(node.kind==='evaluate'){const issue=evaluatorConfigurationIssue(node.evaluator);if(issue)error(issue,node.id);}
     const context=node.context;
     if(!context)continue;
     try{
@@ -99,6 +101,11 @@ export function validateGraph(d:Definition):Issue[] {
   for(let pass=0;pass<d.nodes.length;pass++)for(const n of d.nodes.filter(n=>n.kind!=='input')){
     const pred=predecessors(n.id);const common=new Set(pred.length?[...(dom.get(pred[0])??[])].filter(x=>pred.every(p=>dom.get(p)?.has(x))):[]);
     common.add(n.id);dom.set(n.id,common);
+  }
+  if(d.schemaVersion===3)for(const node of d.nodes)if(node.kind==='gate'){
+    const evaluation=d.nodes.find(candidate=>candidate.id===node.evaluationId);
+    if(!evaluation||evaluation.kind!=='evaluate')error('Evidence gate must name an Evaluate node.',node.id);
+    else if(!dom.get(node.id)?.has(evaluation.id))error('Evidence gate requires its Evaluate node to dominate every path into the gate.',node.id);
   }
   const checkText=(s:NodeValue,n:GraphNode,bodyPrior:string[]=[])=>{
     if(typeof s!=='string'){

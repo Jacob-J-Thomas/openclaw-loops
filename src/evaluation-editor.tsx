@@ -3,6 +3,9 @@ import type {Evaluator} from './evaluation.js';
 
 export type EvaluationDraft={kind:Evaluator['kind'];version:string;schemaSource:string;predicateOp:'equals'|'not-equals'|'contains'|'less-than'|'greater-than'|'truthy';expectedSource:string};
 export const defaultEvaluationDraft:EvaluationDraft={kind:'json-schema-2020',version:'2020-12',schemaSource:'{"type":"object"}',predicateOp:'truthy',expectedSource:'null'};
+export function evaluationDraft(evaluator:Evaluator):EvaluationDraft{
+  return evaluator.kind==='json-schema-2020'?{...defaultEvaluationDraft,kind:evaluator.kind,version:evaluator.version,schemaSource:JSON.stringify(evaluator.schema,null,2)}:{...defaultEvaluationDraft,kind:evaluator.kind,version:evaluator.version,predicateOp:evaluator.predicate.op,expectedSource:JSON.stringify(evaluator.predicate.expected??null,null,2)};
+}
 export function parseEvaluationDraft(draft:EvaluationDraft):{evaluator?:Evaluator;error?:string}{
   if(!draft.version.trim())return {error:'Evaluator version is required.'};
   try{

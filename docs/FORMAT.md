@@ -1,6 +1,6 @@
 # Definition formats
 
-Ordinary new definitions use schemaVersion 2; existing v1/v2 definitions and runs remain readable. To opt into shared context, create or explicitly edit a definition with `schemaVersion: 3`; see `examples/schema-v3.json` and [the v3 shared-context contract](POST_1_0_CONTEXT.md). V2 adds zero-input and nested JSON fields, safe nested bindings such as `{{nodes.summary.value.items.0.name}}`, typed equality, larger configurable budgets and Repeat counts bounded by total executions.
+Ordinary new definitions use schemaVersion 2; existing v1/v2 definitions and runs remain readable. To opt into shared context, deterministic evaluation, and evidence gates, create or explicitly edit a definition with `schemaVersion: 3`; see `examples/schema-v3.json`, [the v3 shared-context contract](POST_1_0_CONTEXT.md), and [the evaluator contract](POST_1_0_EVALUATION.md). V2 adds zero-input and nested JSON fields, safe nested bindings such as `{{nodes.summary.value.items.0.name}}`, typed equality, larger configurable budgets and Repeat counts bounded by total executions.
 
 Inference supports optional `model`, `agentId`, `reasoning` and `advanced`. Advanced keys: `temperature`, `topP`, `topK`, `minP`, `typicalP`, `frequencyPenalty`, `presencePenalty`, `repetitionPenalty`, `seed`, `stop`, `maxTokens`. Omit to inherit; zero is a value. `loops_capabilities` and `loops_validate` report actual SDK support.
 
@@ -36,7 +36,7 @@ Agent `loops_create` accepts editable `definition` fields and assigns `id` and `
 
 `loops_enable` takes `id`, current `revision` and `enabled:true/false`. Enabling validates and grants the graph's declared supported capabilities; no human-only step is required. The optional legacy `grants` checklist normally should be omitted. `loops_revoke` takes `id` and clears grants as well as activation, blocking later host actions in parked runs. Ordinary disabling retains grants for existing runs. `loops_library` includes drafts; `loops_read` returns the full saved record. `loops_delete` requires `id` and `expectedRevision`, rejects active/parked runs, and preserves terminal history. Invocation uses `loops_run` with `slug` and `input`; long-running work returns a real handle for `loops_status`. None of these operations approves an explicit Human review node.
 
-Edges identify `id`, `source`, `target`, and source `port`. Ordinary nodes have one `next` edge; Condition has one `true` and one `false`; Human review has `approve` and `reject`; Return/Fail have none. Input is the unique entry with no incoming edge. Every node must be reachable, and all paths terminate. Cycles are invalid. A structured Repeat is the only repeat mechanism.
+Edges identify `id`, `source`, `target`, and source `port`. Ordinary nodes have one `next` edge; Condition and Evidence gate have one `true` and one `false`; Human review has `approve` and `reject`; Return/Fail have none. Input is the unique entry with no incoming edge. Every node must be reachable, and all paths terminate. Cycles are invalid. A structured Repeat is the only repeat mechanism.
 
 | Node kind | Properties beyond id/kind/label |
 |---|---|
@@ -44,6 +44,8 @@ Edges identify `id`, `source`, `target`, and source `port`. Ordinary nodes have 
 | `inference` | `prompt`, `output: "text"` or `"json"` |
 | `action` | `capability: "model-info"` only |
 | `condition` | `predicate: {left, op, right}` |
+| `evaluate` (v3) | `value`, `evaluator` with `kind`, `version`, and schema or predicate configuration |
+| `gate` (v3) | `evaluationId` naming a dominating Evaluate node in this run |
 | `repeat` | `maxIterations` (1–5), `body` tuple of Inference then Condition |
 | `wait` | `message`; manual checkpoint only |
 | `review` | `proposal`; stored actual content for human decision |

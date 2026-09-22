@@ -5,7 +5,7 @@ export type EvaluationJson=null|boolean|number|string|EvaluationJson[]|{[key:str
 export type EvaluationPredicate={op:'equals'|'not-equals'|'contains'|'less-than'|'greater-than'|'truthy';expected?:EvaluationJson};
 export type Evaluator={kind:'json-schema-2020';schema:EvaluationJson;version:string}|{kind:'predicate';predicate:EvaluationPredicate;version:string};
 export type EvaluationError={code:string;instancePath:string;schemaPath?:string;keyword?:string;message:string;params?:EvaluationJson};
-export type EvaluationResult={kind:'loops-evaluation';passed:boolean;errors:EvaluationError[];evaluatorVersion:string;evaluatorDigest:string;inputDigest:string;evidenceDigest:string};
+export type EvaluationResult={kind:'loops-evaluation';passed:boolean;errors:EvaluationError[];evaluatorVersion:string;evaluatorDigest:string;inputDigest:string;evidenceDigest:string;evaluatorNodeId?:string};
 export type EvaluationLimits={maxInputBytes:number;maxSchemaBytes:number;maxResultBytes:number;maxErrors:number;timeoutMs:number};
 export const defaultEvaluationLimits:EvaluationLimits={maxInputBytes:131072,maxSchemaBytes:131072,maxResultBytes:131072,maxErrors:100,timeoutMs:1000};
 // Evaluation inputs are at most 128 KiB by default. These caps leave the
@@ -38,6 +38,32 @@ export function canonicalJson(value:EvaluationJson):string{
 
 export function evaluationDigest(value:EvaluationJson):string{return createHash('sha256').update(canonicalJson(value)).digest('hex');}
 export function evaluatorConfiguration(evaluator:Evaluator):EvaluationJson{return evaluator.kind==='json-schema-2020'?{kind:evaluator.kind,version:evaluator.version,schema:evaluator.schema}:{kind:evaluator.kind,version:evaluator.version,predicate:evaluator.predicate};}
+export function normalizeEvaluator(value:unknown,limits:Pick<EvaluationLimits,'maxSchemaBytes'>=defaultEvaluationLimits):Evaluator{
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new EvaluationFailure({code:'LOOPS_EVALUATION_CONFIG_INVALID',instancePath:'',message:'Evaluator configuration must be an object.'});
+  const raw=value as Record<string,unknown>,version=raw.version;
+  if(typeof version!=='string'||!version.trim())throw new EvaluationFailure({code:'LOOPS_EVALUATION_CONFIG_INVALID',instancePath:'',message:'Evaluator version is required.'});
+  let evaluator:Evaluator;
+  if(raw.kind==='json-schema-2020'&&Object.hasOwn(raw,'schema'))evaluator={kind:'json-schema-2020',version,schema:raw.schema as EvaluationJson};
+  else if(raw.kind==='predicate'&&raw.predicate&&typeof raw.predicate==='object'&&!Array.isArray(raw.predicate)){
+    const predicate=raw.predicate as Record<string,unknown>,op=predicate.op;
+    if(!['equals','not-equals','contains','less-than','greater-than','truthy'].includes(String(op))||op!=='truthy'&&!Object.hasOwn(predicate,'expected'))throw new EvaluationFailure({code:'LOOPS_EVALUATION_CONFIG_INVALID',instancePath:'',message:'Predicate evaluator needs a supported operation and expected value.'});
+    evaluator={kind:'predicate',version,predicate:{op:op as EvaluationPredicate['op'],...Object.hasOwn(predicate,'expected')?{expected:predicate.expected as EvaluationJson}:{}}};
+  }else throw new EvaluationFailure({code:'LOOPS_EVALUATION_CONFIG_INVALID',instancePath:'',message:'Evaluator kind must be json-schema-2020 or predicate.'});
+  if(Buffer.byteLength(canonicalJson(evaluatorConfiguration(evaluator)))>limits.maxSchemaBytes)throw new EvaluationFailure({code:'LOOPS_EVALUATION_RESOURCE_LIMIT',instancePath:'',message:`Evaluation configuration exceeds ${limits.maxSchemaBytes} bytes.`});
+  return structuredClone(evaluator);
+}
+export function commitEvaluation(result:EvaluationResult,evaluatorNodeId:string):EvaluationResult{
+  if(!/^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$/.test(evaluatorNodeId))throw new EvaluationFailure({code:'LOOPS_EVALUATION_CONFIG_INVALID',instancePath:'',message:'Evaluation node identity is invalid.'});
+  const committed={...result,evaluatorNodeId};
+  return {...committed,evidenceDigest:evaluationDigest({evaluatorDigest:committed.evaluatorDigest,inputDigest:committed.inputDigest,passed:committed.passed,errors:committed.errors as EvaluationJson,evaluatorNodeId})};
+}
+export function isCommittedEvaluation(value:unknown,evaluatorNodeId:string):value is EvaluationResult&{evaluatorNodeId:string}{
+  if(!value||typeof value!=='object'||Array.isArray(value)||Object.getPrototypeOf(value)!==Object.prototype)return false;
+  const evidence=value as Record<string,unknown>;
+  if(evidence.kind!=='loops-evaluation'||evidence.evaluatorNodeId!==evaluatorNodeId||typeof evidence.passed!=='boolean'||!Array.isArray(evidence.errors)||typeof evidence.evaluatorVersion!=='string'||!/^[a-f0-9]{64}$/.test(String(evidence.evaluatorDigest))||!/^[a-f0-9]{64}$/.test(String(evidence.inputDigest))||!/^[a-f0-9]{64}$/.test(String(evidence.evidenceDigest)))return false;
+  try{return evidence.evidenceDigest===evaluationDigest({evaluatorDigest:evidence.evaluatorDigest as string,inputDigest:evidence.inputDigest as string,passed:evidence.passed,errors:evidence.errors as EvaluationJson,evaluatorNodeId});}
+  catch{return false;}
+}
 
 function checkedRequest(input:EvaluationJson,evaluator:Evaluator,limits:EvaluationLimits):WorkerRequest{
   if(Object.values(limits).some(value=>!Number.isInteger(value)||value<1))throw new EvaluationFailure({code:'LOOPS_EVALUATION_LIMIT_INVALID',instancePath:'',message:'Evaluation limits must be positive integers.'});
@@ -49,7 +75,7 @@ function checkedRequest(input:EvaluationJson,evaluator:Evaluator,limits:Evaluati
 
 export async function evaluate(input:EvaluationJson,evaluator:Evaluator,options:{limits?:Partial<EvaluationLimits>;signal?:AbortSignal;workerUrl?:URL}={}):Promise<EvaluationResult>{
   const limits={...defaultEvaluationLimits,...options.limits};
-  const request=checkedRequest(input,evaluator,limits);
+  const request=checkedRequest(input,normalizeEvaluator(evaluator,limits),limits);
   if(options.signal?.aborted)throw new EvaluationFailure({code:'LOOPS_EVALUATION_CANCELLED',instancePath:'',message:'Evaluation was cancelled.'});
   const worker=new Worker(options.workerUrl??new URL('./evaluation-worker.js',import.meta.url),{resourceLimits:evaluationWorkerResourceLimits});
   return await new Promise<EvaluationResult>((resolve,reject)=>{
