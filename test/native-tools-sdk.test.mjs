@@ -1,10 +1,19 @@
 import {describe,expect,it} from 'vitest';
-import {sanitizeNativeToolsReceipt} from '../scripts/verify-native-tools.mjs';
+import {observePostDeadlineGatewayReadiness,POST_DEADLINE_READINESS_DIAGNOSTIC_MS,sanitizeNativeToolsReceipt} from '../scripts/verify-native-tools.mjs';
 import {projectGoalResult,selectNativeTool} from './helpers/native-tools-plugin.mjs';
+import {GATEWAY_STARTUP_BUDGET_MS} from '../scripts/gateway-readiness-evidence.mjs';
 
 const noUndefined=value=>{expect(value).not.toBeUndefined();if(Array.isArray(value))for(const item of value)noUndefined(item);else if(value&&typeof value==='object')for(const item of Object.values(value))noUndefined(item);};
 
 describe('native tools SDK qualification harness',()=>{
+  it('keeps a bounded post-deadline diagnostic allowance without relaxing startup',async()=>{
+    let clock=GATEWAY_STARTUP_BUDGET_MS+1,probes=0;
+    const readiness=await observePostDeadlineGatewayReadiness({child:{exitCode:null,signalCode:null},startedAt:0,restartOrdinal:0,now:()=>clock,probe:async()=>++probes===2,pause:async milliseconds=>{clock+=milliseconds;}});
+    expect(POST_DEADLINE_READINESS_DIAGNOSTIC_MS).toBe(45_000);
+    expect(GATEWAY_STARTUP_BUDGET_MS).toBe(60_000);
+    expect(readiness).toMatchObject({postDeadlineAttempts:2,listenerAfterDeadline:true,listenerElapsedMs:60_101,finalProcessState:'alive'});
+  });
+
   it('keeps the published receipt free of private profile, session, and token data',()=>{
     const receipt=sanitizeNativeToolsReceipt({source:'848f880',verifierSha256:'verifier',fixturePluginSha256:'fixture',node:'v24.16.0',openclaw:'2026.9.5',port:21971,portSelection:'21971',profile:'/private/profile',token:'private-token',observations:[{label:'current-session-factory-inventory',allowed:true,tools:['read','write'],workspaceAccess:'rw',sandboxed:false,sessionKey:'private-session',observed:{message:'private native failure'}}],cleanup:{clientsStopped:true,clientCount:2,gateway:{exited:true,signal:'SIGTERM'}}});
     expect(receipt).toEqual(expect.objectContaining({noModelCalls:true,observations:[{label:'current-session-factory-inventory',allowed:true,tools:['read','write'],workspaceAccess:'rw',sandboxed:false}]}));
