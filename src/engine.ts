@@ -334,7 +334,7 @@ export class Engine{
     const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,requestFingerprintVersion:2,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
     if(!run.testMode)run.grantGeneration=this.state.loops[run.definition.id].grantGeneration??legacyGrantGeneration;
     delete run.error;delete run.errorDetail;delete run.uncertainty;delete run.pending;delete run.result;delete run.cleanupPending;
-    if(mode==='restart'){run.outputs={};delete run.review;run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;}else delete run.outputs[run.cursor];
+    if(mode==='restart'){run.outputs={};delete run.review;run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;if(run.definition.schemaVersion===3)run.context=initialContext(run.input);}else delete run.outputs[run.cursor];
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
   private admission(key:string){
@@ -349,11 +349,10 @@ export class Engine{
     }
     return agentModels;
   }
-  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;r.cursor=this.next(r,r.cursor,'next');this.persist(r);return this.dispatch(actor,r);}
+  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);this.releaseParked(r,'next',{});return this.dispatch(actor,r);}
   async review(actor:Actor,id:string,decision:'approve'|'reject'){
     this.ensureHuman(actor);const r=this.own(actor,id);if(r.state!=='review')throw requestError('Run is not awaiting human review.');this.allowedRun(actor,r);
-    r.review={decision,at:now(),requester:actor.requester??'authenticated-operator'};const checkpoint=r.trace.at(-1);if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}r.state='running';delete r.pending;
-    r.outputs[r.cursor]={decision};r.cursor=this.next(r,r.cursor,decision);this.persist(r);return this.dispatch(actor,r);
+    this.releaseParked(r,decision,{decision},{decision,at:now(),requester:actor.requester??'authenticated-operator'});return this.dispatch(actor,r);
   }
   cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return this.status(actor,id);r.state='cancelled';this.dropQueued(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist(r);return this.status(actor,id);}
   async close(){
@@ -367,6 +366,19 @@ export class Engine{
     }
   }
   private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw executionError(`Missing ${port} edge from ${id}.`,'LOOPS_INVALID_GRAPH');return next;}
+  private releaseParked(r:Run,port:string,output:Json,review?:NonNullable<Run['review']>){
+    const node=r.definition.nodes.find(node=>node.id===r.cursor);if(!node)throw executionError('Execution cursor is invalid.','LOOPS_INVALID_GRAPH');
+    let context:ContextState|undefined;
+    if(r.context){
+      const projected=projectContext(r.context,node.context),bindings:BindingContext={input:r.input,nodes:r.outputs,...projected?{context:projected}:{}};
+      context=applyContextPatch(r.context,node.id,node.context,output,value=>bind(value,bindings),hash);
+      assertContextState(context);const limit=this.budgets.inputBytes+r.definition.limits.maxOutputBytes;
+      if(contextBytes(context,{...r.outputs,[node.id]:output})>limit)throw executionError(`Combined context and output evidence exceeds the ${limit}-byte budget.`,'LOOPS_OUTPUT_LIMIT');
+    }
+    const cursor=this.next(r,node.id,port),checkpoint=r.trace.at(-1);
+    if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}
+    r.state='running';delete r.pending;r.outputs[node.id]=output;if(context)r.context=context;if(review)r.review=review;r.cursor=cursor;this.persist(r);
+  }
   private checkpoint(r:Run){r.updatedAt=now();this.persist(r);}
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}
   private dropQueued(id:string){const actor=this.queued.get(id);this.queued.delete(id);if(actor)this.options.releaseActor?.(actor);}
@@ -425,7 +437,13 @@ export class Engine{
       const dispatched=nodeContract(n.kind).execute(n,execution);
       const outcome=dispatched instanceof Promise?await dispatched:dispatched;
       const result=outcome.output,port=outcome.port??'next';
-      if(outcome.park){this.finish(r,evidence,outcome.park.value);r.state=outcome.park.state;r.pending=evidence.output;evidence.state=outcome.park.state;}
+      if(outcome.park){
+        this.finish(r,evidence,outcome.park.value);r.state=outcome.park.state;r.pending=evidence.output;evidence.state=outcome.park.state;
+        // v1/v2 runs historically expose the parked node's empty output. v3
+        // context patches instead need the final Wait/review outcome on release.
+        if(r.definition.schemaVersion!==3)r.outputs[n.id]=result;
+        signal.throwIfAborted();this.allowedRun(actor,r);this.checkpoint(r);continue;
+      }
       if(outcome.returned){r.result=result;r.state='completed';}
       signal.throwIfAborted();if(terminal(r)&&r.state!=='completed')break;
       this.allowedRun(actor,r);

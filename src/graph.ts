@@ -100,38 +100,48 @@ export function validateGraph(d:Definition):Issue[] {
     const pred=predecessors(n.id);const common=new Set(pred.length?[...(dom.get(pred[0])??[])].filter(x=>pred.every(p=>dom.get(p)?.has(x))):[]);
     common.add(n.id);dom.set(n.id,common);
   }
-  const checkText=(s:NodeValue,n:GraphNode,bodyPrior:string[]=[])=>{
+  const checkText=(s:NodeValue,n:GraphNode,{bodyPrior=[],dominator=n,repeatScope=n.kind==='repeat',reportNode=n,contextReportNode=n}:{bodyPrior?:string[];dominator?:GraphNode;repeatScope?:boolean;reportNode?:GraphNode;contextReportNode?:GraphNode}={})=>{
+    const report=(message:string)=>error(message,reportNode.id),reportContext=(message:string)=>error(message,contextReportNode.id);
     if(typeof s!=='string'){
-      if(d.schemaVersion===1)error('Literal JSON values require a version 2 definition.',n.id);
-      else try{literalValue(s.literalJson);}catch(cause){error(cause instanceof Error?cause.message:'Invalid literal JSON.',n.id);}
+      if(d.schemaVersion===1)report('Literal JSON values require a version 2 definition.');
+      else try{literalValue(s.literalJson);}catch(cause){report(cause instanceof Error?cause.message:'Invalid literal JSON.');}
       return;
     }
     for(const match of s.matchAll(/\{\{(.*?)\}\}/g)){
       const path=match[1].trim();
       const contextPath=d.schemaVersion===3?contextPathForBinding(path):undefined;
       const pattern=d.schemaVersion===1?/^(input\.[a-z][\w-]*|nodes\.[a-z][\w-]*\.(text|value|succeeded|iterations|exhausted|provider|model|agentId)|repeat\.index)$/:/^(input\.[a-z][\w-]*(?:\.[\w-]+)*|nodes\.[a-z][\w-]*\.[a-z][\w-]*(?:\.[\w-]+)*|repeat\.index)$/;
-      if(!contextPath&&(!pattern.test(path)||path.split('.').some(p=>['__proto__','constructor','prototype'].includes(p)))){error(`Unsupported binding: ${path}`,n.id);continue;}
+      if(!contextPath&&(!pattern.test(path)||path.split('.').some(p=>['__proto__','constructor','prototype'].includes(p)))){report(`Unsupported binding: ${path}`);continue;}
       if(contextPath){
         const context=(n as GraphNode & {context?:ContextNodeConfig}).context;
-        if(!context||context.projection.mode!=='consume'||!context.projection.paths.some((candidate:string)=>contextPath===candidate||contextPath.startsWith(`${candidate}/`))){error(`Context binding is not projected: ${path}`,n.id);}
+        if(!context||context.projection.mode!=='consume'||!context.projection.paths.some((candidate:string)=>contextPath===candidate||contextPath.startsWith(`${candidate}/`))){reportContext(`Context binding is not projected: ${path}`);}
         continue;
       }
       const [root,id,field]=path.split('.');
-      if(root==='input'&&!d.inputSchema.some(f=>f.name===id))error(`Unknown input: ${id}`,n.id);
-      if(root==='repeat'&&n.kind!=='repeat')error('repeat.index is only available inside Repeat.',n.id);
-      if(root==='nodes'&&!bodyPrior.includes(id)&&(id===n.id||!dom.get(n.id)?.has(id)))error(`Binding ${id} is not guaranteed to have executed.`,n.id);
+      if(root==='input'&&!d.inputSchema.some(f=>f.name===id))report(`Unknown input: ${id}`);
+      if(root==='repeat'&&!repeatScope)report('repeat.index is only available inside Repeat.');
+      if(root==='nodes'&&!bodyPrior.includes(id)&&(id===n.id||!dom.get(dominator.id)?.has(id)))report(`Binding ${id} is not guaranteed to have executed.`);
       if(root==='nodes'){
         const producer=d.nodes.flatMap(node=>[node,...childNodes(node)]).find(node=>node.id===id);
         const fields=producer?outputFields(producer):[];
-        if(producer&&!fields.includes(field))error(`Node ${id} (${producer.kind}) does not produce ${field}.`,n.id);
+        if(producer&&!fields.includes(field))report(`Node ${id} (${producer.kind}) does not produce ${field}.`);
       }
     }
-    if(s.replace(/\{\{.*?\}\}/g,'').includes('{{'))error('Unclosed binding.',n.id);
+    if(s.replace(/\{\{.*?\}\}/g,'').includes('{{'))report('Unclosed binding.');
   };
   for(const node of d.nodes){
-    for(const binding of nodeContract(node.kind).bindings(node))checkText(binding.text,node,binding.prior);
+    if(node.kind!=='repeat')for(const binding of nodeContract(node.kind).bindings(node))checkText(binding.text,node,{bodyPrior:binding.prior});
     const literal=(node as GraphNode & {context?:ContextNodeConfig}).context&&contextPatchLiteral((node as GraphNode & {context?:ContextNodeConfig}).context!);
     if(literal!==undefined)checkText(literal,node);
+  }
+  // Repeat body nodes execute in order but use their own context projections.
+  // Validate their full bindings against the parent graph dominance relation.
+  for(const parent of d.nodes)if(parent.kind==='repeat'){
+    const [inference,condition]=parent.body,inferenceNode=inference as GraphNode,conditionNode=condition as GraphNode;
+    for(const binding of nodeContract(inference.kind).bindings(inference))checkText(binding.text,inferenceNode,{dominator:parent,repeatScope:true,reportNode:parent});
+    const inferenceLiteral=inferenceNode.context&&contextPatchLiteral(inferenceNode.context);if(inferenceLiteral!==undefined)checkText(inferenceLiteral,inferenceNode,{dominator:parent,repeatScope:true});
+    for(const binding of nodeContract(condition.kind).bindings(condition))checkText(binding.text,conditionNode,{bodyPrior:[inference.id],dominator:parent,repeatScope:true,reportNode:parent});
+    const conditionLiteral=conditionNode.context&&contextPatchLiteral(conditionNode.context);if(conditionLiteral!==undefined)checkText(conditionLiteral,conditionNode,{bodyPrior:[inference.id],dominator:parent,repeatScope:true});
   }
   return issues;
 }
