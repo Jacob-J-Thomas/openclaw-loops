@@ -8,6 +8,7 @@
   },
   "configSchema": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
       "maxConcurrentRuns": {
         "type": "integer",
@@ -52,11 +53,10 @@
         },
         "additionalProperties": false
       }
-    },
-    "additionalProperties": false
+    }
   },
   "controlUi": {
-    "entry": "dist/control-ui/37d673dfeb70d8a25ddea6c91518ece2d25d1241ac5c50e813a1cee3af629359/index.js"
+    "entry": "dist/control-ui/0937869c44083b51eb2836c35a7bb31daead4107b69978c4a2329b5ee4c9a5f6/index.js"
   },
   "contracts": {
     "tools": [
@@ -78,10 +78,10 @@
       "loops_inspect",
       "loops_library",
       "loops_list",
+      "loops_read",
       "loops_maintenance",
       "loops_output",
       "loops_publish",
-      "loops_read",
       "loops_recover",
       "loops_restore",
       "loops_resume",
