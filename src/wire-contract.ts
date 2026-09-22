@@ -22,6 +22,7 @@ export const DocumentPageSchema=Type.Object({documentId:digest,sha256:digest,tex
 export const uploadFields: Partial<Record<keyof typeof contract.operations, readonly string[]>> = {
   create: ['definition'], edit: ['changes'], save: ['definition'], draft: ['definition'],
   validate: ['definition'], test: ['definition', 'input'], run: ['input', 'text'],
+  package_preview: ['package', 'environment'], package_import: ['package', 'environment'],
 };
 type WireOperations = {[K in keyof typeof contract.operations]: Omit<typeof contract.operations[K], 'input' | 'output'> & {input: TSchema; output: TSchema}};
 const operations = Object.fromEntries(Object.entries(contract.operations).map(([name, operation]) => {
