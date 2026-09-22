@@ -31,7 +31,8 @@
     "docs/TRANSPORT.md",
     "docs/HISTORY.md",
     "docs/RECOVERY.md",
-    "docs/INTERFACES.md"
+    "docs/INTERFACES.md",
+    "docs/PORTABILITY.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

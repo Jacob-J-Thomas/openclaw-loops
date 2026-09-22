@@ -15,6 +15,7 @@ import {ValueEditor} from './value-editor.js';
 import {RunLauncher,publishedDefinition} from './run-launcher.js';
 import {RunInspection} from './run-inspection.js';
 import {RunRefreshGate} from './run-refresh.js';
+import {PortablePackageControls} from './portability-ui.js';
 import {clearRunView,readRunView,resolveRunView,saveRunView,type RunViewState} from './run-view-state.js';
 import type {InferenceCapabilities,InferenceSettings} from './inference-settings.js';
 import {autoLayout,bindingChoices,copyDefinition,duplicateNode,insertBinding,revisionChanges,mergeDefinitions} from './editor-operations.js';
@@ -231,6 +232,11 @@ export function Editor({host}:{host:ControlUiHost}){
         {issues.length>0&&<div className="lp-issues"><h4>Validation</h4>{issues.map((i,index)=><button key={index} onClick={()=>i.nodeId&&setSelected(i.nodeId)}>{i.nodeId&&<strong>{i.nodeId} · </strong>}{i.message}</button>)}</div>}
       </aside>
     </div>
+    {definition&&definition.revision>0&&<PortablePackageControls controls={{
+      exportPackage:bindings=>feature.invoke('package_export',{id:definition.id,bindings},options),
+      previewImport:(packageValue,environment)=>feature.invoke('package_preview',{package:packageValue,environment:environment as Record<string,unknown>},options),
+      importPackage:async request=>{const result=await feature.invoke('package_import',{package:request.package,environment:request.environment as Record<string,unknown>,digest:request.digest,libraryDigest:request.libraryDigest,enabled:request.enabled},options);await refresh();return result;},
+    }}/>}
     <section className="lp-runs-panel">{definition?<RunLauncher key={JSON.stringify([draftScope,definition.id])} draft={definition} published={published} enabled={enabledRevision!==null} dirty={dirty} invalid={issues.length>0} busy={busy} authorized={Boolean(sessionKey)} onRun={start} onError={error=>setError(displayFailure(error))}/>:<div className="lp-run-input"><h2>Run this loop</h2><p>Choose a loop to run or test.</p></div>}
       <div className="lp-run-inspection"><div className="lp-section-heading"><h2>Run inspection</h2><div><select ref={runSelectRef} aria-label="Select run" value={activeId} onChange={e=>selectRun(e.target.value)}><option value="">Choose a run…</option>{activeId&&!runs.some(item=>item.id===activeId)&&<option value={activeId}>Selected run · {activeId.slice(0,8)}</option>}{runs.map(r=><option key={r.id} value={r.id}>{r.slug} · r{r.revision} · {r.state} · {r.id.slice(0,8)}</option>)}</select><button onClick={()=>void perform(refresh)}>Refresh</button></div></div>
         <div className="lp-history-pages"><button disabled={historyCursor===0} onClick={()=>setHistoryCursor(Math.max(0,historyCursor-100))}>Newer runs</button><span aria-live="polite">{historyTotal?`${historyCursor+1}–${Math.min(historyCursor+100,historyTotal)} of ${historyTotal}`:'No runs'}</span><button disabled={historyCursor+100>=historyTotal} onClick={()=>setHistoryCursor(historyCursor+100)}>Older runs</button></div>

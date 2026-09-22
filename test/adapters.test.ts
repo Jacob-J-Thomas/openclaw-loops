@@ -1194,4 +1194,13 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   it('returns truthful waits and refuses generic review approval',async()=>{const s=await setup();await s.action('enable',{id:'read-pause-continue',revision:1,enabled:true,grants:['llm','model-info']});const result=await s.tools.find(t=>t.name==='loops_run')!.execute('pause',{slug:'read-pause-continue',input:{text:'A'}});expect(result.details).toMatchObject({state:'waiting',definition:{revision:1}});expect(s.complete).not.toHaveBeenCalled();});
   it('returns a classified plugin-disabled failure after a tool factory was created',async()=>{const s=await setup();s.config.plugins.entries['loops-poc'].enabled=false;await expect(s.tools.find(t=>t.name==='loops_list')!.execute('disabled',{})).resolves.toMatchObject({details:{kind:'loops-error',operation:'list',error:{code:'LOOPS_DISABLED'}}});});
   it('keeps command input bounded and distinguishes explicit retry IDs',async()=>{const s=await setup();expect(parseCommand({...s.commandContext,args:'run summarize-text hello --request-id once'})).toMatchObject({input:{text:'hello'},requestId:'command:once'});expect(()=>parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)},16000)).toThrow(/large/);expect(parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)})).toHaveProperty('input.text');});
+  it('exports, previews and imports an exact portable package through registered tools and commands',async()=>{
+    const s=await setup();const exported=await toolJson(s,'package_export',{id:'summarize-text'},'package-export') as {digest:string};
+    expect(exported).toMatchObject({kind:'loops-template-package',formatVersion:1,digest:expect.stringMatching(/^[a-f0-9]{64}$/)});
+    const preview=await commandJson(s,'package_preview',{package:exported,environment:{}}) as {digest:string;libraryDigest:string;templates:Array<{definition:{id:string;slug:string;revision:number}}>};
+    expect(preview).toMatchObject({digest:exported.digest,libraryDigest:expect.stringMatching(/^[a-f0-9]{64}$/),templates:[{definition:{slug:'summarize-text-imported',revision:0}}]});
+    const imported=await toolJson(s,'package_import',{package:exported,environment:{},digest:preview.digest,libraryDigest:preview.libraryDigest,enabled:false},'package-import');
+    expect(imported).toMatchObject({imported:[{id:preview.templates[0]!.definition.id,slug:'summarize-text-imported',revision:1,enabled:false}]});
+    expect(await s.action('load',{id:preview.templates[0]!.definition.id})).toMatchObject({result:{enabledRevision:null,definition:{slug:'summarize-text-imported',revision:1}}});
+  });
 });

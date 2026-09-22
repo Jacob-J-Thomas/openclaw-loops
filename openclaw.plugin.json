@@ -8,7 +8,6 @@
   },
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
     "properties": {
       "maxConcurrentRuns": {
         "type": "integer",
@@ -53,7 +52,8 @@
         },
         "additionalProperties": false
       }
-    }
+    },
+    "additionalProperties": false
   },
   "controlUi": {
     "entry": "dist/control-ui/3f1d1adb254c4ad18df8f5f114b2e8e58f663e7c5c3c1abd0a82e734d8e3bfef/index.js"
@@ -78,10 +78,13 @@
       "loops_inspect",
       "loops_library",
       "loops_list",
-      "loops_read",
       "loops_maintenance",
       "loops_output",
+      "loops_package_export",
+      "loops_package_import",
+      "loops_package_preview",
       "loops_publish",
+      "loops_read",
       "loops_recover",
       "loops_restore",
       "loops_resume",
