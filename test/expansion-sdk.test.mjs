@@ -1,6 +1,7 @@
 import {describe,it,expect,vi} from 'vitest';
-import {sanitizeExpansionSdkReceipt} from '../scripts/verify-expansion-sdk.mjs';
+import {isOwnerBoundToSession,observePostDeadlineGatewayReadiness,POST_DEADLINE_READINESS_DIAGNOSTIC_MS,sanitizeExpansionSdkReceipt} from '../scripts/verify-expansion-sdk.mjs';
 import plugin,{projectTask} from './helpers/expansion-sdk-plugin.mjs';
+import {GATEWAY_STARTUP_BUDGET_MS} from '../scripts/gateway-readiness-evidence.mjs';
 
 const noUndefined=value=>{
   expect(value).not.toBeUndefined();
@@ -17,6 +18,20 @@ function install(nativeTask=task()){
 }
 
 describe('expansion SDK qualification receipt',()=>{
+  it('requires owner binding to the authenticated session',()=>{
+    expect(isOwnerBoundToSession('agent:main:session-1','agent:main:session-1')).toBe(true);
+    expect(isOwnerBoundToSession('agent:main:other-session','agent:main:session-1')).toBe(false);
+    expect(isOwnerBoundToSession(undefined,'agent:main:session-1')).toBe(false);
+  });
+
+  it('keeps a bounded post-deadline diagnostic allowance without relaxing startup',async()=>{
+    let clock=GATEWAY_STARTUP_BUDGET_MS+1,probes=0;
+    const readiness=await observePostDeadlineGatewayReadiness({child:{exitCode:null,signalCode:null},startedAt:0,restartOrdinal:0,now:()=>clock,probe:async()=>++probes===2,pause:async milliseconds=>{clock+=milliseconds;}});
+    expect(POST_DEADLINE_READINESS_DIAGNOSTIC_MS).toBe(45_000);
+    expect(GATEWAY_STARTUP_BUDGET_MS).toBe(60_000);
+    expect(readiness).toMatchObject({postDeadlineAttempts:2,listenerAfterDeadline:true,listenerElapsedMs:60_101,finalProcessState:'alive'});
+  });
+
   it('keeps the tracked receipt free of profile paths, session keys, and tokens',()=>{
     const receipt=sanitizeExpansionSdkReceipt({source:'56c9d035',verifierSha256:'verifier',fixturePluginSha256:'plugin',node:'v24.16.0',openclaw:'2026.9.5',port:21961,portSelection:'21961',token:'private',profile:'/private/profile',observations:[{label:'managed-flow-create',allowed:true,flow:{syncMode:'managed',ownerBound:true,revision:1},sessionKey:'private-session'}]});
     expect(receipt).toEqual(expect.objectContaining({noModelCalls:true,port:21961,observations:[{label:'managed-flow-create',allowed:true,flow:{syncMode:'managed',ownerBound:true,revision:1}}]}));

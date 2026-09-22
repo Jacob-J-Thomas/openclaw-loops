@@ -9,6 +9,8 @@ import {GatewayClient} from 'openclaw/plugin-sdk/gateway-runtime';
 import {GATEWAY_STARTUP_BUDGET_MS,observeGatewayReadiness} from './gateway-readiness-evidence.mjs';
 
 const pluginId='expansion-sdk-proof',actionId='probe',initialPort=21961;
+// Receipt-only allowance after the fixed startup fail gate; a late listener still fails startup.
+export const POST_DEADLINE_READINESS_DIAGNOSTIC_MS=45_000;
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const errorText=error=>error instanceof Error?error.message:String(error);
 const errorCode=error=>error&&typeof error==='object'&&'code' in error&&typeof error.code==='string'?error.code:undefined;
@@ -27,6 +29,9 @@ export function sanitizeExpansionSdkReceipt(receipt){
   };
 }
 
+export const isOwnerBoundToSession=(ownerKey,sessionKey)=>typeof ownerKey==='string'&&typeof sessionKey==='string'&&ownerKey.includes(sessionKey);
+export const observePostDeadlineGatewayReadiness=options=>observeGatewayReadiness({...options,remainingMs:()=>POST_DEADLINE_READINESS_DIAGNOSTIC_MS});
+
 async function main(){
   const started=Date.now(),runId=randomUUID(),profile=resolve('.dev-profile',`expansion-sdk-${runId}`),raw=resolve(profile,'raw'),evidence=resolve('evidence','post-1.0','issue-229'),configPath=resolve(profile,'openclaw.json'),stateDir=resolve(profile,'state'),workspace=resolve(profile,'workspace'),pluginSource=resolve('test/helpers/expansion-sdk-plugin.mjs'),pluginRoot=resolve(profile,'plugin'),cli=resolve('node_modules/openclaw/openclaw.mjs');
   mkdirSync(raw,{recursive:true,mode:0o700});mkdirSync(workspace,{recursive:true,mode:0o700});mkdirSync(pluginRoot,{recursive:true,mode:0o700});mkdirSync(evidence,{recursive:true,mode:0o700});
@@ -41,7 +46,7 @@ async function main(){
     const startedAt=Date.now();gateway=spawn(process.execPath,[cli,'gateway','run','--port',String(port),'--compact'],{env,stdio:['ignore','ignore','pipe']});gateway.stderr.pipe(createWriteStream(resolve(raw,`gateway-${ordinal}.log`),{flags:'a',mode:0o600}));
     const deadline=Date.now()+GATEWAY_STARTUP_BUDGET_MS;
     while(Date.now()<deadline){if(gateway.exitCode!==null||gateway.signalCode!==null)throw Error(`Gateway exited before listening (${gateway.exitCode??gateway.signalCode}).`);if(await listening(port)){receipt.observations.push({label:`gateway-start-${ordinal}`,allowed:true});return;}await pause(100);}
-    const readiness=await observeGatewayReadiness({child:gateway,probe:()=>listening(port),startedAt,restartOrdinal:ordinal,remainingMs:()=>Math.max(0,Date.now()-deadline),pause});throw Error(`Gateway did not listen: ${JSON.stringify(readiness)}`);
+    const readiness=await observePostDeadlineGatewayReadiness({child:gateway,probe:()=>listening(port),startedAt,restartOrdinal:ordinal,pause});throw Error(`Gateway did not listen: ${JSON.stringify(readiness)}`);
   };
   const stop=async()=>{
     const child=gateway;if(!child)return {exited:true,signal:null};
@@ -64,7 +69,8 @@ async function main(){
     const session=await request(privileged,'sessions.create',{agentId:'main',label:`SDK05 proof ${runId.slice(0,8)}`}),foreign=await request(privileged,'sessions.create',{agentId:'main',label:`SDK05 foreign ${runId.slice(0,8)}`});assert(session?.key&&foreign?.key,'Gateway did not create disposable session keys.');
     const service=await action(privileged,session.key,{operation:'service'});assert.equal(service.serviceStarted,true);receipt.observations.push({label:'registered-service-action-ready',allowed:true,serviceStarted:true});
     const created=await action(privileged,session.key,{operation:'create'});assert(created.flow?.id&&created.flow.ownerKey&&created.flow.syncMode==='managed','Native managed-flow create returned an incomplete record.');
-    receipt.observations.push({label:'managed-flow-create',allowed:true,flow:{syncMode:created.flow.syncMode,ownerBound:created.flow.ownerKey.includes(session.key),revision:created.flow.revision}});
+    const ownerBound=isOwnerBoundToSession(created.flow.ownerKey,session.key);assert.equal(ownerBound,true,'Native managed flow ownerKey was not bound to the authenticated session.');
+    receipt.observations.push({label:'managed-flow-create',allowed:true,flow:{syncMode:created.flow.syncMode,ownerBound,revision:created.flow.revision}});
     const exercised=await action(privileged,session.key,{operation:'exercise',flowId:created.flow.id});persistRaw('exercise-response.json',exercised);receipt.observations.push({label:'managed-flow-linked-child-cancel-refusal',allowed:true,linked:{runtime:exercised.linked?.runtime,flowBound:exercised.linked?.flowId===created.flow.id,blockedByLinkedTask:exercised.waiting?.flow?.blockedTaskId===exercised.linked?.id},stale:{code:exercised.stale?.code},cancelled:{found:exercised.cancelled?.found,cancelled:exercised.cancelled?.cancelled,reason:exercised.cancelled?.reason},activeTask:{sameTask:exercised.activeTask?.id===exercised.linked?.id,status:exercised.activeTask?.status,runtime:exercised.activeTask?.runtime},readback:{sameFlow:exercised.readback?.id===created.flow.id,status:exercised.readback?.status,terminal:false}});assert.equal(exercised.linked.flowId,created.flow.id);assert.equal(exercised.waiting.flow.blockedTaskId,exercised.linked.id);assert.equal(exercised.stale.applied,false);assert.equal(exercised.stale.code,'revision_conflict');assert.equal(exercised.requested.applied,true);assert.equal(exercised.cancelled.found,true);assert.equal(exercised.cancelled.cancelled,false);assert.equal(exercised.cancelled.reason,'One or more child tasks are still active.');assert.equal(exercised.activeTask.id,exercised.linked.id);assert.equal(exercised.activeTask.status,'queued');assert.equal(exercised.readback.id,created.flow.id);assert(['queued','running','waiting','blocked'].includes(exercised.readback.status),`Queued-child flow unexpectedly became terminal: ${exercised.readback.status}`);assert.equal(exercised.readback.endedAt,null);
     const empty=await action(privileged,session.key,{operation:'cancel-empty'});persistRaw('empty-cancel-response.json',empty);receipt.observations.push({label:'managed-flow-empty-cancel',allowed:true,cancelled:{found:empty.cancelled?.found,cancelled:empty.cancelled?.cancelled,reason:empty.cancelled?.reason},readback:{sameFlow:empty.readback?.id===empty.created?.id,status:empty.readback?.status,terminal:empty.readback?.endedAt!==null}});assert.equal(empty.requested.applied,true);assert.equal(empty.cancelled.found,true);assert.equal(empty.cancelled.cancelled,true);assert.equal(empty.readback.id,empty.created.id);assert.equal(empty.readback.status,'cancelled');assert.equal(typeof empty.readback.endedAt,'number');
     const foreignRead=await action(privileged,foreign.key,{operation:'read',flowId:created.flow.id});assert.equal(foreignRead.flow,null,'A foreign session read a current-session managed flow.');receipt.observations.push({label:'foreign-session-flow-read',allowed:false,hostDenied:true});
