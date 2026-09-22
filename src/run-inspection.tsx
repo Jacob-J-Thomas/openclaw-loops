@@ -4,6 +4,8 @@ import type {Run} from './engine.js';
 import {ports,type GraphNode,type Json} from './graph.js';
 import {nodeContract} from './node-contracts.js';
 import {graphEdgeLabel,graphNodeLabel,selectionChange} from './graph-accessibility.js';
+import type {ContextJournalEntry,ContextState} from './context.js';
+import {truncateCodePoints} from './unicode.js';
 
 type InspectionNode=Node<{node:GraphNode;output:OutputState},'inspection'>;
 type OutputState={label:string;value?:Json|string;checkpoint?:{label:string;value:Json|string}};
@@ -14,6 +16,28 @@ export const readOnlyGraphAriaLabelConfig={
 };
 
 function display(value:unknown){return typeof value==='string'?value:JSON.stringify(value,null,2);}
+const contextPageSize=8_000,journalPageSize=50;
+export function contextPage(value:unknown,limit=contextPageSize){const text=display(value),visible=truncateCodePoints(text,limit);return {text,visible,incomplete:visible.length<text.length};}
+function PagedJson({value,label}:{value:unknown;label:string}){
+  const [limit,setLimit]=useState(contextPageSize),page=contextPage(value,limit);
+  return <><pre className="lp-context-value" aria-label={label}>{page.visible}</pre>{page.incomplete&&<button type="button" onClick={()=>setLimit(current=>current+contextPageSize)}>Show more context</button>}</>;
+}
+export function journalSource(source:ContextJournalEntry['source']){
+  if(source.kind==='output')return source.path===undefined?'This node’s full output':`This node’s output at ${source.path}`;
+  const text=display(source.value),visible=truncateCodePoints(text,512);
+  return `Typed literal ${visible}${visible.length<text.length?'…':''}`;
+}
+function ContextProvenance({context}:{context:ContextState|undefined}){
+  const [journalLimit,setJournalLimit]=useState(journalPageSize);
+  if(!context)return <details className="lp-context-provenance" open><summary>Shared context provenance</summary><p className="lp-hint">This run has no shared context. It was authored before version 3 context was enabled, or no context state was retained.</p></details>;
+  const entries=context.journal.slice(0,journalLimit);
+  return <details className="lp-context-provenance" open><summary>Shared context provenance</summary>
+    <p className="lp-hint">Context version {context.version}. Values are retained execution state; journal rows are ordered commit provenance.</p>
+    <h4>Current context value</h4><PagedJson value={context.value} label="Current shared context value"/>
+    <h4>Committed patch journal</h4>{entries.length===0?<p className="lp-muted">No node committed a context patch in this run.</p>:<ol className="lp-context-journal">{entries.map(entry=><li key={`${entry.version}-${entry.nodeId}`}><strong>v{entry.baseVersion} → v{entry.version} · {entry.nodeId}</strong><span>{entry.mode} <code>{entry.target}</code> from {journalSource(entry.source)}</span><span>Resolved value SHA-256 <code>{entry.valueSha256}</code> · {entry.valueBytes} bytes</span></li>)}</ol>}
+    {entries.length<context.journal.length&&<button type="button" onClick={()=>setJournalLimit(current=>current+journalPageSize)}>Show more journal entries</button>}
+  </details>;
+}
 export function inspectionOutput(run:Run,nodeId:string):OutputState{
   const evidence=[...run.trace].reverse().find(item=>item.nodeId===nodeId);
   const node=run.definition.nodes.find(item=>item.id===nodeId);
@@ -53,6 +77,7 @@ export function RunInspection({run,onSelectRun,onExport}:{run:Run;onSelectRun:(i
   return <section className="lp-executed-workflow" aria-label="Executed workflow">
     {run.parentRunId&&<div className="lp-run-parent"><span>Recovery run from <code>{run.parentRunId}</code></span><button onClick={()=>onSelectRun(run.parentRunId!)}>Inspect parent run</button></div>}
     <div className="lp-run-evidence"><span>Pinned execution evidence · {run.definition.name} · r{run.definition.revision}</span><button onClick={()=>onExport(run)}>Export run evidence</button></div>
+    <ContextProvenance context={run.context}/>
     <details open><summary>Executed workflow (read-only)</summary><p className="lp-hint">This graph is the definition saved with this run. It does not edit or replace the current authoring draft.</p>
       <label className="lp-field"><span>Select executed node</span><select aria-label="Select executed node" value={selectedId} onChange={event=>setSelectedId(event.target.value)}>{run.definition.nodes.map(node=><option key={node.id} value={node.id}>{node.label} · {nodeContract(node.kind).editor.title}</option>)}</select></label>
       <div className="lp-executed-flow"><ReactFlow id={`loops-executed-${run.id}`} aria-label="Executed workflow. Select a node with Enter to inspect its pinned evidence." ariaLabelConfig={readOnlyGraphAriaLabelConfig} nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView nodesDraggable={false} nodesConnectable={false} nodesFocusable edgesFocusable elementsSelectable deleteKeyCode={null} onNodeClick={(_,node)=>setSelectedId(node.id)} onNodesChange={changes=>{const selected=selectionChange(changes);if(selected.selectedId)setSelectedId(selected.selectedId);}} onEdgesChange={()=>{}} proOptions={{hideAttribution:true}}><Background id={`loops-executed-background-${run.id}`}/><Controls showInteractive={false}/><MiniMap pannable zoomable/></ReactFlow></div>
