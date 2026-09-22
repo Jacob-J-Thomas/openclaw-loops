@@ -580,9 +580,9 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await invoke('validate',{definition:created.record.definition})).toEqual({valid:true,issues:[]});
     const portable=await invoke('package_export',{id}) as {kind:string;formatVersion:number;digest:string};
     expect(portable).toMatchObject({kind:'loops-template-package',formatVersion:1,digest:expect.stringMatching(/^[a-f0-9]{64}$/)});
-    const portablePreview=await invoke('package_preview',{package:portable,environment:{}}) as {digest:string;libraryDigest:string;templates:Array<{definition:{id:string;slug:string;revision:number}}>};
-    expect(portablePreview).toMatchObject({digest:portable.digest,libraryDigest:expect.stringMatching(/^[a-f0-9]{64}$/),templates:[{definition:{revision:0}}]});
-    expect(await invoke('package_import',{package:portable,environment:{},digest:portablePreview.digest,libraryDigest:portablePreview.libraryDigest,enabled:false})).toMatchObject({imported:[{id:portablePreview.templates[0]!.definition.id,slug:portablePreview.templates[0]!.definition.slug,revision:1,enabled:false}]});
+    const portablePreview=await invoke('package_preview',{package:portable,environment:{}}) as {digest:string;resolvedDigest:string;libraryDigest:string;templates:Array<{definition:{id:string;slug:string;revision:number}}>};
+    expect(portablePreview).toMatchObject({digest:portable.digest,resolvedDigest:expect.stringMatching(/^[a-f0-9]{64}$/),libraryDigest:expect.stringMatching(/^[a-f0-9]{64}$/),templates:[{definition:{revision:0}}]});
+    expect(await invoke('package_import',{package:portable,environment:{},digest:portablePreview.digest,resolvedDigest:portablePreview.resolvedDigest,libraryDigest:portablePreview.libraryDigest,enabled:false})).toMatchObject({imported:[{id:portablePreview.templates[0]!.definition.id,slug:portablePreview.templates[0]!.definition.slug,revision:1,enabled:false}]});
     const saved=await invoke('save',{definition:{...created.record.definition,name:'Full save'},expectedRevision:1,enabled:true}) as {record:LoopRecord};
     expect(saved.record).toMatchObject({enabledRevision:2,definition:{revision:2,name:'Full save'}});
     const draft=await invoke('draft',{definition:{...saved.record.definition,name:'Unpublished draft'},expectedRevision:2}) as {record:LoopRecord};
@@ -1251,9 +1251,9 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   it('exports, previews and imports an exact portable package through registered tools and commands',async()=>{
     const s=await setup();const exported=await toolJson(s,'package_export',{id:'summarize-text'},'package-export') as {digest:string};
     expect(exported).toMatchObject({kind:'loops-template-package',formatVersion:1,digest:expect.stringMatching(/^[a-f0-9]{64}$/)});
-    const preview=await commandJson(s,'package_preview',{package:exported,environment:{}}) as {digest:string;libraryDigest:string;templates:Array<{definition:{id:string;slug:string;revision:number}}>};
-    expect(preview).toMatchObject({digest:exported.digest,libraryDigest:expect.stringMatching(/^[a-f0-9]{64}$/),templates:[{definition:{slug:'summarize-text-imported',revision:0}}]});
-    const imported=await toolJson(s,'package_import',{package:exported,environment:{},digest:preview.digest,libraryDigest:preview.libraryDigest,enabled:false},'package-import');
+    const preview=await commandJson(s,'package_preview',{package:exported,environment:{}}) as {digest:string;resolvedDigest:string;libraryDigest:string;templates:Array<{definition:{id:string;slug:string;revision:number}}>};
+    expect(preview).toMatchObject({digest:exported.digest,resolvedDigest:expect.stringMatching(/^[a-f0-9]{64}$/),libraryDigest:expect.stringMatching(/^[a-f0-9]{64}$/),templates:[{definition:{slug:'summarize-text-imported',revision:0}}]});
+    const imported=await toolJson(s,'package_import',{package:exported,environment:{},digest:preview.digest,resolvedDigest:preview.resolvedDigest,libraryDigest:preview.libraryDigest,enabled:false},'package-import');
     expect(imported).toMatchObject({imported:[{id:preview.templates[0]!.definition.id,slug:'summarize-text-imported',revision:1,enabled:false}]});
     expect(await s.action('load',{id:preview.templates[0]!.definition.id})).toMatchObject({result:{enabledRevision:null,definition:{slug:'summarize-text-imported',revision:1}}});
   });

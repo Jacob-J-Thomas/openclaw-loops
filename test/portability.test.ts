@@ -101,12 +101,51 @@ describe('portable template packages',()=>{
     const original={...structuredClone(examples[0]),id:'portable-engine',slug:'portable-engine',revision:0};engine.save(actor,original,0,true);
     const exported=engine.packageExport(actor,'portable-engine');expect(JSON.stringify(exported)).not.toMatch(/grants|sessionId|caller/i);
     const preview=engine.packagePreview(actor,exported,{});expect(preview.templates[0]!.definition).toMatchObject({id:`import-${exported.digest.slice(0,12)}-1`,slug:'portable-engine-imported',revision:0});
-    const imported=engine.packageImport(actor,exported,{},preview.digest,preview.libraryDigest,false);
+    const imported=engine.packageImport(actor,exported,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false);
     expect(imported.imported).toEqual([{id:`import-${exported.digest.slice(0,12)}-1`,slug:'portable-engine-imported',revision:1,enabled:false}]);
     expect(engine.load(actor,'portable-engine').definition).toMatchObject({slug:'portable-engine',revision:1});
     expect(engine.load(actor,imported.imported[0]!.id)).toMatchObject({enabledRevision:null,definition:{slug:'portable-engine-imported',revision:1}});
     expect(new Engine(storage,host).load(actor,imported.imported[0]!.id)).toMatchObject({enabledRevision:null,definition:{slug:'portable-engine-imported',revision:1}});
-    expect(()=>engine.packageImport(actor,exported,{},preview.digest,preview.libraryDigest,false)).toThrow(/changed since preview/);
+    expect(()=>engine.packageImport(actor,exported,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false)).toThrow(/changed since preview/);
+  });
+
+  it('requires a fresh inspected confirmation when typed environment values change',()=>{
+    let state:ReturnType<Storage['read']>;
+    const storage:Storage={read:()=>structuredClone(state),write:value=>{state=structuredClone(value);}};
+    const host={check:vi.fn(),complete:vi.fn(),modelInfo:vi.fn(async()=>({provider:'test',model:'test'}))};
+    const engine=new Engine(storage,host),actor:Actor={agentId:'main',sessionKey:'agent:main:portable-environment',sessionId:'portable-environment',source:'tool',human:false,canManage:true,check:()=>{}};
+    const sourceDefinition={...structuredClone(examples[0]),id:'portable-environment-source',slug:'portable-environment-source',revision:0};
+    engine.save(actor,sourceDefinition,0,false);
+    const source=engine.packageExport(actor,'portable-environment-source',[{name:'loop_name',type:'string',pointer:'/name'}]),preview=engine.packagePreview(actor,source,{loop_name:'Inspected value'}),before=engine.library(actor),prospectiveId=`import-${source.digest.slice(0,12)}-1`;
+    expect(()=>engine.packageImport(actor,source,{loop_name:'Tampered value'},preview.digest,preview.libraryDigest,preview.resolvedDigest,false)).toThrow(/resolved environment.*changed since preview/i);
+    expect(engine.library(actor)).toEqual(before);
+    expect(()=>engine.load(actor,prospectiveId)).toThrow(/Loop not found/);
+    const confirmed=engine.packagePreview(actor,source,{loop_name:'Tampered value'}),imported=engine.packageImport(actor,source,{loop_name:'Tampered value'},confirmed.digest,confirmed.libraryDigest,confirmed.resolvedDigest,false);
+    expect(engine.load(actor,imported.imported[0]!.id).definition.name).toBe('Tampered value');
+  });
+
+  it('invalidates a preview when an older published slug stops reserving its import target',()=>{
+    let state:ReturnType<Storage['read']>;
+    const storage:Storage={read:()=>structuredClone(state),write:value=>{state=structuredClone(value);}};
+    const host={check:vi.fn(),complete:vi.fn(),modelInfo:vi.fn(async()=>({provider:'test',model:'test'}))};
+    const engine=new Engine(storage,host),actor:Actor={agentId:'main',sessionKey:'agent:main:portable-publication',sessionId:'portable-publication',source:'tool',human:false,canManage:true,check:()=>{}};
+    const initial={...structuredClone(examples[0]),id:'portable-published-collision',slug:'portable-source-imported',revision:0};
+    const saved=engine.save(actor,initial,0,true);
+    engine.draft(actor,{...saved.record.definition,slug:'portable-published-draft'},1);
+    const sourceDefinition={...structuredClone(examples[0]),id:'portable-template-source',slug:'portable-source',revision:0};
+    engine.save(actor,sourceDefinition,0,false);
+    const source=engine.packageExport(actor,'portable-template-source',[{name:'loop_name',type:'string',pointer:'/name'}]),preview=engine.packagePreview(actor,source,{loop_name:'Published collision'}),prospectiveId=`import-${source.digest.slice(0,12)}-1`;
+    expect(preview.templates[0]!.definition).toMatchObject({slug:'portable-source-imported-2'});
+    engine.publish(actor,'portable-published-collision',2,2);
+    const afterPublish=engine.packagePreview(actor,source,{loop_name:'Published collision'});
+    expect(afterPublish.libraryDigest).not.toBe(preview.libraryDigest);
+    expect(afterPublish.templates[0]!.definition).toMatchObject({slug:'portable-source-imported'});
+    const libraryAfterPublish=engine.library(actor);
+    expect(()=>engine.packageImport(actor,source,{loop_name:'Published collision'},preview.digest,preview.libraryDigest,preview.resolvedDigest,false)).toThrow(/target library changed since preview/i);
+    expect(engine.library(actor)).toEqual(libraryAfterPublish);
+    expect(()=>engine.load(actor,prospectiveId)).toThrow(/Loop not found/);
+    const imported=engine.packageImport(actor,source,{loop_name:'Published collision'},afterPublish.digest,afterPublish.libraryDigest,afterPublish.resolvedDigest,false);
+    expect(engine.load(actor,imported.imported[0]!.id).definition.slug).toBe('portable-source-imported');
   });
 
   it('does not leave a partial multi-template import when its one state transaction fails',()=>{
@@ -115,7 +154,7 @@ describe('portable template packages',()=>{
     const engine=new Engine(storage,{check:()=>{},complete:vi.fn(),modelInfo:vi.fn(async()=>({provider:'test',model:'test'}))}),actor:Actor={agentId:'main',sessionKey:'agent:main:atomic',sessionId:'atomic',source:'tool',human:false,canManage:true,check:()=>{}};
     const first={...structuredClone(examples[0]),id:'atomic-first',slug:'atomic-first',revision:1} as unknown as PortableJson,second={...structuredClone(examples[0]),id:'atomic-second',slug:'atomic-second',revision:1,name:'Second'} as unknown as PortableJson;
     const source=createPortablePackage({templates:[{templateId:'first',content:first,dependencies:[]},{templateId:'second',content:second,dependencies:[]}],bindings:[]}),preview=engine.packagePreview(actor,source,{});fail=true;
-    expect(()=>engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,false)).toThrow();
+    expect(()=>engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false)).toThrow();
     expect(engine.library(actor).some(loop=>loop.slug.includes('imported'))).toBe(false);
   });
 });

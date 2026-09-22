@@ -13,7 +13,7 @@ The codec preserves definition JSON exactly while it parses and resolves a packa
 ## Import flow
 
 1. Export returns the package and its digest from an authorized saved definition.
-2. Preview resolves declared environment values, validates every pin and reports the prospective definitions without writing or enabling them.
-3. Import applies only the exact inspected digest through the current actor's normal draft/publish authority. It rechecks target revisions and refuses existing-ID collisions or partial updates.
+2. Preview resolves declared environment values, validates every pin and reports the prospective definitions without writing or enabling them. It returns a `resolvedDigest` that binds those resolved definitions and the supplied typed environment values, plus a `libraryDigest` that pins the current local ID and current-or-published slug collision state.
+3. Import applies only the exact inspected package, resolved, and library digests through the current actor's normal draft/publish authority. It rechecks all three before its one state transaction, so a changed binding value, a changed publication target, an existing-ID collision, or any other stale target leaves the library unchanged.
 
 Imports create distinct local draft identities by default. A requested enabled import uses the normal create/publish authority; it does not transfer a source grant or add a human-only gate. An authored Human review node retains its ordinary decision behavior after import.

@@ -14,7 +14,7 @@ import {DocumentStore} from './document-store.js';
 import {type DocumentLinks, type MaintenancePolicy, type TransportRelease, emptyDocumentLinks} from './document-maintenance.js';
 import {fingerprintJson} from './fingerprint.js';
 import {applyContextPatch,assertContextState,contextBytes,initialContext,projectContext,type ContextState} from './context.js';
-import {exportPortableTemplate,previewPortableImport,type PortableJson,type PortablePackage,type PortablePreview} from './portability.js';
+import {canonicalDigest,exportPortableTemplate,previewPortableImport,type PortableJson,type PortablePackage,type PortablePreview} from './portability.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
@@ -228,6 +228,13 @@ export class Engine{
     this.ensureAuthor(actor);const record=this.load(actor,id);
     return exportPortableTemplate(structuredClone(record.definition),bindings,this.budgets);
   }
+  private packageLibraryDigest(){
+    const collisions=Object.entries(this.state.loops).sort(([left],[right])=>left.localeCompare(right)).map(([id,record])=>{
+      const published=this.published(record);
+      return {id,deleted:record.deletedAt!==undefined,current:{revision:record.definition.revision,slug:record.definition.slug},enabledRevision:record.enabledRevision,publishedRevision:record.publishedRevision??null,published:published?{revision:published.revision,slug:published.slug}:null};
+    });
+    return hash(canonical(collisions));
+  }
   private preparedPackagePreview(actor:Actor,value:unknown,environment:unknown):PortablePreview&{libraryDigest:string}{
     this.ensureAuthor(actor);const preview=previewPortableImport(value,environment,this.budgets);
     const definitions=preview.templates.map(template=>parseDefinition(template.definition,this.budgets));
@@ -237,18 +244,19 @@ export class Engine{
       while(usedIds.has(id)||usedSlugs.has(slug)){suffix++;id=`import-${preview.digest.slice(0,12)}-${index+1}-${suffix}`;slug=`${definition.slug}-imported-${suffix}`;}
       usedIds.add(id);usedSlugs.add(slug);template.definition={...definition,id,slug,revision:0} as unknown as PortableJson;
     }
-    const libraryDigest=hash(canonical(Object.values(this.state.loops).filter(record=>!record.deletedAt).map(record=>[record.definition.id,record.definition.revision,record.definition.slug])));
-    return {...preview,libraryDigest};
+    const libraryDigest=this.packageLibraryDigest();
+    const resolvedDigest=canonicalDigest({environmentDigest:preview.resolvedDigest,templates:preview.templates.map(template=>({templateId:template.templateId,definition:template.definition,dependencies:template.dependencies}))});
+    return {...preview,resolvedDigest,libraryDigest};
   }
   packagePreview(actor:Actor,value:unknown,environment:unknown){return this.preparedPackagePreview(actor,value,environment);}
-  packageImport(actor:Actor,value:unknown,environment:unknown,digest:string,libraryDigest:string,enabled=false){
+  packageImport(actor:Actor,value:unknown,environment:unknown,digest:string,libraryDigest:string,resolvedDigest:string,enabled=false){
     this.ensureAuthor(actor);const preview=this.preparedPackagePreview(actor,value,environment);
-    if(preview.digest!==digest||preview.libraryDigest!==libraryDigest)throw requestError('Portable package or target library changed since preview. Preview again before importing.','LOOPS_REVISION_CONFLICT');
+    if(preview.digest!==digest||preview.libraryDigest!==libraryDigest||preview.resolvedDigest!==resolvedDigest)throw requestError('Portable package, resolved environment, or target library changed since preview. Preview again before importing.','LOOPS_REVISION_CONFLICT');
     const pending=preview.templates.map(template=>parseDefinition(template.definition,this.budgets));
     for(const definition of pending){if(this.state.loops[definition.id])throw requestError('Imported loop ID now exists. Preview again before importing.','LOOPS_REVISION_CONFLICT');this.assertSlugAvailable(definition.id,definition.slug);if(enabled)this.checkActivation(actor,definition);}
     const next=structuredClone(this.state);
     for(const definition of pending){const saved={...definition,revision:1};next.loops[saved.id]={definition:saved,enabledRevision:enabled?1:null,publishedRevision:enabled?1:null,grants:enabled?[...saved.capabilities]:[],grantGeneration:randomUUID(),revisions:{1:structuredClone(saved)},revoked:false};}
-    this.state=next;this.persist();return {digest:preview.digest,libraryDigest:preview.libraryDigest,imported:pending.map(definition=>({id:definition.id,slug:definition.slug,revision:1,enabled}))};
+    this.state=next;this.persist();return {digest:preview.digest,resolvedDigest:preview.resolvedDigest,libraryDigest:preview.libraryDigest,imported:pending.map(definition=>({id:definition.id,slug:definition.slug,revision:1,enabled}))};
   }
   edit(actor:Actor,id:string,expectedRevision:number,value:unknown,enabled?:boolean){
     this.ensureAuthor(actor);const previous=this.state.loops[id];if(!previous||previous.deletedAt)throw requestError('Loop not found.');

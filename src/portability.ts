@@ -14,7 +14,7 @@ export type PortableTemplateInput=Omit<PortableTemplate,'contentDigest'>;
 export type PortablePackageInput={templates:PortableTemplateInput[];bindings:PortableBinding[]};
 export type PortableBindingDeclaration={name:string;type:BindingType;pointer:string};
 export type ResolvedPortableTemplate={templateId:string;contentDigest:string;definition:PortableJson;dependencies:PortableDependency[]};
-export type PortablePreview={digest:string;templates:ResolvedPortableTemplate[];bindings:Array<{name:string;type:BindingType;locations:PortableBindingLocation[]}>};
+export type PortablePreview={digest:string;resolvedDigest:string;templates:ResolvedPortableTemplate[];bindings:Array<{name:string;type:BindingType;locations:PortableBindingLocation[]}>};
 
 const digestPattern=/^[a-f0-9]{64}$/;
 const identifierPattern=/^[a-z][a-z0-9_-]{0,99}$/;
@@ -249,5 +249,6 @@ export function previewPortableImport(value:unknown,environment:unknown,budgets:
       replacePointer(template.definition,location.pointer,clone(replacement));
     }
   }
-  return {digest:packageValue.digest,templates,bindings:clone(packageValue.bindings)};
+  const bindings=clone(packageValue.bindings);
+  return {digest:packageValue.digest,resolvedDigest:canonicalDigest({digest:packageValue.digest,environment:clone(provided as PortableJson),templates:templates.map(template=>({templateId:template.templateId,definition:template.definition,dependencies:template.dependencies}))}),templates,bindings};
 }
