@@ -21,6 +21,8 @@ import {fitsFeatureJson} from '../src/feature-json.js';
 import {DocumentStore} from '../src/document-store.js';
 import {emptyDocumentLinks} from '../src/document-maintenance.js';
 import {createFeatureClient,type FeatureTransport} from 'openclaw/plugin-sdk/feature-contract';
+// @ts-expect-error OpenClaw exports this public runtime helper as JavaScript.
+import {validateJsonSchemaValue} from 'openclaw/plugin-sdk/json-schema-runtime';
 import {wireContract,DocumentReferenceSchema} from '../src/wire-contract.js';
 import type {LoopRecord,Run} from '../src/engine.js';
 import type {RunReceipt} from '../src/receipts.js';
@@ -71,7 +73,54 @@ async function toolJson(s:Awaited<ReturnType<typeof setup>>,name:string,input:Re
   let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset,...value.readerId?{readerId:value.readerId}:{}}) as {text:string;offset:number;nextOffset:number|null;sha256:string};expect(page.offset).toBe(offset);expect(page.sha256).toBe(value.sha256);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
+function schemaBudget(value:unknown,depth=0,state={nodes:0,maxDepth:0}):typeof state{
+  state.nodes++;state.maxDepth=Math.max(state.maxDepth,depth);
+  if(value&&typeof value==='object')for(const child of Object.values(value))schemaBudget(child,depth+1,state);
+  return state;
+}
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('registers compact, strict versioned definition schemas on UI, command, and tool routes',async()=>{
+    const s=await setup();
+    const definition=(schemaVersion:1|2|3)=>{
+      const value=structuredClone(examples[0]);
+      value.schemaVersion=schemaVersion;value.id=`schema-v${schemaVersion}`;value.slug=`schema-v${schemaVersion}`;value.revision=0;
+      if(schemaVersion===1)value.limits.timeoutMs??=120000;
+      return value;
+    };
+    for(const operation of ['create','edit','draft','save','validate','test'] as const){
+      const input=wireContract.operations[operation].input;
+      const budget=schemaBudget(input);
+      expect(budget.nodes,`${operation} registration nodes`).toBeLessThanOrEqual(2048);
+      expect(budget.maxDepth,`${operation} registration depth`).toBeLessThanOrEqual(24);
+      expect((input as typeof input & {$defs?:unknown}).$defs,`${operation} local definitions`).toBeDefined();
+      expect(JSON.stringify(input)).toContain('#/$defs/');
+    }
+    for(const schemaVersion of [1,2,3] as const){
+      const value=definition(schemaVersion),payload={definition:value};
+      for(const operation of ['draft','save','validate','test'] as const){
+        const input=wireContract.operations[operation].input;
+        const candidate=operation==='draft'?{...payload,expectedRevision:0}:operation==='save'?{...payload,expectedRevision:0}:operation==='test'?{...payload,input:{},requestId:`schema-test-v${schemaVersion}`} : payload;
+        expect(Value.Check(input,candidate),`${operation}/v${schemaVersion} TypeBox`).toBe(true);
+        expect(validateJsonSchemaValue({schema:input,cacheKey:`loops-${operation}-v${schemaVersion}`,cache:false,value:candidate}),`${operation}/v${schemaVersion} host validator`).toMatchObject({ok:true});
+      }
+      expect(await s.action('validate',payload)).toMatchObject({ok:true,result:{valid:true}});
+      expect(await commandJson(s,'validate',payload)).toMatchObject({valid:true});
+      expect(await toolJson(s,'validate',payload,`schema-tool-v${schemaVersion}`)).toMatchObject({valid:true});
+    }
+    const upload={$loopsUpload:'a'.repeat(64)};
+    for(const [operation,field] of [['create','definition'],['edit','changes'],['draft','definition'],['save','definition'],['validate','definition'],['test','definition']] as const){
+      const input=wireContract.operations[operation].input;
+      const candidate={...(operation==='edit'?{id:'upload-target',expectedRevision:1}:operation==='draft'||operation==='save'?{expectedRevision:0}:operation==='test'?{input:{},requestId:'schema-upload'}:{}),[field]:upload};
+      expect(Value.Check(input,candidate),`${operation} upload reference`).toBe(true);
+      expect(validateJsonSchemaValue({schema:input,cacheKey:`loops-${operation}-upload`,cache:false,value:candidate}),`${operation} upload reference host validator`).toMatchObject({ok:true});
+    }
+    const malformed={definition:{...definition(3),unexpected:true}};
+    expect(Value.Check(wireContract.operations.validate.input,malformed)).toBe(false);
+    expect(validateJsonSchemaValue({schema:wireContract.operations.validate.input,cacheKey:'loops-validate-malformed',cache:false,value:malformed})).toMatchObject({ok:false});
+    expect(JSON.stringify(await s.action('validate',malformed))).toMatch(/schema/i);
+    const command=await s.commands.get('loops')!.handler({...s.commandContext,args:`validate ${JSON.stringify(malformed)}`});expect(command.text).toMatch(/schema/i);
+    await expect(s.tools.find(tool=>tool.name==='loops_validate')!.execute('schema-malformed',malformed)).rejects.toThrow(/schema/i);
+  });
   it('keeps a host-selected non-main current session usable while rejecting foreign, replaced, and read-only writes at registered adapters',async()=>{
     const current={agentId:'worker',sessionKey:'agent:worker:authority-current',sessionId:'authority-current'};
     const foreignActor={agentId:'worker',sessionKey:'agent:worker:authority-foreign',sessionId:'authority-foreign'};
@@ -1161,7 +1210,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     definition.slug='tuple-check';
     const repeat=definition.nodes.find(n=>n.kind==='repeat');if(!repeat||repeat.kind!=='repeat')throw Error();
     const wrong={...definition,nodes:definition.nodes.map(n=>n.id===repeat.id?{...repeat,body:[repeat.body[1],repeat.body[0]]}:n)};
-    expect((await create.execute('reversed-tuple',{definition:wrong})).details).toMatchObject({kind:'loops-error',error:{message:expect.stringMatching(/schemaVersion 1/)}});
+    expect((await create.execute('reversed-tuple',{definition:wrong})).details).toMatchObject({kind:'loops-error',error:{message:expect.stringMatching(/schemaVersion 2 or 3/)}});
     expect((await create.execute('valid-tuple',{definition,enabled:false})).details).toMatchObject({issues:[],record:{definition:{revision:1},enabledRevision:null}});
   });
   it('executes command and tool against the same saved revision',async()=>{const s=await setup();await s.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const command=s.commands.get('loops')!;const reply=await command.handler({...s.commandContext,args:'run summarize-text Supplied source',commandBody:'/loops run summarize-text Supplied source'});expect(reply.text).toContain('revision 1 · completed');expect(reply.text).toContain('An actual adapter result.');const result=await s.tools.find(t=>t.name==='loops_run')!.execute('host-tool-id',{slug:'summarize-text',input:{text:'Supplied source'}});expect(result.details).toMatchObject({state:'completed',source:'tool',requester:'host-sender',owner:{sessionId:s.sessionId},definition:{revision:1},result:'An actual adapter result.'});expect(s.complete).toHaveBeenCalledTimes(2);expect(s.complete.mock.calls[0]).toBeDefined();});
