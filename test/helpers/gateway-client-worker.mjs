@@ -23,7 +23,7 @@ const stop=async()=>{if(stopping)return;stopping=true;clearTimeout(startup);awai
 const fail=async error=>{if(failed||stopping)return;failed=true;send({type:'error',message:String(error?.message??error)});await stop();process.exit(1);};
 const startup=setTimeout(()=>{void fail(Error('Gateway client startup timed out.'));},startupBudgetMs);
 try{
-  client=new GatewayClient({url,token,env:{...process.env},sharedStateMode:'read-only',clientName:'cli',mode:'cli',scopes:['operator.admin','operator.read','operator.write'],...configuredStartupBudget===undefined?{}:{preauthHandshakeTimeoutMs:startupBudgetMs,connectChallengeTimeoutMs:startupBudgetMs,onTiming:value=>send({type:'timing',timing:timing(value)})},onHelloOk:()=>{if(ready||stopping)return;ready=true;clearTimeout(startup);send({type:'ready'});},onConnectError:error=>{void fail(error);}});
+  client=new GatewayClient({url,token,env:{...process.env},sharedStateMode:'read-only',clientName:'cli',mode:'cli',scopes:['operator.admin','operator.read','operator.write'],onTiming:value=>send({type:'timing',timing:timing(value)}),...configuredStartupBudget===undefined?{}:{preauthHandshakeTimeoutMs:startupBudgetMs,connectChallengeTimeoutMs:startupBudgetMs},onHelloOk:()=>{if(ready||stopping)return;ready=true;clearTimeout(startup);send({type:'ready'});},onConnectError:error=>{void fail(error);}});
   client.start();
 }catch(error){void fail(error);}
 
