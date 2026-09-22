@@ -3,6 +3,7 @@ import {defineFeatureContract} from 'openclaw/plugin-sdk/feature-contract';
 import {contract} from './contract.js';
 import {LoopErrorSchema} from './errors.js';
 import {UploadChunkSchema} from './upload-input.js';
+import {compactToolInput} from './tool-schema.js';
 
 const strict = {additionalProperties: false} as const;
 const digest = Type.String({pattern: '^[a-f0-9]{64}$'});
@@ -27,7 +28,7 @@ type WireOperations = {[K in keyof typeof contract.operations]: Omit<typeof cont
 const operations = Object.fromEntries(Object.entries(contract.operations).map(([name, operation]) => {
   const input = structuredClone(operation.input) as TSchema & {properties: Record<string, TSchema>};
   for (const field of uploadFields[name as keyof typeof uploadFields] ?? []) input.properties[field] = Type.Union([input.properties[field], UploadReferenceSchema]);
-  return [name, {...operation, input, output: Type.Union([operation.output, DocumentReferenceSchema,OperationFailureSchema]),
+  return [name, {...operation, input:compactToolInput(input), output: Type.Union([operation.output, DocumentReferenceSchema,OperationFailureSchema]),
     description: operation.description + ' A loops-error result means the operation failed; report its error and recovery, never claim success. Large results return an immutable document reference; use loops_document to read it. ' +
       'When a document reference includes readerId, supply it on each page and release only that reader with loops_document_release after verifying all pages. ' +
       ((uploadFields[name as keyof typeof uploadFields]?.length ?? 0) ? 'Large input fields accept {$loopsUpload: reference} from loops_upload; the original operation validates and authorizes the uploaded value.' : '')}];

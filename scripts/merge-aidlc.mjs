@@ -25,10 +25,13 @@ export async function mergeCandidate(number,reviewed,{request=github,merge=merge
     return result;
   };
   await checkContract();
-  const checks=validateChecks(await request(`repos/${repository}/commits/${reviewed.head}/check-runs?per_page=100`),reviewed.head);
+  validateChecks(await request(`repos/${repository}/commits/${reviewed.head}/check-runs?per_page=100`),reviewed.head);
   const final=await checkContract();
+  // Contract collection makes several requests. A required check may start a
+  // newer attempt while that metadata is being read, even on the same head.
+  const checks=validateChecks(await request(`repos/${repository}/commits/${reviewed.head}/check-runs?per_page=100`),reviewed.head);
   // GitHub provides an atomic expected-head guard, but no atomic compare for
-  // every issue field/base. Keep this read immediately adjacent to the merge;
+  // every issue field/base/check. Keep these reads adjacent to the merge;
   // do not queue auto-merge or claim a past workflow snapshot is current.
   const result=await merge(number,reviewed.head);
   if(!result.merged)throw new Error('GitHub did not confirm the merge. Inspect its current state before retrying.');
@@ -42,7 +45,7 @@ function mergeOnGithub(number,head){
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
   const [, ,number,head,base]=process.argv;
   try{
-    if(!/^[a-f0-9]{40}$/.test(head??'')||! /^[a-f0-9]{40}$/.test(base??''))throw new Error('Usage: node scripts/merge-aidlc.mjs <PR> <reviewed head SHA> <reviewed main SHA>');
+    if(!/^[a-f0-9]{40}$/.test(head??'')||! /^[a-f0-9]{40}$/.test(base??''))throw new Error('Usage: node scripts/merge-aidlc.mjs <PR> <reviewed head SHA> <reviewed base SHA>');
     console.log(JSON.stringify(await mergeCandidate(Number(number),{head,base}),null,2));
   }catch(error){console.error(error.message);process.exitCode=1;}
 }
