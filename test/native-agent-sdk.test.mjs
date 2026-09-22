@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
-import {parseNativeAgentSelection,compareNativeAgentOwner,projectNativeAgentResult,nativeAgentRunParams} from './helpers/native-agent-plugin.mjs';
-import {validateNativeAgentLeadConfig,nativeHistoryFacts,assertNativeAgentRead,assertNativeAgentCancellation,sanitizeNativeAgentReceipt} from '../scripts/verify-native-agent.mjs';
+import {parseNativeAgentSelection,compareNativeAgentOwner,projectNativeAgentResult,nativeAgentRunParams,awaitNativeAgentAction} from './helpers/native-agent-plugin.mjs';
+import {validateNativeAgentLeadConfig,nativeHistoryFacts,assertNativeAgentRead,assertNativeAgentCancellation,sanitizeNativeAgentReceipt,nativeAgentExecutionTimeoutMs} from '../scripts/verify-native-agent.mjs';
 const selection={agentId:'main',provider:'fixture-provider',model:'fixture-model',thinking:'off',timeoutMs:120000,contextTokenBudget:32768};
 const owner={agentId:'main',sessionId:'host-id',sessionKey:'host-key',lifecycleRevision:'host-generation',storePath:'/disposable/store'};
 const read={state:'completed',settled:true,modelCallStarted:true,tools:[{toolName:'read',isError:false,text:'observed-seed'}],result:{aborted:false,error:null,text:'NATIVE_AGENT_READ observed-seed',attribution:{provider:selection.provider,model:selection.model,usage:{input:23,output:9}}}};
@@ -31,6 +31,22 @@ describe('native agent qualification contract',()=>{
     const result=projectNativeAgentResult({meta:{durationMs:1,agentMeta:{sessionId:'host-id',provider:'p',model:'m',credentialSource:{token:'secret'},usage:{input:3,output:4,cost:{total:1}}}},payloads:[{text:'answer'},{text:'private-reasoning',isReasoning:true}]});
     noUndefined(result);expect(result.attribution.usage).toEqual({input:3,output:4});expect(result.text).toBe('answer');expect(JSON.stringify(result)).not.toMatch(/secret|credentialSource|private-reasoning/);expect(projectNativeAgentResult({meta:{}}).attribution).toBeNull();
   });
+  it('keeps the action response pending until the original execution settles',async()=>{
+    let release,responded=false;
+    const record={id:'caller-correlation',settled:false},execution=new Promise(resolve=>{release=resolve;});
+    const response=awaitNativeAgentAction(execution,record).then(result=>{responded=true;return result;});
+    await Promise.resolve();await Promise.resolve();
+    expect(responded).toBe(false);
+    record.settled=true;release();
+    expect(await response).toEqual({ok:true,result:{ok:true,id:record.id,record:{...record},executionResponseAfterSettlement:true}});
+    await expect(awaitNativeAgentAction(Promise.reject(Error('execution failed')),record)).rejects.toThrow('execution failed');
+  });
+  it('allows model timeout plus bounded RPC overhead within the global remaining budget',()=>{
+    const maximum={...selection,timeoutMs:180000};
+    expect(nativeAgentExecutionTimeoutMs(maximum,600000)).toBe(210000);
+    expect(nativeAgentExecutionTimeoutMs(maximum,70000)).toBe(70000);
+    expect(maximum.timeoutMs).toBe(180000);
+  });
   it('requires genuine native tool result, selected attribution and usage, not just the model response',()=>{
     expect(()=>assertNativeAgentRead(read,selection,'observed-seed')).not.toThrow();
     for(const invalid of [{...read,tools:[]},{...read,modelCallStarted:false},{...read,result:{...read.result,attribution:{...read.result.attribution,model:'other'}}},{...read,result:{...read.result,attribution:{...read.result.attribution,usage:null}}}])expect(()=>assertNativeAgentRead(invalid,selection,'observed-seed')).toThrow();
@@ -44,10 +60,12 @@ describe('native agent qualification contract',()=>{
     const facts=nativeHistoryFacts({sessionId:'host-id',messages:[{role:'assistant',content:[{type:'text',text:'seed'}]}]},'seed');expect(facts.assistantSeed).toBe(true);expect(facts.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
   it('refuses a successful sanitized receipt until every cleanup boundary is proven',()=>{
-    for(const cleanup of [{clientsStopped:false,ownedProcessesExited:true,hostPromisesSettled:true},{clientsStopped:true,ownedProcessesExited:false,hostPromisesSettled:true},{clientsStopped:true,ownedProcessesExited:true,hostPromisesSettled:false}])expect(sanitizeNativeAgentReceipt({status:'passed',cleanup}).status).toBe('failed');
+    const complete={clientsStopped:true,ownedProcessesExited:true,hostPromisesSettled:true,hostRequestsSettled:true};
+    expect(sanitizeNativeAgentReceipt({status:'passed',cleanup:complete}).status).toBe('passed');
+    for(const boundary of Object.keys(complete))expect(sanitizeNativeAgentReceipt({status:'passed',cleanup:{...complete,[boundary]:false}}).status).toBe('failed');
   });
   it('publishes only cleanup facts, selected identifiers and numeric usage, never raw evidence',()=>{
-    const value=sanitizeNativeAgentReceipt({status:'passed',source:'sha',node:'v24.16.0',requested:selection,token:'private-token',profile:'/private/profile',observations:[{label:'read',classification:'actual-agent-loop',passed:true,raw:'private',owner,attribution:{provider:'p',model:'m',sessionId:'private-session',usage:{input:4,output:2,secret:'private-secret'}}}],cleanup:{clientsStopped:true,ownedProcessesExited:true,hostPromisesSettled:true,path:'/private/profile'}});
+    const value=sanitizeNativeAgentReceipt({status:'passed',source:'sha',node:'v24.16.0',requested:selection,token:'private-token',profile:'/private/profile',observations:[{label:'read',classification:'actual-agent-loop',passed:true,raw:'private',owner,attribution:{provider:'p',model:'m',sessionId:'private-session',usage:{input:4,output:2,secret:'private-secret'}}}],cleanup:{clientsStopped:true,ownedProcessesExited:true,hostPromisesSettled:true,hostRequestsSettled:true,path:'/private/profile'}});
     noUndefined(value);expect(JSON.stringify(value)).not.toMatch(/private-token|private-profile|private-session|private-secret|host-key|host-id|host-generation|\/private/);expect(value.observations[0].attribution.usage).toEqual({input:4,output:2});expect(value.maxModelAdmissions).toBe(2);
   });
 });

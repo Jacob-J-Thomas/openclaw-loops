@@ -33,6 +33,11 @@ export function projectNativeAgentResult(result){
     text:(result?.payloads??[]).filter(p=>typeof p.text==='string'&&!p.isReasoning&&!p.isCommentary).map(p=>p.text).join('\n').slice(0,8192),
     requestShaping:meta.requestShaping?{thinking:meta.requestShaping.thinking??null,reasoning:meta.requestShaping.reasoning??null}:null};
 }
+// Returning this promise keeps the public action's host request admission alive.
+export async function awaitNativeAgentAction(promise,record){
+  await promise;
+  return {ok:true,result:{ok:true,id:record.id,record:json(record),executionResponseAfterSettlement:record.settled===true}};
+}
 export function nativeAgentRunParams({config,selection,owner,workspaceDir,signal,runId,prompt,callbacks}){
   return {config,agentId:owner.agentId,sessionId:owner.sessionId,sessionKey:owner.sessionKey,sessionTarget:{agentId:owner.agentId,sessionId:owner.sessionId,sessionKey:owner.sessionKey,storePath:owner.storePath},workspaceDir,cwd:workspaceDir,sessionPersistence:'durable',requireWorkspaceOnly:true,
     provider:selection.provider,model:selection.model,thinkLevel:selection.thinking,contextTokenBudget:selection.contextTokenBudget,timeoutMs:selection.timeoutMs,runTimeoutOverrideMs:selection.timeoutMs,
@@ -55,7 +60,7 @@ export default definePluginEntry({id:pluginId,name:'Native full-agent qualificat
   const owned=(context,id)=>{const c=current(context);if(!c.ok)return c;const record=state.records[id];if(!record)return denial('RECORD_UNAVAILABLE','fixture-owner');const check=compareNativeAgentOwner(record.owner,c.owner);return check.ok?{...c,record}:check;};
   const inventory=c=>{const tools=createOpenClawCodingTools({config:c.config,agentId:c.owner.agentId,sessionKey:c.owner.sessionKey,runSessionKey:c.owner.sessionKey,workspaceDir:c.workspaceDir,cwd:c.workspaceDir,sessionConfigSource:'runtime'});return {read:tools.some(t=>t.name==='read'),write:tools.some(t=>t.name==='write')};};
   api.registerService({id:pluginId,reload:{configPrefixes:[`plugins.entries.${pluginId}`,'tools','agents','models']},start(ctx){
-    directory=join(ctx.stateDir,pluginId);mkdirSync(directory,{recursive:true,mode:0o700});storePath=join(directory,'records.json');if(existsSync(storePath)){state=JSON.parse(readFileSync(storePath,'utf8'));if(state.version!==1||!Number.isInteger(state.attempts)||!state.records)throw Error('Invalid private qualification state.');for(const record of Object.values(state.records))if(!record.settled){record.state='interrupted';record.interruptedByRestart=true;}}
+    directory=join(ctx.stateDir,pluginId);mkdirSync(directory,{recursive:true,mode:0o700});storePath=join(directory,'records.json');if(existsSync(storePath)){state=JSON.parse(readFileSync(storePath,'utf8'));if(state.version!==1||!Number.isInteger(state.attempts)||!state.records)throw Error('Invalid private qualification state.');for(const record of Object.values(state.records))if(!record.settled&&record.state!=='prepared'){record.state='interrupted';record.interruptedByRestart=true;}}
     stopping=false;persist();
   },async stop(){stopping=true;for(const item of active.values())item.controller.abort(Error('Fixture service stopped.'));await Promise.allSettled([...active.values()].map(item=>item.promise));}});
   api.session.controls.registerSessionAction({id:'probe',description:'Bounded native agent qualification; fixture current-session authority only.',requiredScopes:['operator.write'],async handler(context){
@@ -68,21 +73,27 @@ export default definePluginEntry({id:pluginId,name:'Native full-agent qualificat
         if(operation==='cancel'){const item=active.get(payload.id);if(!item)return reply({...denial('NOT_ACTIVE','fixture-cancel'),record:c.record});c.record.cancelRequested=true;c.record.cancelRequestedAt=Date.now();c.record.activeAtCancellation=!c.record.settled;persist();item.controller.abort(Error('Explicit native qualification cancellation.'));}
         return reply({ok:true,record:json(c.record),active:active.has(payload.id)});
       }
-      const c=current(context);if(!c.ok)return reply(c);
+      const c=operation==='execute'?owned(context,payload.id):current(context);if(!c.ok)return reply(c);
       if(operation==='policy')return reply({ok:true,available:inventory(c),active:active.size,attempts:state.attempts});
-      if(operation!=='start')return reply(denial('UNKNOWN_OPERATION','fixture-operation'));
+      if(operation!=='prepare'&&operation!=='execute')return reply(denial('UNKNOWN_OPERATION','fixture-operation'));
       const selection=parseNativeAgentSelection(api.pluginConfig);
       if(selection.agentId!==c.owner.agentId)return reply(denial('AGENT_SELECTION_MISMATCH','fixture-selected-agent'));
-      if(!['read','cancel'].includes(payload.case))return reply(denial('INVALID_CASE','fixture-case'));
       if(active.size)return reply(denial('INFERENCE_SLOT_OCCUPIED','fixture-single-worker'));
-      if(state.attempts>=2||Object.values(state.records).some(r=>r.case===payload.case))return reply(denial('ATTEMPT_BUDGET_EXHAUSTED','fixture-attempt-budget'));
       const available=inventory(c);if(!available.read)return reply({...denial('READ_EXCLUDED_BY_HOST_POLICY','native-tool-factory',true),available});
       if(available.write)return reply(denial('WRITE_POLICY_NOT_DENIED','fixture-required-policy'));
       const thinking=api.runtime.agent.normalizeThinkingLevel(selection.thinking);if(!thinking||thinking!==selection.thinking)return reply(denial('INVALID_THINKING_SELECTION','fixture-settings'));
-      const id=randomUUID(),controller=new AbortController();
-      // This UUID is required caller correlation, never a host-issued admitted run.
-      const record={id,case:payload.case,owner:c.owner,requested:selection,workspaceSha256:digest(c.workspaceDir),sessionPersistence:'durable',callerCorrelationOnly:true,state:'admitting',settled:false,cancelRequested:false,activeAtCancellation:false,startedAt:Date.now(),phases:[],tools:[],error:null,result:null};state.records[id]=record;state.attempts++;persist();
-      const prompt=payload.case==='read'?'Read seed.txt with the read tool, then give NATIVE_AGENT_READ followed by its exact seed value. Do not guess its contents.':'Read seed.txt with the read tool, then write a detailed 2000-word explanation of how to verify that file without changing it. This run is intentionally subject to cancellation.';
+      if(operation==='prepare'){
+        if(!['read','cancel'].includes(payload.case))return reply(denial('INVALID_CASE','fixture-case'));
+        if(Object.keys(state.records).length>=2||Object.values(state.records).some(r=>r.case===payload.case))return reply(denial('ATTEMPT_BUDGET_EXHAUSTED','fixture-attempt-budget'));
+        // This is a caller correlation handle, not host-issued run authority.
+        const id=randomUUID();state.records[id]={id,case:payload.case,owner:c.owner,requested:selection,workspaceSha256:digest(c.workspaceDir),sessionPersistence:'durable',callerCorrelationOnly:true,state:'prepared',settled:false,cancelRequested:false,activeAtCancellation:false,preparedAt:Date.now(),phases:[],tools:[],error:null,result:null};persist();
+        return reply({ok:true,id,callerCorrelationOnly:true,modelAdmissions:state.attempts});
+      }
+      const record=c.record;
+      if(record.state!=='prepared'||state.attempts>=2)return reply(denial('ATTEMPT_BUDGET_EXHAUSTED','fixture-attempt-budget'));
+      if(JSON.stringify(record.requested)!==JSON.stringify(selection)||record.workspaceSha256!==digest(c.workspaceDir))return reply(denial('SELECTION_CHANGED','fixture-current-settings'));
+      const id=record.id,controller=new AbortController();record.state='admitting';record.startedAt=Date.now();state.attempts++;persist();
+      const prompt=record.case==='read'?'Read seed.txt with the read tool, then give NATIVE_AGENT_READ followed by its exact seed value. Do not guess its contents.':'Read seed.txt with the read tool, then write a detailed 2000-word explanation of how to verify that file without changing it. This run is intentionally subject to cancellation.';
       const callbacks={onExecutionStarted:()=>{record.executionStarted=true;persist();},onExecutionPhase:info=>{if(record.phases.length<64)record.phases.push({...json(info),at:Date.now()});if(info.phase==='model_call_started')record.modelCallStarted=true;persist();},onAgentToolResult:event=>{raw(id,`tool-${record.tools.length}`,event);record.tools.push({toolName:event.toolName,isError:event.isError,text:text(event.result).slice(0,8192),resultSha256:digest(JSON.stringify(event.result))});persist();if(record.tools.length>=8)controller.abort(Error('Fixture tool-result budget exhausted.'));}};
       const execute=async()=>{
         try{record.state='running';persist();const result=await api.runtime.agent.session.runWithWorkAdmission({storePath:c.owner.storePath,sessionKey:c.owner.sessionKey,signal:controller.signal},async signal=>{
@@ -93,7 +104,8 @@ export default definePluginEntry({id:pluginId,name:'Native full-agent qualificat
         catch(error){raw(id,'error',errorFact(error));record.error=errorFact(error);record.state=controller.signal.aborted?'aborted':'failed';}
         finally{record.settled=true;record.settledAt=Date.now();try{persist();}finally{active.delete(id);}}
       };
-      const slot={controller,promise:null};active.set(id,slot);slot.promise=Promise.resolve().then(execute).catch(error=>{record.state='failed';record.error=errorFact(error);record.persistenceFailed=true;active.delete(id);});return reply({ok:true,id,callerCorrelationOnly:true,attempt:state.attempts});
+      const slot={controller,promise:null};active.set(id,slot);slot.promise=execute().catch(error=>{record.state='failed';record.error=errorFact(error);record.persistenceFailed=true;active.delete(id);});
+      return await awaitNativeAgentAction(slot.promise,record);
     }catch(error){return reply(denial('FIXTURE_OPERATION_FAILED','fixture-operation',false,error));}
   }});
 }});
