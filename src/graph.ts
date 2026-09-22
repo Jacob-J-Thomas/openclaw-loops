@@ -2,16 +2,17 @@ import {requestError,executionError} from './errors.js';
 import { Type, type Static, type TObject } from 'typebox';
 import { Value } from 'typebox/value';
 import {defaultBudgets,legacyBudgets,type Budgets} from './budgets.js';
-import {identifierSchema as key,NodeSchema,LegacyNodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
+import {identifierSchema as key,NodeSchema,ContextNodeSchema,LegacyNodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
+import {assertMutableContextPath,contextPatchLiteral,contextPathForBinding,pathSegments,type ContextNodeConfig} from './context.js';
 import {isJson,literalValue,type NodeValue} from './node-values.js';
 export {isJson} from './node-values.js';
 export {NodeSchema,PredicateSchema,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 const obj={additionalProperties:false} as const;
 export const DefinitionFields = {
-  schemaVersion:Type.Union([Type.Literal(1),Type.Literal(2)]), id:key, slug:key, name:Type.String({minLength:1,maxLength:100}),
+  schemaVersion:Type.Union([Type.Literal(1),Type.Literal(2),Type.Literal(3)]), id:key, slug:key, name:Type.String({minLength:1,maxLength:100}),
   description:Type.String({maxLength:500}), revision:Type.Integer({minimum:0}),
   inputSchema:Type.Array(Type.Object({name:key,label:Type.String({minLength:1,maxLength:100}),type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json')]),required:Type.Boolean()},obj)),
-  nodes:Type.Array(NodeSchema,{minItems:2}),
+  nodes:Type.Array(ContextNodeSchema,{minItems:2}),
   edges:Type.Array(Type.Object({id:key,source:key,target:key,port:Type.Union([Type.Literal('next'),Type.Literal('true'),Type.Literal('false'),Type.Literal('approve'),Type.Literal('reject')])},obj)),
   layout:Type.Record(key,Type.Object({x:Type.Number({minimum:-10000,maximum:10000}),y:Type.Number({minimum:-10000,maximum:10000})},obj)),
   capabilities:Type.Array(Type.Union([Type.Literal('llm'),Type.Literal('model-info')]),{maxItems:2,uniqueItems:true}),
@@ -20,20 +21,22 @@ export const DefinitionFields = {
 const v2Layout=Type.Record(key,Type.Object({x:Type.Number({minimum:-Number.MAX_SAFE_INTEGER,maximum:Number.MAX_SAFE_INTEGER}),y:Type.Number({minimum:-Number.MAX_SAFE_INTEGER,maximum:Number.MAX_SAFE_INTEGER})},obj));
 export const DefinitionVersionSchemas={
   1:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(1),nodes:Type.Array(LegacyNodeSchema,{minItems:2}),limits:Type.Required(DefinitionFields.limits,obj)},obj),
-  2:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(2),layout:v2Layout},obj),
+  2:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(2),nodes:Type.Array(NodeSchema,{minItems:2}),layout:v2Layout},obj),
+  3:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(3),layout:v2Layout},obj),
 };
 // Editable state can be temporarily inconsistent while a user changes format.
 // Public validation still enforces the discriminated version schemas below.
 export type Definition=Static<TObject<typeof DefinitionFields>>;
-export const DefinitionSchema=Type.Unsafe<Definition>(Type.Union([DefinitionVersionSchemas[1],DefinitionVersionSchemas[2]]));
+export const DefinitionSchema=Type.Unsafe<Definition>(Type.Union([DefinitionVersionSchemas[1],DefinitionVersionSchemas[2],DefinitionVersionSchemas[3]]));
 // Portable graph content excludes server identity and runtime state. Authoring
 // operations take activation as a separate enabled flag, not an imported grant.
-export const DefinitionContentSchema=Type.Omit(DefinitionVersionSchemas[2],['schemaVersion','id','revision'],obj);
+const {schemaVersion:_schemaVersion,id:_id,revision:_revision,...definitionContentFields}=DefinitionFields;
+export const DefinitionContentSchema=Type.Object({...definitionContentFields,schemaVersion:Type.Optional(Type.Union([Type.Literal(2),Type.Literal(3)]))},obj);
 export const DefinitionPatchSchema=Type.Partial(DefinitionContentSchema,{...obj,minProperties:1});
 export type DefinitionContent=Static<typeof DefinitionContentSchema>;
 export type DefinitionPatch=Static<typeof DefinitionPatchSchema>;
 export function parseDefinitionContent(value:unknown,budgets:Budgets=defaultBudgets):DefinitionContent{
-  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budgets.definitionBytes||!Value.Check(DefinitionContentSchema,value))throw requestError('New definition fields do not match schemaVersion 1 or 2, or exceed the configured definition budget. Identity and revision are assigned by the server.');
+  if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budgets.definitionBytes||!Value.Check(DefinitionContentSchema,value))throw requestError('New definition fields do not match schemaVersion 2 or 3, or exceed the configured definition budget. Identity and revision are assigned by the server.');
   return structuredClone(value);
 }
 export function parseDefinitionPatch(value:unknown,budgets:Budgets=defaultBudgets):DefinitionPatch{
@@ -44,7 +47,7 @@ export type Capability = Definition['capabilities'][number];
 export type Issue = {nodeId?:string;message:string};
 export const ports=(node:GraphNode):string[]=>[...nodeContract(node.kind).ports];
 export function parseDefinition(value:unknown,budgets:Budgets=defaultBudgets):Definition {
-  if (!Value.Check(DefinitionSchema,value)) throw requestError('Definition does not match schemaVersion 1 or 2.');
+  if (!Value.Check(DefinitionSchema,value)) throw requestError('Definition does not match schemaVersion 1, 2 or 3.');
   const budget=value.schemaVersion===1?legacyBudgets.definitionBytes:budgets.definitionBytes;
   if(new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw requestError(`Definition exceeds its ${budget}-byte transport budget.`);
   return structuredClone(value);
@@ -57,6 +60,17 @@ export function validateGraph(d:Definition):Issue[] {
     if(ids.has(n.id))error('Node IDs must be unique.',n.id);
     ids.add(n.id);
     for(const b of childNodes(n)){if(ids.has(b.id)||d.nodes.some(x=>x.id===b.id))error('Body node IDs must be unique.',n.id);ids.add(b.id);}
+  }
+  if(d.schemaVersion===3)for(const node of d.nodes.flatMap(node=>[node,...childNodes(node)])){
+    const context=node.context;
+    if(!context)continue;
+    try{
+      if(context.projection.mode==='consume')for(const path of context.projection.paths)pathSegments(path);
+      if(context.patch.mode!=='omit'){
+        assertMutableContextPath(context.patch.target);
+        if(context.patch.source.kind==='output'&&context.patch.source.path!==undefined)pathSegments(context.patch.source.path);
+      }
+    }catch(cause){error(cause instanceof Error?cause.message:'Invalid context configuration.',node.id);}
   }
   if(new Set(d.inputSchema.map(f=>f.name)).size!==d.inputSchema.length)error('Input names must be unique.');
   const entries=d.nodes.filter(n=>n.kind==='input');
@@ -94,8 +108,14 @@ export function validateGraph(d:Definition):Issue[] {
     }
     for(const match of s.matchAll(/\{\{(.*?)\}\}/g)){
       const path=match[1].trim();
+      const contextPath=d.schemaVersion===3?contextPathForBinding(path):undefined;
       const pattern=d.schemaVersion===1?/^(input\.[a-z][\w-]*|nodes\.[a-z][\w-]*\.(text|value|succeeded|iterations|exhausted|provider|model|agentId)|repeat\.index)$/:/^(input\.[a-z][\w-]*(?:\.[\w-]+)*|nodes\.[a-z][\w-]*\.[a-z][\w-]*(?:\.[\w-]+)*|repeat\.index)$/;
-      if(!pattern.test(path)||path.split('.').some(p=>['__proto__','constructor','prototype'].includes(p))){error(`Unsupported binding: ${path}`,n.id);continue;}
+      if(!contextPath&&(!pattern.test(path)||path.split('.').some(p=>['__proto__','constructor','prototype'].includes(p)))){error(`Unsupported binding: ${path}`,n.id);continue;}
+      if(contextPath){
+        const context=(n as GraphNode & {context?:ContextNodeConfig}).context;
+        if(!context||context.projection.mode!=='consume'||!context.projection.paths.some((candidate:string)=>contextPath===candidate||contextPath.startsWith(`${candidate}/`))){error(`Context binding is not projected: ${path}`,n.id);}
+        continue;
+      }
       const [root,id,field]=path.split('.');
       if(root==='input'&&!d.inputSchema.some(f=>f.name===id))error(`Unknown input: ${id}`,n.id);
       if(root==='repeat'&&n.kind!=='repeat')error('repeat.index is only available inside Repeat.',n.id);
@@ -108,7 +128,11 @@ export function validateGraph(d:Definition):Issue[] {
     }
     if(s.replace(/\{\{.*?\}\}/g,'').includes('{{'))error('Unclosed binding.',n.id);
   };
-  for(const node of d.nodes)for(const binding of nodeContract(node.kind).bindings(node))checkText(binding.text,node,binding.prior);
+  for(const node of d.nodes){
+    for(const binding of nodeContract(node.kind).bindings(node))checkText(binding.text,node,binding.prior);
+    const literal=(node as GraphNode & {context?:ContextNodeConfig}).context&&contextPatchLiteral((node as GraphNode & {context?:ContextNodeConfig}).context!);
+    if(literal!==undefined)checkText(literal,node);
+  }
   return issues;
 }
 export function validateInput(d:Definition,value:unknown,budgets:Budgets=defaultBudgets):Record<string,Json>{
@@ -116,10 +140,10 @@ export function validateInput(d:Definition,value:unknown,budgets:Budgets=default
   if(!value||typeof value!=='object'||Array.isArray(value)||new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw requestError(`Input must be a JSON object of at most ${budget===16000?'16 KB':`${budget} bytes`}.`);
   const input=value as Record<string,Json>;
   for(const k of Object.keys(input))if(!d.inputSchema.some(f=>f.name===k))throw requestError(`Unexpected input: ${k}`);
-  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='json'){if(d.schemaVersion!==2||v===undefined||!isJson(v))throw requestError(`Input ${f.name} must be valid JSON in a version 2 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw requestError(`Input ${f.name} must be ${f.type}.`);}
+  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='json'){if(d.schemaVersion===1||v===undefined||!isJson(v))throw requestError(`Input ${f.name} must be valid JSON in a version 2 or 3 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw requestError(`Input ${f.name} must be ${f.type}.`);}
   return structuredClone(input);
 }
-export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;repeat?:{index:number}};
+export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;context?:Record<string,Json>;repeat?:{index:number}};
 export function bind(template:NodeValue,ctx:BindingContext):Json{
   if(typeof template!=='string')return literalValue(template.literalJson);
   const resolve=(raw:string):Json=>{let value:unknown=ctx;for(const part of raw.trim().split('.')){if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');value=(value as Record<string,unknown>)[part];}if(value===undefined)throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');return value as Json;};
@@ -127,11 +151,11 @@ export function bind(template:NodeValue,ctx:BindingContext):Json{
   return template.replace(/\{\{([^{}]+)\}\}/g,(_,p:string)=>{const v=resolve(p);return typeof v==='string'?v:JSON.stringify(v);});
 }
 export const display=(value:Json):string=>typeof value==='string'?value:JSON.stringify(value);
-export function compare(p:Predicate,ctx:BindingContext,version:1|2=1):boolean{
+export function compare(p:Predicate,ctx:BindingContext,version:1|2|3=1):boolean{
   const l=bind(p.left,ctx);
   if(p.op==='truthy')return l===true||l==='true';
   const r=bind(p.right,ctx);
-  switch(p.op){case'equals':return version===1?display(l)===display(r):equalJson(l,r);case'not-equals':return version===1?display(l)!==display(r):!equalJson(l,r);case'contains':return version===2&&Array.isArray(l)?l.some(value=>equalJson(value,r)):display(l).includes(display(r));case'less-than':return version===2?typeof l==='number'&&typeof r==='number'&&l<r:Number.isFinite(Number(l))&&Number.isFinite(Number(r))&&Number(l)<Number(r);case'greater-than':return version===2?typeof l==='number'&&typeof r==='number'&&l>r:Number.isFinite(Number(l))&&Number.isFinite(Number(r))&&Number(l)>Number(r);}
+  switch(p.op){case'equals':return version===1?display(l)===display(r):equalJson(l,r);case'not-equals':return version===1?display(l)!==display(r):!equalJson(l,r);case'contains':return version!==1&&Array.isArray(l)?l.some(value=>equalJson(value,r)):display(l).includes(display(r));case'less-than':return version!==1?typeof l==='number'&&typeof r==='number'&&l<r:Number.isFinite(Number(l))&&Number.isFinite(Number(r))&&Number(l)<Number(r);case'greater-than':return version!==1?typeof l==='number'&&typeof r==='number'&&l>r:Number.isFinite(Number(l))&&Number.isFinite(Number(r))&&Number(l)>Number(r);}
 }
 function equalJson(left:Json,right:Json):boolean{if(left===right)return true;if(typeof left!==typeof right||!left||!right||typeof left!=='object'||typeof right!=='object'||Array.isArray(left)!==Array.isArray(right))return false;const entries=Object.entries(left);return entries.length===Object.keys(right).length&&entries.every(([key,value])=>Object.hasOwn(right,key)&&equalJson(value,(right as Record<string,Json>)[key]));}
 export function outputFields(node:GraphNode):string[]{return nodeContract(node.kind).outputFields(node);}
