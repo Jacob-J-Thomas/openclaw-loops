@@ -20,8 +20,11 @@ function install(nativeTask=task()){
 describe('expansion SDK qualification receipt',()=>{
   it('requires owner binding to the authenticated session',()=>{
     expect(isOwnerBoundToSession('agent:main:session-1','agent:main:session-1')).toBe(true);
+    expect(isOwnerBoundToSession('foreign:agent:main:session-1','agent:main:session-1')).toBe(false);
+    expect(isOwnerBoundToSession('agent:main:session-1:foreign','agent:main:session-1')).toBe(false);
     expect(isOwnerBoundToSession('agent:main:other-session','agent:main:session-1')).toBe(false);
     expect(isOwnerBoundToSession(undefined,'agent:main:session-1')).toBe(false);
+    expect(isOwnerBoundToSession('','')).toBe(false);
   });
 
   it('keeps a bounded post-deadline diagnostic allowance without relaxing startup',async()=>{

@@ -29,7 +29,7 @@ export function sanitizeExpansionSdkReceipt(receipt){
   };
 }
 
-export const isOwnerBoundToSession=(ownerKey,sessionKey)=>typeof ownerKey==='string'&&typeof sessionKey==='string'&&ownerKey.includes(sessionKey);
+export const isOwnerBoundToSession=(ownerKey,sessionKey)=>typeof ownerKey==='string'&&typeof sessionKey==='string'&&sessionKey.length>0&&ownerKey===sessionKey;
 export const observePostDeadlineGatewayReadiness=options=>observeGatewayReadiness({...options,remainingMs:()=>POST_DEADLINE_READINESS_DIAGNOSTIC_MS});
 
 async function main(){
