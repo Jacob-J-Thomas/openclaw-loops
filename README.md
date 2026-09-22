@@ -1,12 +1,20 @@
-# OpenClaw Loops — 1.0.0 release candidate
+# OpenClaw Loops 1.0.0
 
 An external OpenClaw plugin with a native graph editor and one executor shared by the UI, `/loops`, and 37 agent tools. Agents can read, create, edit, publish, enable, disable, invoke, inspect and delete loops. Valid agent-created loops are enabled by default; drafts are optional. OpenClaw's model and permission policies remain authoritative.
 
-**Version 1.0.0 is an unpublished release candidate, not a published stable release.** It awaits final in-scope acceptance, public-registry publication and a fresh registry installation/migration check. The active [delivery goal](docs/DELIVERY_PLAN.md) is a standalone 1.0 external plugin with Input, Inference, configured-model metadata Action, Condition, bounded Repeat, Wait, Human review, Return and Fail. Context, scripts, full agents, subagents, broader control flow, triggers, evaluations and advanced operations are deferred until after 1.0. [Delivery status](docs/DELIVERY_STATUS.md) and [verification](docs/VERIFICATION.md) distinguish source tests, live acceptance and remaining gates.
+The nine-node palette provides Input, Inference, configured-model metadata Action, Condition, bounded Repeat, Wait, Human review, Return and Fail, with drafts, publication, versioning, inspection, recovery and complete paged results.
+
+The source and package are prepared for 1.0.0 publication. Registry availability, the published archive hash and fresh registry installation/migration are recorded only by [Bolt #76](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/76); until that receipt is updated, use the reviewed source or a local package. Context, scripts, full agents, subagents, broader control flow, triggers, evaluations and advanced operations remain post-1.0 scope. [Delivery status](docs/DELIVERY_STATUS.md) and [verification](docs/VERIFICATION.md) distinguish accepted evidence from publication state.
 
 This repository contains the plugin and its development/test tooling. All host integration uses supported released OpenClaw APIs. No OpenClaw issue, PR, comment or patch is part of this delivery; no host fork, provider client or upstream patch is bundled here. See the [repository boundary](docs/RELEASE_SCOPE.md).
 
-The candidate uses the public **OpenClaw 2026.9.5** SDK. [Candidate qualification](docs/VERIFICATION.md#unpublished-100-candidate) records the source/archive identity, four-platform checks, ordinary installation, matched backup/restore, static validation and publishing dry run. [Bolt #207](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/207) retains the exact receipts for each candidate revision; completed candidate checks are separate from final post-landing QA, native spoken-navigation qualification and actual registry release. Local qualification uses **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b** through an ordinary isolated-profile installation. See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [supported-host boundaries](docs/UPSTREAM_REQUIREMENTS.md).
+The candidate uses the public **OpenClaw 2026.9.5** SDK. [Candidate qualification](docs/VERIFICATION.md#100-candidate-qualification) records the source/archive identity, four-platform checks, ordinary installation, matched backup/restore, static validation and publishing dry run. Accepted [#223](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/223#issuecomment-5771153194) records 659 source tests, 86 extracted-package tests, 22 mounted checks and four-platform CI; the owner also accepted practical manual VoiceOver navigation under [#185](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/185). Local qualification uses **Node 24.16.0** on macOS, real OpenAI Codex and **Ollama 0.32.15 / qwen3.5:4b** through an ordinary isolated-profile installation. See [deployment and lifecycle](docs/DEPLOYMENT.md), [capabilities](docs/CAPABILITIES.md), [graph format](docs/FORMAT.md), and [supported-host boundaries](docs/UPSTREAM_REQUIREMENTS.md).
+
+Install from the public registry after [#76](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/76) records availability:
+
+```sh
+openclaw plugins install clawhub:openclaw-loops-poc@1.0.0 --accept-capabilities
+```
 
 ## Develop locally with Ollama
 
@@ -130,4 +138,4 @@ Failed runs expose a stable code, phase, failed node, selected model, retryabili
 
 `npm run check` runs types, lint, deterministic tests and both builds. `node scripts/verify-package.mjs` exercises actual SDK adapters from the extracted tarball. Live command/tool/UI tests use dedicated synthetic conversations and record their evidence separately. GitHub CI is configured for macOS/Linux and Node 24.16.0/26.1.0; an unrun workflow is not passing evidence.
 
-See [contribution guidance](CONTRIBUTING.md), [MIT license](LICENSE), and [third-party notices](docs/THIRD_PARTY_NOTICES.md). [Public source](https://github.com/Jacob-J-Thomas/openclaw-loops) and its plugin history are available. Follow [CI](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/workflows/verify.yml) and [delivery status](docs/DELIVERY_STATUS.md) for remaining acceptance; no 1.0 registry release has been published.
+See [contribution guidance](CONTRIBUTING.md), [MIT license](LICENSE), and [third-party notices](docs/THIRD_PARTY_NOTICES.md). [Public source](https://github.com/Jacob-J-Thomas/openclaw-loops) and its plugin history are available. Follow [CI](https://github.com/Jacob-J-Thomas/openclaw-loops/actions/workflows/verify.yml) and [delivery status](docs/DELIVERY_STATUS.md); [#76](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/76) records registry availability and fresh installation when complete.
