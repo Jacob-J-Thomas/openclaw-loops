@@ -5,6 +5,7 @@ import type {RunReceipt,describe} from './receipts.js';
 import type {InferenceCapabilities} from './inference-settings.js';
 import {BudgetsSchema,type Budgets} from './budgets.js';
 import {RetentionResultSchema} from './retention.js';
+import {ContextStateSchema} from './context.js';
 import {LoopErrorSchema} from './errors.js';
 
 // Each operation publishes a concrete wire shape. Dynamic JSON data and host
@@ -30,7 +31,7 @@ const loopRecord=Type.Object({
 },strict);
 const record=Type.Unsafe<LoopRecord>(loopRecord);
 const receipt=Type.Unsafe<RunReceipt>(Type.Object({
-  id:text,state:runState,owner,source:enums(['command','tool','session-action']),requester:Type.Optional(text),definition:summary,
+  id:text,state:runState,owner,source:enums(['command','tool','session-action']),requester:Type.Optional(text),definition:summary,contextVersion:Type.Optional(integer),
   executions:integer,createdAt:text,updatedAt:text,models:Type.Array(text),
   result:Type.Optional(Type.Unknown()),resultPreview:Type.Optional(text),resultTruncated:Type.Optional(Type.Boolean()),
   pending:Type.Optional(text),pendingTruncated:Type.Optional(Type.Boolean()),error:Type.Optional(text),errorDetail:Type.Optional(error),
@@ -41,7 +42,7 @@ const runData=Type.Object({
   id:text,requestKey:text,requestFingerprint:text,owner,source:enums(['command','tool','session-action']),requester:Type.Optional(text),
   requestFingerprintVersion:Type.Optional(Type.Literal(2)),
   executionSettings:Type.Optional(Type.Object({model:Type.Optional(text),reasoning:Type.Optional(text),authProfileId:Type.Optional(text),agentModels:Type.Optional(Type.Record(text,text))},strict)),
-  cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),
+  cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),context:Type.Optional(ContextStateSchema),
   grantGeneration:Type.Optional(grantGeneration),
   definition:DefinitionSchema,input:Type.Record(text,Type.Unknown()),state:runState,cursor:text,outputs:Type.Record(text,Type.Unknown()),
   trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text)},strict)),
