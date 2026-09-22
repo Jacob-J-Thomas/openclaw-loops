@@ -193,7 +193,7 @@ describe('required current-metadata merge mechanism',()=>{
   it('rechecks the contract after CI inspection and merges only the reviewed head',async()=>{
     const calls=[],value=fixture();value.reviewRequestIds=['review:1'];
     const result=await mergeCandidate(118,{head,base},{collect:async()=>{calls.push('contract');return value;},request:async path=>{expect(path).toContain(head);calls.push('checks');return passingChecks();},merge:async(number,sha)=>{calls.push('merge');expect([number,sha]).toEqual([118,head]);return {merged:true,sha:'c'.repeat(40)};}});
-    expect(calls).toEqual(['contract','checks','contract','merge']);expect(result.checks).toHaveLength(5);
+    expect(calls).toEqual(['contract','checks','contract','checks','merge']);expect(result.checks).toHaveLength(5);
   });
   it.each(['closed-parent','fourth-review','competing-candidate','changed-head','changed-base','no-review','failed-check'])('does not merge after %s',async mode=>{
     const value=fixture();value.reviewRequestIds=['review:1'];let reads=0,merged=false;
@@ -202,6 +202,15 @@ describe('required current-metadata merge mechanism',()=>{
       return value;
     },request:async()=>{const checks=passingChecks();if(mode==='failed-check')checks.check_runs[0].conclusion='failure';return checks;},merge:async()=>{merged=true;return {merged:true};}});
     await expect(run()).rejects.toThrow();expect(merged).toBe(false);
+  });
+  it.each(['queued','failure'])('rejects a newer %s check observed after final contract collection',async state=>{
+    const value=fixture();value.reviewRequestIds=['review:1'];let reads=0,merged=false;
+    await expect(mergeCandidate(118,{head,base},{collect:async()=>{reads++;return value;},request:async()=>{
+      const checks=passingChecks();
+      if(reads===2){checks.check_runs.push({...checks.check_runs[0],id:100,status:state==='queued'?'queued':'completed',conclusion:state==='queued'?null:'failure'});checks.total_count++;}
+      return checks;
+    },merge:async()=>{merged=true;return {merged:true};}})).rejects.toThrow('Current required check is not successful');
+    expect(merged).toBe(false);
   });
   it('does not accept an older pass, another head, missing checks or incomplete pagination',()=>{
     const older=passingChecks();older.check_runs.push({...older.check_runs[0],id:100,status:'queued',conclusion:null});older.total_count++;expect(()=>validateChecks(older,head)).toThrow('not successful');
