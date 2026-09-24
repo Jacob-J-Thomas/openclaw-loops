@@ -1,11 +1,11 @@
 import {afterEach,describe,it,expect} from 'vitest';
 import {existsSync,mkdtempSync,mkdirSync,readFileSync,realpathSync,readdirSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {createServer} from 'node:net';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {acquireLease,activeLease,admitOllamaArgs,admitOpenClawArgs,assertNode,assertSetupLocation,buildEnvironment,cleanEnvironment,installedHost,ollamaEnvironment,portOccupied,profileEnvironment,runOpenClaw} from '../scripts/isolated-runtime.mjs';
+import {acquireLease,activeLease,admitOllamaArgs,admitOpenClawArgs,assertNode,assertSetupLocation,buildEnvironment,cleanEnvironment,installedHost,ollamaEnvironment,ollamaPort,portOccupied,profileEnvironment,runOllama,runOpenClaw} from '../scripts/isolated-runtime.mjs';
 
 const roots=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
@@ -40,6 +40,40 @@ describe('isolated runtime admission',()=>{
     const f=await fixture();expect(installedHost(f.root)).toBe(join(f.module,'openclaw.mjs'));
     rmSync(f.module,{recursive:true});
     expect(()=>installedHost(f.root)).toThrow(/missing/);
+  });
+  it('initializes and admits an explicit alternate provider port in every environment',async()=>{
+    const f=await fixture();
+    rmSync(f.profile,{recursive:true});
+    writeFileSync(join(f.root,'openclaw.plugin.json'),JSON.stringify({contracts:{tools:[]}}));
+    const init=spawnSync(process.execPath,[resolve('scripts/init-profile.mjs')],{cwd:f.root,env:{...process.env,LOOPS_OLLAMA_PORT:'21439'},encoding:'utf8'});
+    expect(init.status).toBe(0);
+    const config=JSON.parse(readFileSync(join(f.profile,'openclaw.json')));
+    expect(config.models.providers.ollama.baseUrl).toBe('http://127.0.0.1:21439');
+    const source={LOOPS_OLLAMA_PORT:'21439'};
+    expect(profileEnvironment(f.root,'ollama',source).port).toBe(19491);
+    expect(ollamaEnvironment(f.root,source).OLLAMA_HOST).toBe('127.0.0.1:21439');
+    expect(()=>profileEnvironment(f.root)).toThrow(/selected disposable worker endpoint/);
+    expect(()=>ollamaEnvironment(f.root,{...source,OLLAMA_HOST:'127.0.0.1:11439'})).toThrow(/selected dedicated service/);
+    await runOpenClaw(f.root,['config','validate'],{...source,LOOPS_TEST_OUTPUT:f.output});
+    expect(JSON.parse(readFileSync(f.output)).args).toEqual(['config','validate']);
+  });
+  it('rejects invalid provider ports and refuses the selected occupied port',async()=>{
+    for(const value of ['11434','18789','19491','19691','80','65536','abc','021439']){
+      expect(()=>ollamaPort({LOOPS_OLLAMA_PORT:value})).toThrow();
+    }
+    expect(ollamaPort({LOOPS_OLLAMA_PORT:'21439'})).toBe(21439);
+    const f=await fixture();
+    const configFile=join(f.profile,'openclaw.json');
+    const config=JSON.parse(readFileSync(configFile));
+    const selected=await freePort();
+    config.models.providers.ollama.baseUrl='http://127.0.0.1:'+selected;
+    writeFileSync(configFile,JSON.stringify(config));
+    const server=createServer();await new Promise(done=>server.listen(selected,'127.0.0.1',done));
+    try{
+      expect(await portOccupied(selected)).toBe(true);
+      expect(()=>profileEnvironment(f.root,'ollama',{LOOPS_OLLAMA_PORT:'11439'})).toThrow(/selected disposable worker endpoint/);
+      await expect(runOllama(f.root,['serve'],{LOOPS_OLLAMA_PORT:String(selected),LOOPS_OLLAMA_BIN:process.execPath})).rejects.toThrow(/Inference port is occupied/);
+    }finally{await new Promise(done=>server.close(done));}
   });
   it('builds with no runtime profile and removes inherited provider credentials',async()=>{
     const f=await fixture();rmSync(f.profile,{recursive:true});
@@ -122,12 +156,13 @@ describe('isolated runtime admission',()=>{
     const f=await fixture(),file=join(f.root,'lease.json'),owner=f.root;
     const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
     try{
-      const lease=acquireLease(file,'inference-worker',owner);
+      const lease=acquireLease(file,'inference-worker',owner,null,21439);
       lease.markChild(child.pid);
-      expect(activeLease(file,'inference-worker',owner)).toBe(false);
+      expect(activeLease(file,'inference-worker',owner,21439)).toBe(false);
       lease.markReady();
-      expect(activeLease(file,'inference-worker',owner)).toBe(true);
-      expect(activeLease(file,'inference-worker','/other/worktree')).toBe(false);
+      expect(activeLease(file,'inference-worker',owner,21439)).toBe(true);
+      expect(activeLease(file,'inference-worker',owner,11439)).toBe(false);
+      expect(activeLease(file,'inference-worker','/other/worktree',21439)).toBe(false);
       const receipt=JSON.parse(readFileSync(file));
       receipt.parentPid=99999999;writeFileSync(file,JSON.stringify(receipt));
       expect(()=>acquireLease(file,'inference-worker',owner)).toThrow(/another live process/);

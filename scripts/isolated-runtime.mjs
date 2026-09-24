@@ -16,6 +16,13 @@ const privateDir=path=>mkdirSync(path,{recursive:true,mode:0o700});
 const inside=(path,parent)=>path.startsWith(parent+sep);
 const live=pid=>{try{process.kill(pid,0);return true;}catch{return false;}};
 const existsEntry=path=>{try{lstatSync(path);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
+export function ollamaPort(source=process.env){
+  const raw=source.LOOPS_OLLAMA_PORT??'11439';
+  assert(/^\d{4,5}$/.test(raw),'LOOPS_OLLAMA_PORT must be a nonprivileged decimal port.');
+  const port=Number(raw);
+  assert(port>=1024&&port<=65535&&![11434,18789,19491,19691].includes(port),'LOOPS_OLLAMA_PORT conflicts with a reserved personal or Gateway port.');
+  return port;
+}
 function containedDir(path){
   privateDir(path);
   assert.equal(canonical(path),path,'Isolated directory must not redirect through a symlink.');
@@ -117,13 +124,13 @@ function validateModelSelection(selection,prefix){
   assert(typeof model?.primary==='string'&&model.primary.startsWith(prefix),'Default model must use this profile\'s approved provider.');
   assert(Array.isArray(model.fallbacks??[])&&(model.fallbacks??[]).every(value=>typeof value==='string'&&value.startsWith(prefix)),'Model fallbacks must use this profile\'s approved provider.');
 }
-export function validateProfileConfig(config,name,project,profile){
+export function validateProfileConfig(config,name,project,profile,selectedOllamaPort=11439){
   const provider=name==='ollama'?'ollama':'openai',prefix=provider+'/';
   assert.deepEqual(Object.keys(config.models?.providers??{}),[provider],'Profile must configure only its approved provider.');
   const selected=config.models.providers[provider];
   if(name==='ollama'){
     assert.deepEqual(Object.keys(selected).sort(),['api','apiKey','baseUrl','models'],'Ollama provider has unapproved settings.');
-    assert.equal(selected.baseUrl,'http://127.0.0.1:11439','Ollama provider must use the disposable worker endpoint.');
+    assert.equal(selected.baseUrl,'http://127.0.0.1:'+selectedOllamaPort,'Ollama provider must use the selected disposable worker endpoint.');
     assert.equal(selected.api,'ollama');
     assert.equal(selected.apiKey,'ollama-local');
   }else{
@@ -183,8 +190,9 @@ export function profileEnvironment(root,name='ollama',source=process.env){
   assert(config.gateway?.auth?.mode==='token'&&typeof config.gateway.auth.token==='string'&&config.gateway.auth.token.length>=32,'Gateway needs its own token.');
   const port=config.gateway?.port;
   assert(Number.isInteger(port)&&port>=1024&&port<=65535,'Gateway needs a dedicated nonprivileged port.');
+  if(name==='ollama')assert.notEqual(port,ollamaPort(source),'Gateway and provider cannot share a port.');
   if(config.logging?.file)assert.equal(resolve(project,config.logging.file),join(profile,'gateway.log'),'Gateway log must remain in this profile.');
-  validateProfileConfig(config,name,project,profile);
+  validateProfileConfig(config,name,project,profile,name==='ollama'?ollamaPort(source):11439);
   for(const dir of [state,workspace,cache,browser,home])containedDir(dir);
   const xdgConfig=containedDir(join(profile,'xdg-config')),xdgData=containedDir(join(profile,'xdg-data')),temporary=containedDir(join(profile,'tmp'));
   const expected={OPENCLAW_CONFIG_PATH:configPath,OPENCLAW_STATE_DIR:state,OPENCLAW_HOME:home,XDG_CACHE_HOME:cache,PLAYWRIGHT_BROWSERS_PATH:browser,CHROME_USER_DATA_DIR:browser};
@@ -205,9 +213,9 @@ export function portOccupied(port,host='127.0.0.1'){
     socket.setTimeout(1000,()=>{socket.destroy();done(true);});
   });
 }
-export function acquireLease(file,kind,owner=null,receiptDir=null){
+export function acquireLease(file,kind,owner=null,receiptDir=null,port=null){
   containedDir(dirname(file));
-  const receipt={kind,owner,parentPid:process.pid,childPid:null,phase:'starting',id:randomUUID(),startedAt:new Date().toISOString()};
+  const receipt={kind,owner,port,parentPid:process.pid,childPid:null,phase:'starting',id:randomUUID(),startedAt:new Date().toISOString()};
   for(let attempt=0;attempt<2;attempt++){
     try{
       writeFileSync(file,JSON.stringify(receipt)+'\n',{flag:'wx',mode:0o600});
@@ -245,11 +253,11 @@ export function acquireLease(file,kind,owner=null,receiptDir=null){
   }
   throw Error('Unable to acquire '+kind+' lease.');
 }
-export function activeLease(file,kind,owner){
+export function activeLease(file,kind,owner,port=null){
   try{
     if(lstatSync(file).isSymbolicLink())return false;
     const receipt=JSON.parse(readFileSync(file,'utf8'));
-    return receipt.kind===kind&&receipt.owner===owner&&receipt.phase==='ready'&&
+    return receipt.kind===kind&&receipt.owner===owner&&receipt.port===port&&receipt.phase==='ready'&&
       Number.isInteger(receipt.parentPid)&&live(receipt.parentPid)&&Number.isInteger(receipt.childPid)&&live(receipt.childPid);
   }catch{return false;}
 }
@@ -313,27 +321,29 @@ export async function runOpenClaw(root,args,source=process.env){
   if(['codex-auth','codex-install'].includes(command))assert.equal(name,'codex-test','Codex authentication and installation require the isolated Codex profile.');
   const lease=join(profile.profile,'gateway.lease.json');
   const inferenceLease=join(canonical(tmpdir()),'openclaw-loops-inference-'+(process.getuid?.()??'local')+'.lease.json');
-  const providerReady=async()=>activeLease(inferenceLease,'inference-worker',canonical(root))&&await portOccupied(11439);
+  const modelPort=name==='ollama'?ollamaPort(source):null;
+  const providerReady=async()=>activeLease(inferenceLease,'inference-worker',canonical(root),modelPort)&&await portOccupied(modelPort);
   if(command==='gateway'){
     assert(!(await portOccupied(profile.port)),'Gateway port is occupied by an existing service.');
     if(name==='ollama')assert(await providerReady(),'Gateway requires its own ready disposable inference worker.');
     return runOwned(process.execPath,[cli,...args],profile.env,
-      acquireLease(lease,'gateway',profile.profile,join(profile.profile,'receipts')),profile.port,
+      acquireLease(lease,'gateway',profile.profile,join(profile.profile,'receipts'),profile.port),profile.port,
       name==='ollama'?providerReady:null);
   }
   if(['gateway-call','agent'].includes(command)){
-    assert(activeLease(lease,'gateway',profile.profile)&&await portOccupied(profile.port),'Gateway command requires its own ready service.');
+    assert(activeLease(lease,'gateway',profile.profile,profile.port)&&await portOccupied(profile.port),'Gateway command requires its own ready service.');
   }else if(await portOccupied(profile.port)){
-    assert(activeLease(lease,'gateway',profile.profile),'Gateway port is occupied by an unowned service.');
+    assert(activeLease(lease,'gateway',profile.profile,profile.port),'Gateway port is occupied by an unowned service.');
   }
   return runOwned(process.execPath,[cli,...args],profile.env);
 }
 export function ollamaEnvironment(root,source=process.env){
   const project=canonical(root),base=developmentBase(project),models=containedDir(join(base,'ollama-models'));
+  const host='127.0.0.1:'+ollamaPort(source);
   if(source.OLLAMA_MODELS!==undefined&&resolve(source.OLLAMA_MODELS)!==models)throw Error('OLLAMA_MODELS points outside this checkout.');
-  if(source.OLLAMA_HOST!==undefined&&source.OLLAMA_HOST!=='127.0.0.1:11439')throw Error('OLLAMA_HOST points outside the dedicated service.');
+  if(source.OLLAMA_HOST!==undefined&&source.OLLAMA_HOST!==host)throw Error('OLLAMA_HOST points outside the selected dedicated service.');
   const home=containedDir(join(base,'ollama-home')),cache=containedDir(join(base,'ollama-cache')),temporary=containedDir(join(base,'ollama-tmp'));
-  return {...cleanEnvironment(source),OLLAMA_HOST:'127.0.0.1:11439',OLLAMA_MODELS:models,OLLAMA_CONTEXT_LENGTH:'32768',OLLAMA_NUM_PARALLEL:'1',OLLAMA_MAX_LOADED_MODELS:'1',OLLAMA_FLASH_ATTENTION:'1',OLLAMA_KV_CACHE_TYPE:'q8_0',OLLAMA_NO_CLOUD:'1',HOME:home,OPENCLAW_HOME:home,XDG_CONFIG_HOME:home,XDG_DATA_HOME:home,XDG_CACHE_HOME:cache,TMPDIR:temporary,TMP:temporary,TEMP:temporary};
+  return {...cleanEnvironment(source),OLLAMA_HOST:host,OLLAMA_MODELS:models,OLLAMA_CONTEXT_LENGTH:'32768',OLLAMA_NUM_PARALLEL:'1',OLLAMA_MAX_LOADED_MODELS:'1',OLLAMA_FLASH_ATTENTION:'1',OLLAMA_KV_CACHE_TYPE:'q8_0',OLLAMA_NO_CLOUD:'1',HOME:home,OPENCLAW_HOME:home,XDG_CONFIG_HOME:home,XDG_DATA_HOME:home,XDG_CACHE_HOME:cache,TMPDIR:temporary,TMP:temporary,TEMP:temporary};
 }
 export async function runOllama(root,args,source=process.env){
   assertNode();const command=admitOllamaArgs(args);
@@ -344,9 +354,10 @@ export async function runOllama(root,args,source=process.env){
   const env=ollamaEnvironment(root,source);
   const lease=join(canonical(tmpdir()),'openclaw-loops-inference-'+(process.getuid?.()??'local')+'.lease.json');
   const serve=command==='serve';
-  if(serve)assert(!(await portOccupied(11439)),'Inference port is occupied by an existing provider daemon.');
-  else assert(activeLease(lease,'inference-worker',project)&&await portOccupied(11439),'Start the owned ready inference worker first.');
-  return runOwned(executable,args,env,serve?acquireLease(lease,'inference-worker',project,join(developmentBase(project),'receipts')):null,serve?11439:null);
+  const port=ollamaPort(source);
+  if(serve)assert(!(await portOccupied(port)),'Inference port is occupied by an existing provider daemon.');
+  else assert(activeLease(lease,'inference-worker',project,port)&&await portOccupied(port),'Start the owned ready inference worker first.');
+  return runOwned(executable,args,env,serve?acquireLease(lease,'inference-worker',project,join(developmentBase(project),'receipts'),port):null,serve?port:null);
 }
 if(fileURLToPath(import.meta.url)===resolve(process.argv[1]??'')){
   const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
