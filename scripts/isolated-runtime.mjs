@@ -9,8 +9,7 @@ import {dirname,isAbsolute,join,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const supported=new Set(['v24.16.0','v26.1.0']);
-const secret=/^(OPENCLAW_|OLLAMA_|OPENAI_|ANTHROPIC_|GOOGLE_|GEMINI_|AZURE_|AWS_|CODEX_|GROQ_|MISTRAL_|TOGETHER_|FIREWORKS_|DEEPSEEK_|XAI_|HF_|HUGGINGFACE_)/i;
-const controlled=new Set(['HOME','TMPDIR','TMP','TEMP','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','PLAYWRIGHT_BROWSERS_PATH','CHROME_USER_DATA_DIR','PUPPETEER_CACHE_DIR','BROWSER']);
+const inherited=new Set(['PATH','LANG','LC_ALL','LC_CTYPE','TERM','COLORTERM','NO_COLOR','FORCE_COLOR','CI','TZ']);
 const canonical=path=>realpathSync(resolve(path));
 const privateDir=path=>mkdirSync(path,{recursive:true,mode:0o700});
 const inside=(path,parent)=>path.startsWith(parent+sep);
@@ -59,7 +58,7 @@ export function installedHost(root){
   return cli;
 }
 export function cleanEnvironment(source=process.env){
-  return Object.fromEntries(Object.entries(source).filter(([key])=>!secret.test(key)&&!controlled.has(key)));
+  return Object.fromEntries(Object.entries(source).filter(([key])=>inherited.has(key)));
 }
 const gatewayMethods=new Set(['sessions.create','sessions.patch','chat.history','chat.send','plugins.sessionAction']);
 export function admitOpenClawArgs(root,args){
@@ -165,14 +164,7 @@ export function validateProfileConfig(config,name,project,profile,selectedOllama
     assert(!entry.cdpUrl&&!entry.wsEndpoint,'External browser profile endpoints are not admitted.');
     if(entry.userDataDir)assert(inside(canonical(entry.userDataDir),join(profile,'browser')),'Browser profile path escapes this profile.');
   }
-  const inspectEnv=value=>{
-    if(!value||typeof value!=='object')return;
-    for(const [key,entry] of Object.entries(value)){
-      assert(!secret.test(key),'Profile contains an inherited-provider credential override.');
-      inspectEnv(entry);
-    }
-  };
-  inspectEnv(config.env);
+  assert(!config.env||Object.keys(config.env).length===0,'Profile environment overrides are not admitted.');
 }
 export function profileEnvironment(root,name='ollama',source=process.env){
   assert(['ollama','codex-test'].includes(name),'Choose an explicit supported development profile.');

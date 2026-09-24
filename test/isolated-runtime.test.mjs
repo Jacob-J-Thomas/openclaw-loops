@@ -22,7 +22,7 @@ async function fixture(name='ollama'){
   mkdirSync(module,{recursive:true});mkdirSync(join(profile,'workspace'),{recursive:true});
   writeFileSync(join(root,'package.json'),JSON.stringify({devDependencies:{openclaw:'2026.9.5'}}));
   writeFileSync(join(module,'package.json'),JSON.stringify({name:'openclaw',version:'2026.9.5'}));
-  writeFileSync(join(module,'openclaw.mjs'),"import {writeFileSync} from 'node:fs'; writeFileSync(process.env.LOOPS_TEST_OUTPUT,JSON.stringify({args:process.argv.slice(2),env:process.env}));");
+  writeFileSync(join(module,'openclaw.mjs'),"import {writeFileSync} from 'node:fs'; writeFileSync(new URL('../../output.json',import.meta.url),JSON.stringify({args:process.argv.slice(2),env:process.env}));");
   const port=await freePort();
   writeFileSync(join(profile,'openclaw.json'),JSON.stringify({
     gateway:{mode:'local',bind:'loopback',port,auth:{mode:'token',token:'a'.repeat(64)}},
@@ -77,9 +77,12 @@ describe('isolated runtime admission',()=>{
   });
   it('builds with no runtime profile and removes inherited provider credentials',async()=>{
     const f=await fixture();rmSync(f.profile,{recursive:true});
-    const env=buildEnvironment(f.root,{OPENAI_API_KEY:'private',OPENCLAW_CONFIG_PATH:'/private/real',CODEX_HOME:'/private/codex',PATH:'/usr/bin'});
+    const env=buildEnvironment(f.root,{OPENAI_API_KEY:'private',OPENROUTER_API_KEY:'private',JEV_API_KEY:'private',NODE_OPTIONS:'--require /private/preload.js',NODE_PATH:'/private/modules',HTTPS_PROXY:'http://private-proxy',OPENCLAW_CONFIG_PATH:'/private/real',CODEX_HOME:'/private/codex',PATH:'/usr/bin'});
     expect(env.OPENAI_API_KEY).toBeUndefined();expect(env.OPENCLAW_CONFIG_PATH).toBeUndefined();
-    expect(env.CODEX_HOME).toBeUndefined();expect(env.HOME).toContain('build-home');
+    expect(env.CODEX_HOME).toBeUndefined();expect(env.OPENROUTER_API_KEY).toBeUndefined();
+    expect(env.JEV_API_KEY).toBeUndefined();expect(env.NODE_OPTIONS).toBeUndefined();
+    expect(env.NODE_PATH).toBeUndefined();expect(env.HTTPS_PROXY).toBeUndefined();
+    expect(env.HOME).toContain('build-home');
     expect(env.OPENCLAW_HOME).toBe(env.HOME);expect(env.TMPDIR).toContain('build-home');
     await runOpenClaw(f.root,['plugins','build'],{LOOPS_TEST_OUTPUT:f.output,OPENAI_API_KEY:'private'});
     const result=JSON.parse(readFileSync(f.output));expect(result.args).toEqual(['plugins','build']);
@@ -87,7 +90,7 @@ describe('isolated runtime admission',()=>{
   });
   it('passes a dedicated profile and strips provider credentials on a normal invocation',async()=>{
     const f=await fixture();
-    await runOpenClaw(f.root,['config','validate'],{LOOPS_TEST_OUTPUT:f.output,OPENAI_API_KEY:'private',ANTHROPIC_AUTH_TOKEN:'private'});
+    await runOpenClaw(f.root,['config','validate'],{LOOPS_TEST_OUTPUT:f.output,OPENAI_API_KEY:'private',ANTHROPIC_AUTH_TOKEN:'private',OPENROUTER_API_KEY:'private',JEV_API_KEY:'private',NODE_OPTIONS:'--require /private/preload.js',NODE_PATH:'/private/modules'});
     const result=JSON.parse(readFileSync(f.output));
     expect(result.env.OPENCLAW_CONFIG_PATH).toBe(join(f.profile,'openclaw.json'));
     expect(result.env.OPENCLAW_STATE_DIR).toBe(join(f.profile,'state'));
@@ -97,6 +100,8 @@ describe('isolated runtime admission',()=>{
     expect(result.env.PLAYWRIGHT_BROWSERS_PATH).toBe(join(f.profile,'browser'));
     expect(result.env.HOME).toBe(join(f.profile,'home'));
     expect(result.env.OPENAI_API_KEY).toBeUndefined();expect(result.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(result.env.OPENROUTER_API_KEY).toBeUndefined();expect(result.env.JEV_API_KEY).toBeUndefined();
+    expect(result.env.NODE_OPTIONS).toBeUndefined();expect(result.env.NODE_PATH).toBeUndefined();
   });
   it('rejects foreign profile paths and malformed workspace before dispatch',async()=>{
     const f=await fixture();
@@ -219,7 +224,7 @@ describe('isolated runtime admission',()=>{
     }finally{if(parent.exitCode===null)parent.kill('SIGKILL');}
   });
   it('sanitizes inherited host and provider variables',()=>{
-    expect(cleanEnvironment({PATH:'/usr/bin',OPENCLAW_STATE_DIR:'/private',OLLAMA_HOST:'remote',GOOGLE_API_KEY:'secret',OPENAI_ORG_ID:'private',AWS_SECRET_ACCESS_KEY:'secret',PUPPETEER_CACHE_DIR:'/private'})).toEqual({PATH:'/usr/bin'});
+    expect(cleanEnvironment({PATH:'/usr/bin',LANG:'en_US.UTF-8',TERM:'xterm',OPENCLAW_STATE_DIR:'/private',OLLAMA_HOST:'remote',OPENROUTER_API_KEY:'secret',JEV_API_KEY:'secret',NODE_OPTIONS:'--require /private/preload.js',NODE_PATH:'/private/modules',HTTPS_PROXY:'http://private-proxy',PUPPETEER_CACHE_DIR:'/private'})).toEqual({PATH:'/usr/bin',LANG:'en_US.UTF-8',TERM:'xterm'});
   });
   it('admits documented CLI shapes and rejects host, auth, and path overrides',async()=>{
     const f=await fixture(),archive=join(f.root,'candidate.tgz');writeFileSync(archive,'fixture');
@@ -242,6 +247,7 @@ describe('isolated runtime admission',()=>{
     for(const edit of [
       config=>{config.models.providers.ollama.baseUrl='http://127.0.0.1:11434';},
       config=>{config.models.providers.openai={apiKey:'private'};},
+      config=>{config.env={OPENROUTER_API_KEY:'private'};},
       config=>{config.agents.defaults.model.fallbacks=['openai/gpt'];},
       config=>{config.plugins={load:{paths:['/private/foreign-plugin']}};},
       config=>{config.gateway.port=18789;},
