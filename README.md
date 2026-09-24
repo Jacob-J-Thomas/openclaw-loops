@@ -14,20 +14,23 @@ Run from this repository. These commands use separate development state, workspa
 
 ```sh
 npm install --prefix .dev-runtime node@24.16.0 --no-audit --no-fund
-export PATH="$PWD/.dev-runtime/node_modules/.bin:$PATH"
+export LOOPS_NODE_BIN="$PWD/.dev-runtime/node_modules/node/bin/node"
+export PATH="$(dirname "$LOOPS_NODE_BIN"):$PATH"
 npm ci --cache .dev-profile/npm-cache
-node scripts/init-profile.mjs
+"$LOOPS_NODE_BIN" scripts/init-profile.mjs
 ```
 
 With the Ollama CLI installed, start its isolated server in a dedicated terminal:
 
 ```sh
+export LOOPS_OLLAMA_BIN="$(command -v ollama)"
 bash scripts/ollama.sh serve
 ```
 
 Then build and install the plugin, and start the development Gateway:
 
 ```sh
+export LOOPS_OLLAMA_BIN="$(command -v ollama)"
 bash scripts/ollama.sh pull qwen3.5:4b
 npm run check
 node scripts/verify-package.mjs
@@ -39,6 +42,10 @@ bash scripts/dev.sh gateway run
 Open [the Ollama Loops page](http://127.0.0.1:19491/plugin?plugin=loops-poc&id=loops). On first connection, use the Gateway secret from `.dev-profile/openclaw.json` in the Control UI's secret field. Keep that private configuration out of Git and URLs. The isolated Ollama server listens on `127.0.0.1:11439`.
 
 The development server uses one loaded model and one inference worker, 32K context, flash attention and an 8-bit KV cache. The observed loaded model allocation was about 3.7 GB; total machine memory includes the OS, apps and Gateway. Keep plugin `maxConcurrentRuns` at 1 for the 16 GB local setup. Existing custom profiles are preserved; the initializer repairs only recognizable old generated single-model policies, with a backup.
+
+The wrappers require exact Node 24.16.0 or 26.1.0. `scripts/dev.sh` resolves only this checkout's pinned `node_modules/openclaw/openclaw.mjs`; a missing project installation fails before dispatch. Runtime commands require the selected profile's own config, state, workspace, cache, browser directory and token-authenticated loopback port. Set `LOOPS_PROFILE=codex-test` for that profile through `scripts/codex.sh`; do not redirect inherited `OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR` or browser/cache paths to another profile. The wrappers remove inherited provider credentials and use a private home. `plugins build` has a separate disposable build home and needs no runtime profile, so `npm run build` remains usable immediately after `npm ci`.
+
+`scripts/ollama.sh` requires an explicit executable path in `LOOPS_OLLAMA_BIN`. It refuses to start when port 11439 is occupied, keeps model files in this checkout, and uses a single machine-local inference-worker lease. Model CLI requests require that lease. The Gateway wrapper likewise refuses a foreign listener or concurrent owner on its configured port. Ctrl-C forwards to the owned child; each wrapper removes only its matching lease after that child exits and prints a cleanup receipt. If a wrapper reports an unreadable lease, inspect it before retrying; do not stop an unrelated daemon to make the check pass.
 
 Profile updates and explicit tool-inventory updates stage complete files before atomic replacement. Each change retains a uniquely named, byte-exact `openclaw.json.before-loops-*.bak` with private permissions. Repeating an unchanged setup creates no new backup. Failures before replacement preserve the active profile; a killed process may leave a private `.tmp` file for diagnosis. A detected concurrent edit aborts the replacement, so rerun setup against the current file. This is not a lock on OpenClaw or other configuration writers; avoid editing the same profile during setup. These checks cover process interruption, not power-loss guarantees.
 

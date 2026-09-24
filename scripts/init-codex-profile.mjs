@@ -2,8 +2,11 @@ import {randomBytes} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {createProfile,configureLoopPolicy,writeProfileWithBackup} from './profile-policy.mjs';
+import {assertNode,assertSetupLocation} from './isolated-runtime.mjs';
 
 const root=resolve('.dev-profile/codex-test');
+assertNode();
+assertSetupLocation(resolve('.'),'codex-test');
 const configPath=`${root}/openclaw.json`;
 const model='openai/gpt-6-astra';
 const agentTools=JSON.parse(readFileSync('openclaw.plugin.json','utf8')).contracts.tools;

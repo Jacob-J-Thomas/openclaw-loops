@@ -2,7 +2,10 @@ import {randomBytes} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {createProfile,repairGeneratedPolicy,writeProfileWithBackup} from './profile-policy.mjs';
+import {assertNode,assertSetupLocation} from './isolated-runtime.mjs';
 const root=resolve('.dev-profile');
+assertNode();
+assertSetupLocation(resolve('.'),'ollama');
 if(existsSync(`${root}/openclaw.json`)){
   const before=readFileSync(`${root}/openclaw.json`),config=JSON.parse(before.toString('utf8'));
   if(repairGeneratedPolicy(config))writeProfileWithBackup(`${root}/openclaw.json`,config,before);
