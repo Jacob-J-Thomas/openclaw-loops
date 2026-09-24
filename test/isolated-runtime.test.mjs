@@ -5,7 +5,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {acquireLease,activeLease,admitOllamaArgs,admitOpenClawArgs,assertNode,assertSetupLocation,buildEnvironment,cleanEnvironment,installedHost,ollamaEnvironment,ollamaPort,portOccupied,profileEnvironment,runOllama,runOpenClaw} from '../scripts/isolated-runtime.mjs';
+import {acquireLease,activeLease,admitOllamaArgs,admitOpenClawArgs,assertNode,assertSetupLocation,buildEnvironment,cleanEnvironment,installedHost,ollamaEnvironment,ollamaPort,ownedLoopbackListener,portOccupied,profileEnvironment,runOllama,runOpenClaw,runOwned} from '../scripts/isolated-runtime.mjs';
 
 const roots=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
@@ -160,7 +160,7 @@ describe('isolated runtime admission',()=>{
       lease.markChild(child.pid);
       expect(activeLease(file,'inference-worker',owner,21439)).toBe(false);
       lease.markReady();
-      expect(activeLease(file,'inference-worker',owner,21439)).toBe(true);
+      expect(activeLease(file,'inference-worker',owner,21439)).toBe(false);
       expect(activeLease(file,'inference-worker',owner,11439)).toBe(false);
       expect(activeLease(file,'inference-worker','/other/worktree',21439)).toBe(false);
       const receipt=JSON.parse(readFileSync(file));
@@ -170,6 +170,34 @@ describe('isolated runtime admission',()=>{
       expect(activeLease(file,'inference-worker',owner)).toBe(false);
       const recovered=acquireLease(file,'inference-worker',owner);recovered.release();
     }finally{if(child.exitCode===null)child.kill('SIGKILL');}
+  });
+  it('marks readiness only when the owned child holds the selected loopback listener',async()=>{
+    const f=await fixture(),port=await freePort(),file=join(f.root,'owned.lease.json');
+    const childFile=join(f.root,'listener.mjs');
+    writeFileSync(childFile,"import {createServer} from 'node:net'; const server=createServer(); server.listen("+port+",'127.0.0.1'); setTimeout(()=>server.close(),1500);");
+    const lease=acquireLease(file,'inference-worker',f.root,join(f.root,'receipts'),port);
+    const running=runOwned(process.execPath,[childFile],process.env,lease,port);
+    for(let attempt=0;attempt<100&&JSON.parse(readFileSync(file)).phase!=='ready';attempt++)await new Promise(done=>setTimeout(done,20));
+    expect(JSON.parse(readFileSync(file)).phase).toBe('ready');
+    expect(activeLease(file,'inference-worker',f.root,port)).toBe(true);
+    expect(ownedLoopbackListener(process.pid,port)).toBe(false);
+    await running;
+    expect(existsSync(file)).toBe(false);
+  });
+  it('rejects a competing listener even while its own child remains alive',async()=>{
+    const f=await fixture(),port=await freePort(),file=join(f.root,'competing.lease.json');
+    const childFile=join(f.root,'idle.mjs');
+    writeFileSync(childFile,'setInterval(()=>{},1000);');
+    const foreign=createServer();await new Promise(done=>foreign.listen(port,'127.0.0.1',done));
+    const before=process.exitCode;
+    try{
+      const lease=acquireLease(file,'inference-worker',f.root,join(f.root,'receipts'),port);
+      await runOwned(process.execPath,[childFile],process.env,lease,port);
+      const receipt=JSON.parse(readFileSync(join(f.root,'receipts',readdirSync(join(f.root,'receipts'))[0])));
+      expect(receipt.phase).toBe('starting');expect(receipt.readyAt).toBeUndefined();
+      expect(receipt.childAlive).toBe(false);expect(receipt.leaseRemoved).toBe(true);
+      expect(existsSync(file)).toBe(false);
+    }finally{process.exitCode=before;await new Promise(done=>foreign.close(done));}
   });
   it('forwards SIGTERM only to its child and releases the owned lease',async()=>{
     const f=await fixture(),lease=join(f.root,'term.lease.json'),pidFile=join(f.root,'child.pid');

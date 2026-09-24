@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {existsSync,lstatSync,mkdirSync,readFileSync,realpathSync,renameSync,rmSync,statSync,writeFileSync} from 'node:fs';
+import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,readlinkSync,realpathSync,renameSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {createConnection} from 'node:net';
-import {tmpdir} from 'node:os';
+import {platform,tmpdir} from 'node:os';
 import {setInterval,clearInterval,setTimeout,clearTimeout} from 'node:timers';
 import {dirname,isAbsolute,join,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -213,6 +213,35 @@ export function portOccupied(port,host='127.0.0.1'){
     socket.setTimeout(1000,()=>{socket.destroy();done(true);});
   });
 }
+export function ownedLoopbackListener(pid,port){
+  if(!Number.isInteger(pid)||pid<=0||!Number.isInteger(port)||port<1024||port>65535)return false;
+  if(platform()==='darwin'){
+    const result=spawnSync('lsof',['-nP','-a','-p',String(pid),'-iTCP:'+port,'-sTCP:LISTEN','-F','pn'],{encoding:'utf8',timeout:2000,maxBuffer:65536});
+    if(result.error)throw Error('Cannot verify owned loopback listener: '+result.error.message);
+    if(result.status!==0)return false;
+    const lines=result.stdout.split(/\r?\n/);
+    return lines.includes('p'+pid)&&lines.includes('n127.0.0.1:'+port);
+  }
+  if(platform()==='linux'){
+    let descriptors,table;
+    try{
+      descriptors=new Set(readdirSync('/proc/'+pid+'/fd').map(entry=>{
+        try{return /^socket:\[(\d+)\]$/.exec(readlinkSync('/proc/'+pid+'/fd/'+entry))?.[1];}
+        catch(error){if(error.code==='ENOENT'||error.code==='EACCES')return null;throw error;}
+      }).filter(Boolean));
+      table=readFileSync('/proc/net/tcp','utf8');
+    }catch(error){
+      if(error.code==='ENOENT'&&!live(pid))return false;
+      throw Error('Cannot verify owned loopback listener: '+error.message,{cause:error});
+    }
+    const address='0100007F:'+port.toString(16).toUpperCase().padStart(4,'0');
+    return table.split(/\r?\n/).slice(1).some(line=>{
+      const columns=line.trim().split(/\s+/);
+      return columns[1]===address&&columns[3]==='0A'&&descriptors.has(columns[9]);
+    });
+  }
+  throw Error('Owned listener verification supports macOS and Linux only.');
+}
 export function acquireLease(file,kind,owner=null,receiptDir=null,port=null){
   containedDir(dirname(file));
   const receipt={kind,owner,port,parentPid:process.pid,childPid:null,phase:'starting',id:randomUUID(),startedAt:new Date().toISOString()};
@@ -258,7 +287,8 @@ export function activeLease(file,kind,owner,port=null){
     if(lstatSync(file).isSymbolicLink())return false;
     const receipt=JSON.parse(readFileSync(file,'utf8'));
     return receipt.kind===kind&&receipt.owner===owner&&receipt.port===port&&receipt.phase==='ready'&&
-      Number.isInteger(receipt.parentPid)&&live(receipt.parentPid)&&Number.isInteger(receipt.childPid)&&live(receipt.childPid);
+      Number.isInteger(receipt.parentPid)&&live(receipt.parentPid)&&Number.isInteger(receipt.childPid)&&live(receipt.childPid)&&
+      (port===null||ownedLoopbackListener(receipt.childPid,port));
   }catch{return false;}
 }
 export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=null){
@@ -281,7 +311,12 @@ export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=n
       readinessTimer=setInterval(async()=>{
         if(checking||!child||!live(child.pid))return;
         checking=true;
-        try{if(await portOccupied(readyPort)){lease.markReady();clearInterval(readinessTimer);}}
+        try{
+          if(await portOccupied(readyPort)){
+            if(!ownedLoopbackListener(child.pid,readyPort))throw Error('Selected port is not listening in the owned child process.');
+            lease.markReady();clearInterval(readinessTimer);
+          }
+        }
         catch(error){console.error('Owned service readiness failed: '+error.message);forward('SIGTERM');}
         finally{checking=false;}
       },100);
