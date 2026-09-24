@@ -27,6 +27,15 @@ export function copyDefinition(definition:Definition,id:string,templateDefaults?
   return templateDefaults?{...copy,schemaVersion:definition.schemaVersion===3?3:2,limits:{...copy.limits,...templateDefaults}}:copy;
 }
 
+// Timeout authoring requires at least v2's optional limit. A v3 downgrade
+// would make its typed branches, recursive schemas, or context invalid.
+export function withActiveTimeout(definition:Definition,timeoutMs:number|undefined):Definition{
+  const limits={...definition.limits};
+  if(timeoutMs===undefined)delete limits.timeoutMs;
+  else limits.timeoutMs=timeoutMs;
+  return {...definition,schemaVersion:definition.schemaVersion===1?2:definition.schemaVersion,limits};
+}
+
 // Evaluate and Evidence gate carry the v3-only evidence and context contract.
 // Adding either from the palette must keep the editable draft schema-valid.
 export function schemaVersionForAddedNode(version:Definition['schemaVersion'],kind:GraphNode['kind']):Definition['schemaVersion']{
