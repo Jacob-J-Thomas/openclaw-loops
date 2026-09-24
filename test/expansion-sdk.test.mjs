@@ -1,5 +1,5 @@
 import {describe,it,expect,vi} from 'vitest';
-import {isOwnerBoundToSession,observePostDeadlineGatewayReadiness,POST_DEADLINE_READINESS_DIAGNOSTIC_MS,sanitizeExpansionSdkReceipt} from '../scripts/verify-expansion-sdk.mjs';
+import {isOwnerBoundToSession,observePostDeadlineGatewayReadiness,POST_DEADLINE_READINESS_DIAGNOSTIC_MS,sanitizeExpansionSdkReceipt,verifyMissingSessionAction} from '../scripts/verify-expansion-sdk.mjs';
 import plugin,{projectTask} from './helpers/expansion-sdk-plugin.mjs';
 import {GATEWAY_STARTUP_BUDGET_MS} from '../scripts/gateway-readiness-evidence.mjs';
 
@@ -25,6 +25,18 @@ describe('expansion SDK qualification receipt',()=>{
     expect(isOwnerBoundToSession('agent:main:other-session','agent:main:session-1')).toBe(false);
     expect(isOwnerBoundToSession(undefined,'agent:main:session-1')).toBe(false);
     expect(isOwnerBoundToSession('','')).toBe(false);
+  });
+
+  it('attributes the actual missing-session fixture response to the plugin',async()=>{
+    const {action}=install();
+    const observation=await verifyMissingSessionAction(()=>action.handler({agentId:'main',payload:{operation:'service'}}));
+    expect(observation).toEqual({label:'missing-session-action',allowed:false,hostDenied:false,code:'SESSION_REQUIRED'});
+  });
+
+  it('fails qualification on transport errors and unrelated or successful responses',async()=>{
+    await expect(verifyMissingSessionAction(async()=>{throw Error('Gateway unavailable');})).rejects.toThrow('Gateway unavailable');
+    for(const response of [{ok:false,code:'OTHER'}, {ok:true,result:{}}, undefined])
+      await expect(verifyMissingSessionAction(async()=>response)).rejects.toThrow();
   });
 
   it('keeps a bounded post-deadline diagnostic allowance without relaxing startup',async()=>{
