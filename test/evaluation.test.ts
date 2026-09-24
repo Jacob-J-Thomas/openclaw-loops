@@ -40,6 +40,21 @@ describe('deterministic evaluation worker',()=>{
     await expect(runtime.evaluate('x',{kind:'predicate',version:'p1',predicate:{op:'truthy'}},{workerUrl,limits:{maxResultBytes:2}})).rejects.toMatchObject({detail:{code:'LOOPS_EVALUATION_RESOURCE_LIMIT'}});
     let deep:unknown=null;for(let index=0;index<102;index++)deep=[deep];await expect(runtime.evaluate(deep,{kind:'predicate',version:'p1',predicate:{op:'truthy'}},{workerUrl})).rejects.toMatchObject({detail:{code:'LOOPS_EVALUATION_RESOURCE_LIMIT'}});
   });
+  it('scans actual schema locations without treating instance data or property names as references',async()=>{
+    const evaluateSchema=async(input:unknown,schema:unknown)=>runtime.evaluate(input,{kind:'json-schema-2020',version:'2020-12',schema},{workerUrl});
+    for(const [input,schema] of [
+      [{$dynamicRef:'#literal'},{const:{$dynamicRef:'#literal'}}],
+      [{$ref:'https://example.test/literal'},{const:{$ref:'https://example.test/literal'}}],
+      [{$dynamicRef:'ordinary data'},{type:'object',properties:{$dynamicRef:{type:'string'}}}],
+      [{value:'x'},{type:'object',properties:{value:{enum:[{$recursiveRef:'#literal'},'x']}}}],
+    ])expect(await evaluateSchema(input,schema)).toMatchObject({passed:true});
+    for(const schema of [
+      {allOf:[{properties:{value:{$dynamicRef:'#local'}}}]},
+      {$defs:{local:{if:{$recursiveRef:'#local'}}},properties:{value:{$ref:'#/$defs/local'}}},
+      {dependentSchemas:{value:{oneOf:[{$ref:'https://example.test/schema'}]}}},
+      {items:{not:{$dynamicRef:'#local'}}},
+    ])await expect(evaluateSchema({value:'x'},schema)).rejects.toMatchObject({detail:{code:'LOOPS_EVALUATION_REMOTE_REF'}});
+  });
   it('terminates a controlled hanging worker on timeout and cancellation before or during work',async()=>{
     await pause(40);
     const before=process.getActiveResourcesInfo().filter(value=>value==='MessagePort').length;

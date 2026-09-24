@@ -69,4 +69,45 @@ describe('evaluate and evidence-gate graph nodes',()=>{
     try{expect(reopened.status(actor,accepted.id)).toMatchObject({result:'accepted',outputs:{evaluate:{evaluatorNodeId:'evaluate'},gate:{evidenceDigest:(accepted.outputs.gate as {evidenceDigest:string}).evidenceDigest}}});}
     finally{await reopened.close();}
   });
+  it('persists safe evaluator failure codes and locations without committing downstream evidence',async()=>{
+    const host={check:vi.fn(),modelInfo:vi.fn(async()=>({})),complete:vi.fn(async()=>({text:'unused'}))};
+    const hangingWorkerUrl=pathToFileURL(new URL('./helpers/evaluation-hang-worker.mjs',import.meta.url).pathname);
+    for(const [name,schema,input,worker,code] of [
+      ['invalid-schema',{type:'not-a-type'},'x',evaluationWorkerUrl,'LOOPS_EVALUATION_SCHEMA_INVALID'],
+      ['forbidden-reference',{$dynamicRef:'#local'},'x',evaluationWorkerUrl,'LOOPS_EVALUATION_REMOTE_REF'],
+      ['resource-limit',{type:'string'},'x'.repeat(140000),evaluationWorkerUrl,'LOOPS_EVALUATION_RESOURCE_LIMIT'],
+      ['timeout',{type:'string'},'x',hangingWorkerUrl,'LOOPS_EVALUATION_TIMEOUT'],
+    ] as const){
+      let state:State|undefined;
+      const storage={read:()=>structuredClone(state),write:(value:State)=>{state=structuredClone(value);}};
+      const candidate=definition();candidate.inputSchema=[{name:'text',label:'Text',type:'text',required:true}];
+      const node=candidate.nodes.find(item=>item.id==='evaluate')!;
+      if(node.kind!=='evaluate')throw Error('Evaluate fixture is missing');
+      node.value='{{input.text}}';node.evaluator={kind:'json-schema-2020',version:'2020-12',schema};
+      const engine=new Engine(storage,host,{evaluationWorkerUrl:worker});
+      const run=await engine.test(actor,candidate,{text:input},name);
+      expect(run).toMatchObject({state:'failed',errorDetail:{code,nodeId:'evaluate',phase:'execution',retryable:false}});
+      expect(run.errorDetail?.message).not.toContain('not-a-type');
+      expect(run.outputs).not.toHaveProperty('evaluate');expect(run.outputs).not.toHaveProperty('accepted');
+      const reopened=new Engine(storage,host,{evaluationWorkerUrl:worker});
+      expect(reopened.status(actor,run.id).errorDetail).toEqual(run.errorDetail);
+      await reopened.close();await engine.close();
+    }
+    expect(host.complete).not.toHaveBeenCalled();
+  });
+  it('attributes evaluator cancellation before any downstream checkpoint',async()=>{
+    let state:State|undefined;
+    const storage={read:()=>structuredClone(state),write:(value:State)=>{state=structuredClone(value);}};
+    const host={check:vi.fn(),modelInfo:vi.fn(async()=>({})),complete:vi.fn(async()=>({text:'unused'}))};
+    const hangingWorkerUrl=pathToFileURL(new URL('./helpers/evaluation-hang-worker.mjs',import.meta.url).pathname);
+    const controller=new AbortController(),candidate=definition();
+    const engine=new Engine(storage,host,{evaluationWorkerUrl:hangingWorkerUrl});
+    const pending=engine.test({...actor,signal:controller.signal},candidate,{count:0},'cancel-evaluator');
+    setTimeout(()=>controller.abort(),40);
+    const run=await pending;
+    expect(run).toMatchObject({state:'failed',errorDetail:{code:'LOOPS_EVALUATION_CANCELLED',nodeId:'evaluate'}});
+    expect(run.outputs).not.toHaveProperty('evaluate');expect(run.outputs).not.toHaveProperty('accepted');
+    expect(new Engine(storage,host,{evaluationWorkerUrl:hangingWorkerUrl}).status(actor,run.id).errorDetail).toEqual(run.errorDetail);
+    await engine.close();
+  });
 });

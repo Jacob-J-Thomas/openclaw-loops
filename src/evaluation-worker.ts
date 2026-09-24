@@ -5,9 +5,21 @@ import {canonicalJson,evaluationDigest,evaluatorConfiguration,type EvaluationErr
 type Request={input:EvaluationJson;evaluator:Evaluator;limits:{maxInputBytes:number;maxSchemaBytes:number;maxResultBytes:number;maxErrors:number;timeoutMs:number}};
 const error=(code:string,message:string,extra:Partial<EvaluationError>={}):EvaluationError=>({code,instancePath:'',message,...extra});
 function isRemoteReference(value:EvaluationJson):boolean{
-  if(Array.isArray(value))return value.some(isRemoteReference);
-  if(!value||typeof value!=='object')return false;
-  return Object.entries(value).some(([key,item])=>key==='$dynamicRef'||key==='$recursiveRef'||key==='$ref'&&typeof item==='string'&&!item.startsWith('#')||isRemoteReference(item));
+  // Only schema positions contain reference keywords. Values under const/enum,
+  // annotation keywords, and keys in properties/$defs are ordinary JSON data.
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  if(Object.hasOwn(value,'$dynamicRef')||Object.hasOwn(value,'$recursiveRef'))return true;
+  if(typeof value.$ref==='string'&&!value.$ref.startsWith('#'))return true;
+  const schemaKeywords=['additionalProperties','unevaluatedProperties','additionalItems','unevaluatedItems','items','contains','not','if','then','else','propertyNames','contentSchema'];
+  const schemaArrays=['allOf','anyOf','oneOf','prefixItems'];
+  const schemaMaps=['$defs','definitions','properties','patternProperties','dependentSchemas'];
+  for(const key of schemaKeywords)if(isRemoteReference(value[key]))return true;
+  for(const key of schemaArrays){const items=value[key];if(Array.isArray(items)&&items.some(isRemoteReference))return true;}
+  for(const key of schemaMaps){const entries=value[key];if(entries&&typeof entries==='object'&&!Array.isArray(entries)&&Object.values(entries).some(isRemoteReference))return true;}
+  // The legacy dependencies keyword permits arrays of property names as well
+  // as subschemas. Ajv validates whether it is legal for this draft.
+  const dependencies=value.dependencies;
+  return !!dependencies&&typeof dependencies==='object'&&!Array.isArray(dependencies)&&Object.values(dependencies).some(isRemoteReference);
 }
 function contains(value:EvaluationJson,expected:EvaluationJson):boolean{
   if(typeof value==='string'&&typeof expected==='string')return value.includes(expected);

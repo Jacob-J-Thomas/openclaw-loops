@@ -19,8 +19,8 @@ export function EvaluationEditor({value,onChange}:{value:EvaluationDraft;onChang
 }
 // The parent editor owns invalid text while node selection unmounts this control.
 // Keeping the map per editor prevents a different loop or editor from inheriting it.
-export function ControlledEvaluationEditor({nodeId,evaluator,drafts,onChange,onDraftValidityChange}:{nodeId:string;evaluator:Evaluator;drafts:Map<string,EvaluationDraft>;onChange:(evaluator:Evaluator)=>void;onDraftValidityChange:(invalid:boolean)=>void}){
+export function ControlledEvaluationEditor({nodeId,evaluator,drafts,onChange,onDraftValidityChange}:{nodeId:string;evaluator:Evaluator;drafts:Map<string,EvaluationDraft>;onChange:(evaluator:Evaluator)=>void;onDraftValidityChange:()=>void}){
   const [draft,setDraft]=useState(()=>drafts.get(nodeId)??evaluationDraft(evaluator));
   useEffect(()=>setDraft(drafts.get(nodeId)??evaluationDraft(evaluator)),[nodeId,evaluator,drafts]);
-  return <EvaluationEditor value={draft} onChange={next=>{setDraft(next);const parsed=parseEvaluationDraft(next);if(parsed.evaluator){drafts.delete(nodeId);onChange(parsed.evaluator);}else drafts.set(nodeId,next);onDraftValidityChange(drafts.size>0);}}/>;
+  return <EvaluationEditor value={draft} onChange={next=>{setDraft(next);const parsed=parseEvaluationDraft(next);if(parsed.evaluator){drafts.delete(nodeId);onChange(parsed.evaluator);}else drafts.set(nodeId,next);onDraftValidityChange();}}/>;
 }
