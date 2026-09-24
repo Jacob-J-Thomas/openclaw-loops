@@ -17,12 +17,10 @@ export function EvaluationEditor({value,onChange}:{value:EvaluationDraft;onChang
   const parsed=parseEvaluationDraft(value);
   return <fieldset className="lp-evaluation-editor"><legend>Deterministic evaluation</legend><label className="lp-field"><span>Evaluator</span><select value={value.kind} onChange={event=>onChange({...value,kind:event.target.value as EvaluationDraft['kind']})}><option value="json-schema-2020">JSON Schema 2020-12</option><option value="predicate">Predicate</option></select></label><label className="lp-field"><span>Evaluator version</span><input value={value.version} onChange={event=>onChange({...value,version:event.target.value})}/></label>{value.kind==='json-schema-2020'?<label className="lp-field"><span>JSON Schema</span><textarea value={value.schemaSource} onChange={event=>onChange({...value,schemaSource:event.target.value})}/></label>:<><label className="lp-field"><span>Predicate</span><select value={value.predicateOp} onChange={event=>onChange({...value,predicateOp:event.target.value as EvaluationDraft['predicateOp']})}>{['equals','not-equals','contains','less-than','greater-than','truthy'].map(op=><option key={op}>{op}</option>)}</select></label>{value.predicateOp!=='truthy'&&<label className="lp-field"><span>Expected JSON value</span><textarea value={value.expectedSource} onChange={event=>onChange({...value,expectedSource:event.target.value})}/></label>}</>}{parsed.error&&<p className="lp-node-error" role="alert">{parsed.error}</p>}</fieldset>;
 }
-// Invalid JSON cannot become an Evaluator, so retain that local authoring state
-// until it becomes valid. It is keyed by the graph node rather than component
-// lifetime because selecting another node unmounts this editor.
-const invalidDrafts=new Map<string,EvaluationDraft>();
-export function ControlledEvaluationEditor({nodeId,evaluator,onChange}:{nodeId:string;evaluator:Evaluator;onChange:(evaluator:Evaluator)=>void}){
-  const [draft,setDraft]=useState(()=>invalidDrafts.get(nodeId)??evaluationDraft(evaluator));
-  useEffect(()=>setDraft(invalidDrafts.get(nodeId)??evaluationDraft(evaluator)),[nodeId,evaluator]);
-  return <EvaluationEditor value={draft} onChange={next=>{setDraft(next);const parsed=parseEvaluationDraft(next);if(parsed.evaluator){invalidDrafts.delete(nodeId);onChange(parsed.evaluator);}else invalidDrafts.set(nodeId,next);}}/>;
+// The parent editor owns invalid text while node selection unmounts this control.
+// Keeping the map per editor prevents a different loop or editor from inheriting it.
+export function ControlledEvaluationEditor({nodeId,evaluator,drafts,onChange,onDraftValidityChange}:{nodeId:string;evaluator:Evaluator;drafts:Map<string,EvaluationDraft>;onChange:(evaluator:Evaluator)=>void;onDraftValidityChange:(invalid:boolean)=>void}){
+  const [draft,setDraft]=useState(()=>drafts.get(nodeId)??evaluationDraft(evaluator));
+  useEffect(()=>setDraft(drafts.get(nodeId)??evaluationDraft(evaluator)),[nodeId,evaluator,drafts]);
+  return <EvaluationEditor value={draft} onChange={next=>{setDraft(next);const parsed=parseEvaluationDraft(next);if(parsed.evaluator){drafts.delete(nodeId);onChange(parsed.evaluator);}else drafts.set(nodeId,next);onDraftValidityChange(drafts.size>0);}}/>;
 }
