@@ -3,7 +3,7 @@ import {resolve} from 'node:path';
 import {sanitizeGatewayReadiness} from './gateway-readiness-evidence.mjs';
 
 const phases=new Set(['archive-validation','install-previous','backup-previous','upgrade','uninstall-reinstall','matching-predecessor-restore']);
-const operations=new Set(['archive-validation','installer','installed-file-validation','gateway-readiness','sdk-client-startup','public-session-actions','client-shutdown','gateway-shutdown','profile-backup','profile-restore','state-validation','rollback-staging','receipt-write','unknown']);
+const operations=new Set(['archive-validation','installer','installed-file-validation','gateway-readiness','sdk-client-startup','public-session-actions','client-shutdown','gateway-shutdown','profile-backup','profile-restore','state-validation','host-state-migration','rollback-staging','receipt-write','unknown']);
 const outcomes=new Set(['completed','failed','timed-out','not-started']);
 const processStates=new Set(['alive','exited','signaled','unavailable']);
 const timingPhases=new Set(['socket-open','challenge','connect-plan-ready','request-sent','hello','failed','fallback']);
