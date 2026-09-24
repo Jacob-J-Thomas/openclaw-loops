@@ -3,7 +3,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,readlinkSync,realpathSync,renameSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {createConnection} from 'node:net';
-import {platform,tmpdir} from 'node:os';
+import {platform} from 'node:os';
 import {setInterval,clearInterval,setTimeout,clearTimeout} from 'node:timers';
 import {dirname,isAbsolute,join,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -235,6 +235,15 @@ export function ownedLoopbackListener(pid,port){
   }
   throw Error('Owned listener verification supports macOS and Linux only.');
 }
+export function globalInferenceLease(anchor='/tmp'){
+  assert(['darwin','linux'].includes(platform())&&typeof process.getuid==='function','Global inference lease requires macOS or Linux user identity.');
+  const base=canonical(anchor),directory=join(base,'openclaw-loops-inference-'+process.getuid());
+  mkdirSync(directory,{recursive:true,mode:0o700});
+  const entry=lstatSync(directory),details=statSync(directory);
+  assert(entry.isDirectory()&&!entry.isSymbolicLink()&&canonical(directory)===directory,'Global inference lease directory must not redirect through a symlink.');
+  assert(details.uid===process.getuid()&&(details.mode&0o777)===0o700,'Global inference lease directory must be owned and private.');
+  return join(directory,'worker.lease.json');
+}
 export function acquireLease(file,kind,owner=null,receiptDir=null,port=null){
   containedDir(dirname(file));
   const receipt={kind,owner,port,parentPid:process.pid,childPid:null,phase:'starting',id:randomUUID(),startedAt:new Date().toISOString()};
@@ -348,7 +357,7 @@ export async function runOpenClaw(root,args,source=process.env){
   const name=source.LOOPS_PROFILE??'ollama',profile=profileEnvironment(root,name,source);
   if(['codex-auth','codex-install'].includes(command))assert.equal(name,'codex-test','Codex authentication and installation require the isolated Codex profile.');
   const lease=join(profile.profile,'gateway.lease.json');
-  const inferenceLease=join(canonical(tmpdir()),'openclaw-loops-inference-'+(process.getuid?.()??'local')+'.lease.json');
+  const inferenceLease=globalInferenceLease();
   const modelPort=name==='ollama'?ollamaPort(source):null;
   const providerReady=async()=>activeLease(inferenceLease,'inference-worker',canonical(root),modelPort)&&await portOccupied(modelPort);
   if(command==='gateway'){
@@ -380,7 +389,7 @@ export async function runOllama(root,args,source=process.env){
   const executable=canonical(binary);
   assert(!executable.includes(sep+'.openclaw'+sep),'Personal OpenClaw paths are forbidden.');
   const env=ollamaEnvironment(root,source);
-  const lease=join(canonical(tmpdir()),'openclaw-loops-inference-'+(process.getuid?.()??'local')+'.lease.json');
+  const lease=globalInferenceLease();
   const serve=command==='serve';
   const port=ollamaPort(source);
   if(serve)assert(!(await portOccupied(port)),'Inference port is occupied by an existing provider daemon.');

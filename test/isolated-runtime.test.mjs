@@ -6,7 +6,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {acquireLease,activeLease,admitOllamaArgs,admitOpenClawArgs,assertNode,assertSetupLocation,buildEnvironment,cleanEnvironment,installedHost,ollamaEnvironment,ollamaPort,ownedLoopbackListener,portOccupied,profileEnvironment,runOllama,runOpenClaw,runOwned} from '../scripts/isolated-runtime.mjs';
+import {acquireLease,activeLease,admitOllamaArgs,admitOpenClawArgs,assertNode,assertSetupLocation,buildEnvironment,cleanEnvironment,globalInferenceLease,installedHost,ollamaEnvironment,ollamaPort,ownedLoopbackListener,portOccupied,profileEnvironment,runOllama,runOpenClaw,runOwned} from '../scripts/isolated-runtime.mjs';
 import {installedProfilePlugin} from '../scripts/profile-plugin-status.mjs';
 
 const roots=[];
@@ -51,6 +51,8 @@ describe('isolated runtime admission',()=>{
     config.plugins={entries:{codex:{enabled:true}}};writeFileSync(file,JSON.stringify(config));
     const info={plugin:{id:'codex',packageName:'@openclaw/codex',packageVersion:'2026.9.5',version:'2026.9.5',enabled:true,activated:true,status:'loaded',source},install:{installPath:installed,source:'clawhub',spec:'clawhub:@openclaw/codex@2026.9.5',version:'2026.9.5'}};
     expect(installedProfilePlugin(info,f.profile,'codex')).toBe(true);
+    expect(installedProfilePlugin({...info,install:{...info.install,source:'npm',spec:'@openclaw/codex@2026.9.5'}},f.profile,'codex')).toBe(true);
+    expect(installedProfilePlugin({...info,install:{...info.install,source:'npm',spec:'@openclaw/codex'}},f.profile,'codex')).toBe(false);
     const accepted=spawnSync(process.execPath,[resolve('scripts/profile-plugin-status.mjs'),'codex'],{cwd:f.root,input:JSON.stringify(info),encoding:'utf8'});
     expect(accepted.status).toBe(0);
     expect(installedProfilePlugin({...info,install:null},f.profile,'codex')).toBe(false);
@@ -190,6 +192,23 @@ describe('isolated runtime admission',()=>{
     const next=acquireLease(file,'inference-worker');next.release();
     expect(()=>readFileSync(file)).toThrow();
   });
+  it('shares one private inference lease despite different inherited temp roots',async()=>{
+    const f=await fixture(),before={TMPDIR:process.env.TMPDIR,TMP:process.env.TMP,TEMP:process.env.TEMP};
+    const firstTemp=join(f.root,'first-tmp'),secondTemp=join(f.root,'second-tmp');
+    mkdirSync(firstTemp);mkdirSync(secondTemp);
+    try{
+      process.env.TMPDIR=firstTemp;process.env.TMP=firstTemp;process.env.TEMP=firstTemp;
+      const globalFirst=globalInferenceLease(),first=globalInferenceLease(f.root);
+      process.env.TMPDIR=secondTemp;process.env.TMP=secondTemp;process.env.TEMP=secondTemp;
+      expect(globalInferenceLease()).toBe(globalFirst);
+      const second=globalInferenceLease(f.root);expect(second).toBe(first);
+      const lease=acquireLease(first,'inference-worker',f.root);
+      try{expect(()=>acquireLease(second,'inference-worker',f.root)).toThrow(/another live process/);}
+      finally{lease.release();}
+    }finally{
+      for(const [key,value] of Object.entries(before)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+    }
+  });
   it('requires a live owned child and ready phase before service reuse',async()=>{
     const f=await fixture(),file=join(f.root,'lease.json'),owner=f.root;
     const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
@@ -302,5 +321,10 @@ describe('isolated runtime admission',()=>{
     expect(()=>ollamaEnvironment(f.root)).toThrow(/symlink/);
     symlinkSync(foreign,join(f.root,'foreign-lease-parent'));
     expect(()=>acquireLease(join(f.root,'foreign-lease-parent','lease.json'),'gateway')).toThrow(/symlink/);
+  });
+  it('rejects a symlinked global lease namespace',async()=>{
+    const f=await fixture(),foreign=realpathSync(mkdtempSync(join(tmpdir(),'loops-foreign-lease-')));roots.push(foreign);
+    symlinkSync(foreign,join(f.root,'openclaw-loops-inference-'+process.getuid()));
+    expect(()=>globalInferenceLease(f.root)).toThrow(/symlink/);
   });
 });

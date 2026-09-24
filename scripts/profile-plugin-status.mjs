@@ -16,10 +16,13 @@ export function installedProfilePlugin(info,profile,id){
     const project=dirname(dirname(profile)),packageInfo=JSON.parse(readFileSync(join(project,'package.json'),'utf8'));
     const version=id==='codex'?packageInfo.devDependencies.openclaw:packageInfo.version;
     const packageName=id==='codex'?'@openclaw/codex':packageInfo.name;
-    const spec=id==='codex'?'clawhub:@openclaw/codex@'+version:packageName+'@'+version;
-    const sourceKind=id==='codex'?'clawhub':'npm';
+    const codexInstall=id==='codex'&&(
+      (info.install.source==='npm'&&info.install.spec==='@openclaw/codex@'+version)||
+      (info.install.source==='clawhub'&&info.install.spec==='clawhub:@openclaw/codex@'+version)
+    );
+    const loopsInstall=id==='loops-poc'&&info.install.source==='npm'&&info.install.spec===packageName+'@'+version;
     if(info.plugin.packageName!==packageName||info.plugin.packageVersion!==version||info.plugin.version!==version||
-       info.install.version!==version||info.install.spec!==spec||info.install.source!==sourceKind)return false;
+       info.install.version!==version||!(codexInstall||loopsInstall))return false;
     if(id==='loops-poc'){
       const archive=readFileSync(join(project,packageInfo.name+'-'+version+'.tgz'));
       if(info.install.npmShasum!==createHash('sha1').update(archive).digest('hex'))return false;
