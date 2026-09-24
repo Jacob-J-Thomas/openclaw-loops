@@ -82,6 +82,9 @@
           },
           "required": {
             "type": "boolean"
+          },
+          "schema": {
+            "$ref": "#/$defs/loops_data_schema"
           }
         },
         "additionalProperties": false
@@ -582,6 +585,9 @@
                 },
                 "additionalProperties": false
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -919,6 +925,9 @@
               "capability": {
                 "type": "string",
                 "const": "model-info"
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
               },
               "context": {
                 "type": "object",
@@ -1333,6 +1342,9 @@
                 },
                 "additionalProperties": false
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -1664,6 +1676,9 @@
                 "minLength": 1,
                 "maxLength": 100
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "kind": {
                 "type": "string",
                 "const": "repeat"
@@ -1833,6 +1848,9 @@
                           }
                         },
                         "additionalProperties": false
+                      },
+                      "outputSchema": {
+                        "$ref": "#/$defs/loops_data_schema"
                       },
                       "context": {
                         "type": "object",
@@ -2246,6 +2264,9 @@
                           }
                         },
                         "additionalProperties": false
+                      },
+                      "outputSchema": {
+                        "$ref": "#/$defs/loops_data_schema"
                       },
                       "context": {
                         "type": "object",
@@ -2916,6 +2937,9 @@
                 ],
                 "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -3269,6 +3293,9 @@
                   }
                 ],
                 "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
               },
               "context": {
                 "type": "object",
@@ -3624,6 +3651,9 @@
                 ],
                 "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -3978,6 +4008,9 @@
                 ],
                 "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -4308,6 +4341,9 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
               },
               "kind": {
                 "type": "string",
@@ -4745,6 +4781,9 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
               },
               "kind": {
                 "type": "string",
@@ -5186,5 +5225,332 @@
       "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "loops_json_value": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/loops_json_value"
+          }
+        },
+        {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {
+              "$ref": "#/$defs/loops_json_value"
+            }
+          }
+        }
+      ]
+    },
+    "loops_data_schema": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "object"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128
+            },
+            "properties": {
+              "type": "object",
+              "patternProperties": {
+                "^(?!(?:__proto__|prototype|constructor)$).+$": {
+                  "$ref": "#/$defs/loops_data_schema"
+                }
+              },
+              "maxProperties": 128
+            },
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^(?!(?:__proto__|prototype|constructor)$).+$"
+              },
+              "maxItems": 128,
+              "uniqueItems": true
+            },
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "items"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "array"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128
+            },
+            "items": {
+              "$ref": "#/$defs/loops_data_schema"
+            },
+            "minItems": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "string"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128
+            },
+            "minLength": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pattern": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "number"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128
+            },
+            "minimum": {
+              "type": "number"
+            },
+            "maximum": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "integer"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128
+            },
+            "minimum": {
+              "type": "number"
+            },
+            "maximum": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "boolean"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "null"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
 }

@@ -351,10 +351,10 @@ export class Engine{
     }
     return agentModels;
   }
-  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);this.releaseParked(r,'next',{});return this.dispatch(actor,r);}
+  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);if(!this.releaseParked(r,'next',{}))return this.status(actor,id);return this.dispatch(actor,r);}
   async review(actor:Actor,id:string,decision:'approve'|'reject'){
     this.ensureHuman(actor);const r=this.own(actor,id);if(r.state!=='review')throw requestError('Run is not awaiting human review.');this.allowedRun(actor,r);
-    this.releaseParked(r,decision,{decision},{decision,at:now(),requester:actor.requester??'authenticated-operator'});return this.dispatch(actor,r);
+    if(!this.releaseParked(r,decision,{decision},{decision,at:now(),requester:actor.requester??'authenticated-operator'}))return this.status(actor,id);return this.dispatch(actor,r);
   }
   cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return this.status(actor,id);r.state='cancelled';this.dropQueued(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist(r);return this.status(actor,id);}
   async close(){
@@ -368,9 +368,14 @@ export class Engine{
     }
   }
   private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw executionError(`Missing ${port} edge from ${id}.`,'LOOPS_INVALID_GRAPH');return next;}
-  private releaseParked(r:Run,port:string,output:Json,review?:NonNullable<Run['review']>){
+  private releaseParked(r:Run,port:string,output:Json,review?:NonNullable<Run['review']>):boolean{
     const node=r.definition.nodes.find(node=>node.id===r.cursor);if(!node)throw executionError('Execution cursor is invalid.','LOOPS_INVALID_GRAPH');
-    this.validateOutput(node,output);
+    try{this.validateOutput(node,output);}catch(error){
+      r.state='failed';r.errorDetail=errorDetail(error,{phase:'execution',nodeId:node.id});r.error=r.errorDetail.message;delete r.pending;
+      const checkpoint=r.trace.findLast(item=>item.nodeId===node.id&&(item.state==='waiting'||item.state==='review'));
+      if(checkpoint){checkpoint.state='failed';checkpoint.error=r.error;checkpoint.endedAt=now();}
+      this.persist(r);return false;
+    }
     let context:ContextState|undefined;
     if(r.context){
       const projected=projectContext(r.context,node.context),bindings:BindingContext={input:r.input,nodes:r.outputs,...projected?{context:projected}:{}};
@@ -380,7 +385,7 @@ export class Engine{
     }
     const cursor=this.next(r,node.id,port),checkpoint=r.trace.at(-1);
     if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}
-    r.state='running';delete r.pending;r.outputs[node.id]=output;if(context)r.context=context;if(review)r.review=review;r.cursor=cursor;this.persist(r);
+    r.state='running';delete r.pending;r.outputs[node.id]=output;if(context)r.context=context;if(review)r.review=review;r.cursor=cursor;this.persist(r);return true;
   }
   private checkpoint(r:Run){r.updatedAt=now();this.persist(r);}
   private validateOutput(node:GraphNode,output:Json):Json{
@@ -481,7 +486,12 @@ export class Engine{
     const model=n.model??agentModel??actor.model;
     try{
     this.allowedRun(actor,r);this.host.check(actor,'llm');
-    const prompt=display(bind(n.prompt,ctx));if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw executionError('Rendered prompt exceeds the transport budget.','LOOPS_PROMPT_LIMIT');
+    const authoredPrompt=display(bind(n.prompt,ctx));
+    // The selected public isolated-agent runtime has no constrained-output
+    // parameter. Give explicit format guidance, then validate the returned
+    // parsed value locally before any node checkpoint or context commit.
+    const prompt=n.outputSchema===undefined?authoredPrompt:`${authoredPrompt}\n\nReturn only one JSON value matching this required data schema. Do not add prose or code fences.\n${JSON.stringify(n.outputSchema)}`;
+    if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw executionError('Rendered prompt exceeds the transport budget.','LOOPS_PROMPT_LIMIT');
     const settings:InferenceSettings={...model?{model}:{},...n.agentId?{agentId:n.agentId}:{},...n.reasoning?{reasoning:n.reasoning}:{},...n.advanced?{advanced:n.advanced}:{}};
     const issues=validateAdvanced(n.advanced,this.capabilities(actor,settings).parameters);if(issues.length)throw executionError(issues.join(' '),'UNSUPPORTED_INFERENCE_SETTINGS');
     const deadline=this.deadlines.get(r.id);

@@ -54,12 +54,12 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
 }
 // Conversation consumers follow the same documented reference protocol. Check
 // each formatted reply, not only the larger feature-SDK envelope.
-async function commandJson(s:Awaited<ReturnType<typeof setup>>,op:string,input:unknown={}){
+async function commandJson(s:Awaited<ReturnType<typeof setup>>,op:string,input:unknown={},expectDocument=false){
   const invoke=async(operation:string,payload:unknown)=>{
     const text=(await s.commands.get('loops')!.handler({...s.commandContext,args:`${operation} ${JSON.stringify(payload)}`})).text!;
     expect(text.length).toBeLessThanOrEqual(8000);return JSON.parse(text.split('\n\nRead the full JSON result with ')[0]);
   };
-  const value=await invoke(op,input);if(!Value.Check(DocumentReferenceSchema,value))return value;
+  const value=await invoke(op,input);if(expectDocument)expect(Value.Check(DocumentReferenceSchema,value),JSON.stringify(value).slice(0,500)).toBe(true);if(!Value.Check(DocumentReferenceSchema,value))return value;
   let text='',offset=0;while(true){const page=await invoke('document',{documentId:value.documentId,offset,...value.readerId?{readerId:value.readerId}:{}});expect(page.sha256).toBe(value.sha256);expect(page.offset).toBe(offset);text+=page.text;if(page.nextOffset===null)break;expect(page.nextOffset).toBeGreaterThan(offset);offset=page.nextOffset;}
   expect(Buffer.byteLength(text)).toBe(value.bytes);expect(createHash('sha256').update(text).digest('hex')).toBe(value.sha256);if(value.readerId)expect(await invoke('document_release',{documentId:value.documentId,readerId:value.readerId})).toEqual({released:true});return JSON.parse(text);
 }
@@ -213,6 +213,24 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const command=await commandJson(s,'test',{definition,input:{count:-1},requestId:'evidence-command'}) as {id:string;state:string;result:string};expect(command).toMatchObject({state:'completed',result:'rejected'});
     const tool=await toolJson(s,'test',{definition,input:{count:2}},'evidence-tool') as {id:string;state:string;result:string};expect(tool).toMatchObject({state:'completed',result:'accepted'});
     const inspected=await s.action('inspect',{runId:tool.id});expect(inspected).toMatchObject({ok:true,result:{state:'completed',outputs:{evaluate:{kind:'loops-evaluation',passed:true,evaluatorNodeId:'evaluate'},gate:{passed:true,evaluatorNodeId:'evaluate'}},context:{journal:[{nodeId:'evaluate',target:'/evaluation'}]}}});
+    expect(s.complete).not.toHaveBeenCalled();
+  },30_000);
+  it('preserves recursive typed data through UI, command, and tool test routes',async()=>{
+    const s=await setup();
+    const definition:import('../src/graph.js').Definition={schemaVersion:3,id:'adapter-recursive-data',slug:'adapter-recursive-data',name:'Recursive data',description:'Typed transport fixture.',revision:0,
+      inputSchema:[{name:'data',label:'Data',type:'json',required:true,schema:{type:'object',properties:{items:{type:'array',items:{type:'object',properties:{value:{type:'integer',minimum:0},note:{type:'null'}},required:['value','note'],additionalProperties:false}}},required:['items'],additionalProperties:false}}],
+      capabilities:[],limits:{maxExecutions:3,maxOutputBytes:131072},nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.data.items}}',outputSchema:{type:'array',items:{type:'object',properties:{value:{type:'integer',minimum:0},note:{type:'null'}},required:['value','note'],additionalProperties:false}}}],edges:[{id:'next',source:'input',target:'return',port:'next'}],layout:{}};
+    const input={data:{items:[{value:0,note:null}]}};
+    expect(await s.action('test',{definition,input,requestId:'recursive-ui'})).toMatchObject({ok:true,result:{state:'completed',result:input.data.items}});
+    expect(await commandJson(s,'test',{definition,input,requestId:'recursive-command'})).toMatchObject({state:'completed',result:input.data.items});
+    expect(await toolJson(s,'test',{definition,input},'recursive-tool')).toMatchObject({state:'completed',result:input.data.items});
+    const invalid=await s.action('test',{definition,input:{data:{items:[{value:-1,note:null}]}},requestId:'recursive-invalid'});
+    expect(invalid).toMatchObject({ok:true,result:{kind:'loops-error',error:{code:'LOOPS_INPUT_SCHEMA_INVALID',message:expect.stringContaining('/items/0/value')}}});
+    const largeInput={data:{items:Array.from({length:1200},(_,value)=>({value,note:null}))}};
+    const admitted=await commandJson(s,'test',{definition,input:largeInput,requestId:'recursive-paged'}) as {id:string;state:string};
+    expect(admitted.state).toBe('completed');
+    const paged=await commandJson(s,'inspect',{runId:admitted.id},true);
+    expect(paged).toMatchObject({state:'completed',result:largeInput.data.items});
     expect(s.complete).not.toHaveBeenCalled();
   },30_000);
   it('protects actual parked, queued and settling run snapshots after reader release, including a parked restart',async()=>{

@@ -39,14 +39,14 @@ export const DataSchemaWireDefinitions={
     Type.Record(Type.String(),wireJsonValueRef),
   ]),
   loops_data_schema:Type.Union([
-    Type.Object({type:Type.Literal('object'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{maxItems:dataSchemaLimits.maxEnumItems})),properties:Type.Optional(Type.Record(wirePropertyName,wireDataSchemaRef,{maxProperties:dataSchemaLimits.maxProperties})),required:Type.Optional(Type.Array(wirePropertyName,{maxItems:dataSchemaLimits.maxProperties,uniqueItems:true})),additionalProperties:Type.Optional(Type.Boolean())},wireStrict),
-    Type.Object({type:Type.Literal('array'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{maxItems:dataSchemaLimits.maxEnumItems})),items:wireDataSchemaRef,minItems:Type.Optional(wireInteger),maxItems:Type.Optional(wireInteger)},wireStrict),
-    Type.Object({type:Type.Literal('string'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{maxItems:dataSchemaLimits.maxEnumItems})),minLength:Type.Optional(wireInteger),maxLength:Type.Optional(wireInteger),pattern:Type.Optional(Type.String({maxLength:dataSchemaLimits.maxPatternBytes}))},wireStrict),
-    Type.Object({type:Type.Literal('number'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{maxItems:dataSchemaLimits.maxEnumItems})),minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number())},wireStrict),
-    Type.Object({type:Type.Literal('integer'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{maxItems:dataSchemaLimits.maxEnumItems})),minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number())},wireStrict),
-    Type.Object({type:Type.Literal('boolean'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
-    Type.Object({type:Type.Literal('null'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
-    Type.Object({type:Type.Literal('json'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
+    Type.Object({type:Type.Literal('object'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),properties:Type.Optional(Type.Record(wirePropertyName,wireDataSchemaRef,{maxProperties:dataSchemaLimits.maxProperties})),required:Type.Optional(Type.Array(wirePropertyName,{maxItems:dataSchemaLimits.maxProperties,uniqueItems:true})),additionalProperties:Type.Optional(Type.Boolean())},wireStrict),
+    Type.Object({type:Type.Literal('array'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),items:wireDataSchemaRef,minItems:Type.Optional(wireInteger),maxItems:Type.Optional(wireInteger)},wireStrict),
+    Type.Object({type:Type.Literal('string'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),minLength:Type.Optional(wireInteger),maxLength:Type.Optional(wireInteger),pattern:Type.Optional(Type.String({maxLength:dataSchemaLimits.maxPatternBytes}))},wireStrict),
+    Type.Object({type:Type.Literal('number'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number())},wireStrict),
+    Type.Object({type:Type.Literal('integer'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number())},wireStrict),
+    Type.Object({type:Type.Literal('boolean'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
+    Type.Object({type:Type.Literal('null'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
+    Type.Object({type:Type.Literal('json'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
   ]),
 } as const;
 export const DataSchemaWireRef=wireDataSchemaRef;
@@ -72,7 +72,7 @@ export function dataSchemaIssues(value:unknown):DataSchemaDiagnostic[]{
   const visit=(current:unknown,path:string[],depth:number)=>{
     if(++nodes>dataSchemaLimits.maxNodes){issues.push(issue(pointer(path),'maxNodes',`Schema exceeds ${dataSchemaLimits.maxNodes} nodes.`));return;}
     if(depth>dataSchemaLimits.maxDepth){issues.push(issue(pointer(path),'maxDepth',`Schema exceeds ${dataSchemaLimits.maxDepth} levels.`));return;}
-    if(!current||typeof current!=='object'||Array.isArray(current)){issues.push(issue(pointer(path),'type','Schema must be an object.'));return;}
+    if(!current||typeof current!=='object'||Array.isArray(current)||Object.getPrototypeOf(current)!==Object.prototype){issues.push(issue(pointer(path),'type','Schema must be a plain object.'));return;}
     if(seen.has(current)){issues.push(issue(pointer(path),'cycle','Schema cannot contain a cycle.'));return;}seen.add(current);
     const schema=current as Record<string,unknown>,type=schema.type;
     const allowed=new Set(['type','title','description','enum','minimum','maximum','minLength','maxLength','pattern','properties','required','additionalProperties','items','minItems','maxItems']);
@@ -80,7 +80,7 @@ export function dataSchemaIssues(value:unknown):DataSchemaDiagnostic[]{
     if(typeof type!=='string'||!['object','array','string','number','integer','boolean','null','json'].includes(type))issues.push(issue(pointer([...path,'type']),'type','Select a supported value type.'));
     for(const key of ['title','description'])if(schema[key]!==undefined&&(typeof schema[key]!=='string'||Buffer.byteLength(schema[key])>1024))issues.push(issue(pointer([...path,key]),'type',`${key} must be text up to 1,024 bytes.`));
     if(schema.enum!==undefined){
-      if(!Array.isArray(schema.enum)||schema.enum.length>dataSchemaLimits.maxEnumItems||schema.enum.some(item=>!isJson(item)))issues.push(issue(pointer([...path,'enum']),'enum',`Enum must contain at most ${dataSchemaLimits.maxEnumItems} JSON values.`));
+      if(!Array.isArray(schema.enum)||schema.enum.length===0||schema.enum.length>dataSchemaLimits.maxEnumItems||schema.enum.some(item=>!isJson(item)))issues.push(issue(pointer([...path,'enum']),'enum',`Enum must contain 1 to ${dataSchemaLimits.maxEnumItems} JSON values.`));
     }
     for(const key of ['minimum','maximum'])if(schema[key]!==undefined&&(typeof schema[key]!=='number'||!Number.isFinite(schema[key])))issues.push(issue(pointer([...path,key]),'type',`${key} must be a finite number.`));
     for(const key of ['minLength','maxLength','minItems','maxItems'])if(schema[key]!==undefined&&(!Number.isSafeInteger(schema[key])||Number(schema[key])<0))issues.push(issue(pointer([...path,key]),'type',`${key} must be a non-negative safe integer.`));
@@ -90,11 +90,11 @@ export function dataSchemaIssues(value:unknown):DataSchemaDiagnostic[]{
     if(schema.pattern!==undefined&&(typeof schema.pattern!=='string'||!safePattern(schema.pattern)))issues.push(issue(pointer([...path,'pattern']),'pattern',`Pattern must be a simple regular expression up to ${dataSchemaLimits.maxPatternBytes} bytes without groups or alternation.`));
     if(type==='object'){
       if(schema.properties!==undefined){
-        if(!schema.properties||typeof schema.properties!=='object'||Array.isArray(schema.properties)||Object.keys(schema.properties).length>dataSchemaLimits.maxProperties)issues.push(issue(pointer([...path,'properties']),'properties',`properties must contain at most ${dataSchemaLimits.maxProperties} named schemas.`));
+        if(!schema.properties||typeof schema.properties!=='object'||Array.isArray(schema.properties)||Object.getPrototypeOf(schema.properties)!==Object.prototype||Object.keys(schema.properties).length>dataSchemaLimits.maxProperties)issues.push(issue(pointer([...path,'properties']),'properties',`properties must contain at most ${dataSchemaLimits.maxProperties} named schemas.`));
         else for(const [key,child] of Object.entries(schema.properties)){if(!key||Buffer.byteLength(key)>100||forbidden.has(key))issues.push(issue(pointer([...path,'properties',key]),'propertyName','Property name is not allowed.'));else visit(child,[...path,'properties',key],depth+1);}
       }
       if(schema.required!==undefined){
-        if(!Array.isArray(schema.required)||schema.required.some(key=>typeof key!=='string'||!schema.properties||!Object.hasOwn(schema.properties as object,key)))issues.push(issue(pointer([...path,'required']),'required','required must name declared properties.'));
+        if(!Array.isArray(schema.required)||schema.required.length>dataSchemaLimits.maxProperties||new Set(schema.required).size!==schema.required.length||schema.required.some(key=>typeof key!=='string'||!schema.properties||!Object.hasOwn(schema.properties as object,key)))issues.push(issue(pointer([...path,'required']),'required','required must contain unique names of declared properties.'));
       }
       if(schema.additionalProperties!==undefined&&typeof schema.additionalProperties!=='boolean')issues.push(issue(pointer([...path,'additionalProperties']),'type','additionalProperties must be true or false.'));
     }else if(type==='array'){

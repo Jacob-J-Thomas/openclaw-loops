@@ -28,11 +28,22 @@ describe('bounded recursive data schemas',()=>{
     expect(dataSchemaIssues({type:'string',pattern:'(a+)+'}).map(issue=>issue.keyword)).toContain('pattern');
     expect(dataSchemaIssues({type:'string',pattern:'^a*a*a*$'}).map(issue=>issue.keyword)).toContain('pattern');
     expect(dataSchemaIssues({type:'string',pattern:'^[a-z]+$'})).toEqual([]);
+    expect(dataSchemaIssues({type:'string',enum:[]}).map(issue=>issue.keyword)).toContain('enum');
+    expect(dataSchemaIssues({type:'object',properties:{a:{type:'string'}},required:['a','a']}).map(issue=>issue.keyword)).toContain('required');
+    expect(dataSchemaIssues(new Date()).map(issue=>issue.keyword)).toContain('type');
     expect(dataSchemaIssues({type:'string',title:'x'.repeat(140000)}).map(issue=>issue.keyword)).toContain('maxBytes');
   });
   it('exposes bounded recursive schemas on the actual public definition wire',()=>{
     const input=wireContract.operations.validate.input,valid={definition:definition()};
     expect(Value.Check(input,valid)).toBe(true);
+    for(const version of [1,2] as const){
+      const legacy=structuredClone(examples[0]);legacy.schemaVersion=version;
+      if(version===1)legacy.limits.timeoutMs??=120000;
+      const recursiveInput={definition:legacy};recursiveInput.definition.inputSchema[0]!.schema={type:'json'};
+      expect(Value.Check(input,recursiveInput),`v${version} input schema`).toBe(false);
+      const recursiveOutput={definition:structuredClone(legacy)};const oldNode=recursiveOutput.definition.nodes.find(node=>node.kind==='inference');if(!oldNode||oldNode.kind!=='inference')throw Error('missing inference');oldNode.outputSchema={type:'json'};
+      expect(Value.Check(input,recursiveOutput),`v${version} output schema`).toBe(false);
+    }
 
     const unknown=structuredClone(valid);(unknown.definition.inputSchema[0].schema as Record<string,unknown>).unknown=true;
     expect(Value.Check(input,unknown)).toBe(false);
@@ -42,9 +53,16 @@ describe('bounded recursive data schemas',()=>{
 
     const malformedEnum=structuredClone(valid);(malformedEnum.definition.inputSchema[0].schema as {properties:{profile:{properties:{name:Record<string,unknown>}}}}).properties.profile.properties.name.enum='accepted';
     expect(Value.Check(input,malformedEnum)).toBe(false);
+    const emptyEnum=structuredClone(valid);(emptyEnum.definition.inputSchema[0].schema as {properties:{profile:{properties:{name:Record<string,unknown>}}}}).properties.profile.properties.name.enum=[];
+    expect(Value.Check(input,emptyEnum)).toBe(false);
 
     const output=structuredClone(valid);const inference=output.definition.nodes.find(node=>node.kind==='inference');if(!inference||inference.kind!=='inference')throw Error('missing inference');inference.outputSchema={type:'array',items:{type:'object',properties:{label:{type:'string',pattern:'^[a-z]+$'}},required:['label'],additionalProperties:false},minItems:1};
     expect(Value.Check(input,output)).toBe(true);
+    const repeated=structuredClone(examples[1]);repeated.schemaVersion=3;const repeat=repeated.nodes.find(node=>node.kind==='repeat');if(!repeat||repeat.kind!=='repeat')throw Error('missing Repeat');
+    const bodyInference=repeat.body[0] as typeof repeat.body[0]&{outputSchema?:DataSchema};bodyInference.outputSchema={type:'object',properties:{name:{type:'string'}},required:['name']};bodyInference.output='json';
+    expect(Value.Check(input,{definition:repeated})).toBe(true);
+    (bodyInference.outputSchema as Record<string,unknown>).unknown=true;
+    expect(Value.Check(input,{definition:repeated}), 'nested Repeat body output schema').toBe(false);
   });
   it('keeps legacy flat fields intact and rejects invalid recursive input at admission',()=>{
     expect(validateInput(examples[0],{text:'legacy'})).toEqual({text:'legacy'});
@@ -61,15 +79,26 @@ describe('bounded recursive data schemas',()=>{
     expect(run.outputs).not.toHaveProperty('summary');expect(run.context?.journal).toHaveLength(0);
     const persisted=new Engine(storage,host).status(actor(),run.id);expect(persisted.outputs).not.toHaveProperty('summary');
   });
+  it('records invalid parked output as a failed run when Wait is released',async()=>{
+    const d=definition();d.inputSchema=[];d.capabilities=[];d.nodes=[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Continue',outputSchema:{type:'string'}},{id:'return',kind:'return',label:'Return',value:'accepted'}];d.edges=[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'return',port:'next'}];
+    const storage=new Memory(),host:HostCapabilities={check:vi.fn(),complete:vi.fn(async()=>({text:'unused'})),modelInfo:vi.fn(async()=>({}))};
+    const engine=new Engine(storage,host),parked=await engine.test(actor(),d,{},'parked-output');expect(parked.state).toBe('waiting');
+    const failed=await engine.resume(actor(),parked.id);expect(failed).toMatchObject({state:'failed',errorDetail:{code:'LOOPS_OUTPUT_SCHEMA_INVALID',nodeId:'wait'}});
+    expect(failed.outputs).not.toHaveProperty('wait');expect(failed.outputs).not.toHaveProperty('return');
+    expect(new Engine(storage,host).status(actor(),parked.id).errorDetail).toEqual(failed.errorDetail);
+  });
   it('requires JSON mode and validates the parsed generated value, including zero, null and Unicode',async()=>{
     const d=definition(),inference=d.nodes.find(node=>node.kind==='inference');if(!inference||inference.kind!=='inference')throw Error('missing inference');
     inference.outputSchema={type:'object',properties:{score:{type:'integer',minimum:0},note:{type:'null'},name:{type:'string',minLength:1}},required:['score','note','name'],additionalProperties:false};
     expect(validateGraph(d).map(issue=>issue.message)).toContain('Inference output schemas require JSON output mode.');
     inference.output='json';expect(validateGraph(d)).toEqual([]);
+    const terminal=d.nodes.find(node=>node.kind==='return');if(!terminal||terminal.kind!=='return')throw Error('missing Return');terminal.value='{{nodes.summary.value.score}}';
     const outputs=['{"score":0,"note":null,"name":"Zoë🙂"}','{"score":-1,"note":null,"name":"Zoë🙂"}','plain prose','{"score":0,"note":null}'];
     const host:HostCapabilities={check:vi.fn(),complete:vi.fn(async()=>({text:outputs.shift()??'',provider:'test',model:'test',agentId:'schema'})),modelInfo:vi.fn(async()=>({}))};
-    const engine=new Engine(new Memory(),host),input={data:{profile:{name:'Núll',scores:[0]},note:null}};
-    const valid=await engine.test(actor(),d,input,'schema-valid');expect(valid.state).toBe('completed');expect(valid.outputs.summary).toMatchObject({value:{score:0,note:null,name:'Zoë🙂'}});
+    const storage=new Memory(),engine=new Engine(storage,host),input={data:{profile:{name:'Núll',scores:[0]},note:null}};
+    const valid=await engine.test(actor(),d,input,'schema-valid');expect(valid.state).toBe('completed');expect(valid.result).toBe(0);expect(valid.outputs.summary).toMatchObject({value:{score:0,note:null,name:'Zoë🙂'}});
+    expect(vi.mocked(host.complete).mock.calls[0]?.[1]).toMatch(/Return only one JSON value matching this required data schema/);
+    expect(new Engine(storage,host).status(actor(),valid.id).result).toBe(0);
     for(const id of ['schema-wrong-shape','schema-prose','schema-missing']){const run=await engine.test(actor(),d,input,id);expect(run.state).toBe('failed');expect(run.outputs).not.toHaveProperty('summary');}
   });
 });

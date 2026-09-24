@@ -9,17 +9,19 @@ import {DataSchemaWireDefinitions,DataSchemaWireRef} from './data-schema.js';
 const strict = {additionalProperties: false} as const;
 const digest = Type.String({pattern: '^[a-f0-9]{64}$'});
 const offset = Type.Integer({minimum: 0});
-type JsonSchema=TSchema&{properties?:Record<string,JsonSchema>;items?:JsonSchema;anyOf?:JsonSchema[];$defs?:Record<string,JsonSchema>};
+type JsonSchema=TSchema&{properties?:Record<string,JsonSchema>;items?:JsonSchema|JsonSchema[];anyOf?:JsonSchema[];oneOf?:JsonSchema[];allOf?:JsonSchema[];$defs?:Record<string,JsonSchema>};
 const schemaObject=(value:unknown):value is JsonSchema=>!!value&&typeof value==='object'&&!Array.isArray(value);
-function withRecursiveDataSchemaWire(input:TSchema):TSchema{
+export function withRecursiveDataSchemaWire(input:TSchema):TSchema{
   const result=structuredClone(input) as JsonSchema;
   const visit=(schema:JsonSchema)=>{
     const properties=schema.properties;
-    if(properties?.inputSchema?.items?.properties?.schema!==undefined)properties.inputSchema.items.properties.schema=structuredClone(DataSchemaWireRef) as JsonSchema;
+    const inputItems=properties?.inputSchema?.items;
+    if(schemaObject(inputItems)&&inputItems.properties?.schema!==undefined)inputItems.properties.schema=structuredClone(DataSchemaWireRef) as JsonSchema;
     if(properties?.outputSchema!==undefined)properties.outputSchema=structuredClone(DataSchemaWireRef) as JsonSchema;
     for(const child of Object.values(properties??{}))if(schemaObject(child))visit(child);
-    if(schemaObject(schema.items))visit(schema.items);
-    for(const child of schema.anyOf??[])visit(child);
+    if(Array.isArray(schema.items)){for(const child of schema.items)if(schemaObject(child))visit(child);}
+    else if(schemaObject(schema.items))visit(schema.items);
+    for(const child of [...schema.anyOf??[],...schema.oneOf??[],...schema.allOf??[]])if(schemaObject(child))visit(child);
   };
   visit(result);
   result.$defs={...result.$defs,...structuredClone(DataSchemaWireDefinitions)};
