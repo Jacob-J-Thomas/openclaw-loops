@@ -78,7 +78,8 @@ export function insertBinding(node:GraphNode,binding:string):GraphNode{
   if(node.kind==='evaluate')return {...node,value:replaceOrAppend(node.value)};
   if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
   if(node.kind==='return')return {...node,value:binding};
-  if(node.kind==='condition')return {...node,predicate:{...node.predicate,left:binding}};
+  if(node.kind==='condition')return 'condition'in node?{...node,condition:{...node.condition,value:binding}}:{...node,predicate:{...node.predicate,left:binding}};
+  if(node.kind==='switch')return {...node,value:binding};
   if(node.kind==='wait')return {...node,message:binding};
   if(node.kind==='review')return {...node,proposal:binding};
   if(node.kind==='fail')return {...node,reason:binding};
