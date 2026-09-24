@@ -39,6 +39,47 @@ async function serve(html){
 }
 const waitFor=async(page,selector)=>page.locator(selector).waitFor({state:'visible',timeout:10_000});
 
+async function verifyEvaluationDraftRaces(browser,url,checks){
+  const open=async()=>{const page=await browser.newPage();page.setDefaultTimeout(10_000);await page.goto(url);await waitFor(page,'select[aria-label="Load an example"]');await page.selectOption('select[aria-label="Load an example"]','summarize-text');return page;};
+  const addEvaluation=async page=>{await page.selectOption('select[aria-label="Node family"]','evaluate');await page.getByRole('button',{name:'+ Add node'}).click();return page.getByRole('textbox',{name:'JSON Schema',exact:true});};
+  {
+    const page=await open(),schema=await addEvaluation(page);
+    await page.getByRole('button',{name:'Save draft'}).click();await page.getByText('Revision 1 saved as a draft').waitFor();
+    await schema.fill('{"type":"string","minLength":1}');await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft());await page.getByRole('button',{name:'Save draft'}).click();await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1);
+    await schema.fill('{');await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft());await page.getByText('Revision 2 saved; newer draft edits are retained.').waitFor();
+    assert.equal(await schema.inputValue(),'{');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);checks.push('invalid evaluator text survives a pending save acknowledgment');await page.close();
+  }
+  {
+    const page=await open(),schema=await addEvaluation(page);
+    await page.getByRole('button',{name:'Save draft'}).click();await page.getByText('Revision 1 saved as a draft').waitFor();
+    await page.evaluate(()=>{globalThis.__editorRegression.deferNextLoad();globalThis.__editorRegression.refresh();});await page.waitForFunction(()=>globalThis.__editorRegression.deferredLoadCount()===1);
+    await schema.fill('{');await page.evaluate(()=>globalThis.__editorRegression.resolveNextLoad());await page.waitForFunction(()=>globalThis.__editorRegression.deferredLoadCount()===0);await page.waitForTimeout(100);
+    assert.equal(await schema.inputValue(),'{');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);checks.push('invalid evaluator text survives a pending clean refresh');await page.close();
+  }
+  for(const pending of ['save','refresh']){
+    const page=await open();await addEvaluation(page);
+    await page.locator('.lp-evaluation-editor select').first().selectOption('predicate');await page.locator('.lp-evaluation-editor select').nth(1).selectOption('equals');
+    const expected=page.getByRole('textbox',{name:'Expected JSON value',exact:true});await expected.fill('0');
+    await page.getByRole('button',{name:'Save draft'}).click();await page.getByText('Revision 1 saved as a draft').waitFor();
+    if(pending==='save'){
+      await expected.fill('1');await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft());await page.getByRole('button',{name:'Save draft'}).click();await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1);
+    }else{
+      await page.evaluate(()=>{globalThis.__editorRegression.deferNextLoad();globalThis.__editorRegression.refresh();});await page.waitForFunction(()=>globalThis.__editorRegression.deferredLoadCount()===1);
+    }
+    await expected.fill('{');
+    if(pending==='save'){await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft());await page.getByText('Revision 2 saved; newer draft edits are retained.').waitFor();}
+    else{await page.evaluate(()=>globalThis.__editorRegression.resolveNextLoad());await page.waitForFunction(()=>globalThis.__editorRegression.deferredLoadCount()===0);await page.waitForTimeout(100);}
+    assert.equal(await expected.inputValue(),'{');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);checks.push(`invalid predicate text survives a pending ${pending}`);await page.close();
+  }
+  {
+    const page=await open();await page.getByRole('button',{name:'Save draft'}).click();await page.getByText('Revision 1 saved as a draft').waitFor();
+    await page.getByLabel('Node label').fill('Changed input');const schema=await addEvaluation(page);await schema.fill('{');await page.getByRole('button',{name:'Undo',exact:true}).click();
+    assert.equal(await page.getByText('Finish the invalid evaluator JSON before saving or publishing.').count(),0);assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),false);
+    await page.getByRole('button',{name:'Save draft'}).click();await page.getByText('Revision 2 saved as a draft').waitFor();await page.getByRole('button',{name:'Redo',exact:true}).click();
+    assert.equal(await schema.inputValue(),'{');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);checks.push('Undo excludes an inactive invalid evaluator draft and Redo restores it after save');await page.close();
+  }
+}
+
 export async function runEditorAdvancedRegression({receiptPath}={}){
   const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
   const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
@@ -114,6 +155,7 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
     assert.equal(saved.find(call=>call.mode==='save'&&call.definition.revision===1).definition.schemaVersion,3);assert.deepEqual(saved.find(call=>call.mode==='save'&&call.definition.revision===1).definition.nodes.filter(node=>node.kind==='evaluate'||node.kind==='gate').map(node=>node.kind),['evaluate','gate']);
     assert.deepEqual(advanced(saved.find(call=>call.mode==='restore').definition),{temperature:0,maxTokens:64}); assert.deepEqual(advanced(state.records.find(([,item])=>item.definition.slug.startsWith('imported-editor-'))[1].definition),{temperature:0,maxTokens:96}); assert.equal(state.records[0][1].publishedRevision,4);assert.equal(state.records[0][1].enabledRevision,4);assert.deepEqual(advanced(saved.find(call=>call.definition.revision===2).definition),{maxTokens:64});assert.ok(!Object.hasOwn(saved.find(call=>call.definition.revision===3).definition.nodes.find(node=>node.id==='summary'),'advanced'));assert.deepEqual(state.records[1][1].definition.nodes,state.records[0][1].definition.nodes);assert.deepEqual(state.records[1][1].definition.edges,state.records[0][1].definition.edges);assert.deepEqual(receipt.errors,[]);assert.equal(await page.getByRole('alert').count(),0);
     await fillLoopName('QA unmount original'); await page.waitForFunction(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('QA unmount original'))return true;return false;}); await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft()); await page.getByRole('button',{name:'Save draft'}).click(); await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1); await page.evaluate(()=>globalThis.__editorRegression.unmount()); await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft()); await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===0&&globalThis.__editorRegression.calls.some(call=>call.mode==='draft'&&call.definition.name==='QA unmount original')); assert.equal(await page.evaluate(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('QA unmount original'))return true;return false;}),true); receipt.checks.push('late save after unmount preserves the recoverable snapshot');
+    await verifyEvaluationDraftRaces(browser,url,receipt.checks);
     receipt.definitions=state.records.map(([id,item])=>({id,revision:item.definition.revision,enabledRevision:item.enabledRevision,publishedRevision:item.publishedRevision,advanced:advanced(item.definition)}));
     receipt.operations=state.calls.filter(call=>call.mode||call.id).map(call=>call.mode??call.id); receipt.passed=true;
   } catch(error){receipt.failure=error.message;if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');throw error;} finally { await browser?.close(); if(importDirectory)await rm(importDirectory,{recursive:true,force:true}); await new Promise(resolve=>server.close(resolve)); }
