@@ -107,6 +107,13 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       expect(await commandJson(s,'validate',payload)).toMatchObject({valid:true});
       expect(await toolJson(s,'validate',payload,`schema-tool-v${schemaVersion}`)).toMatchObject({valid:true});
     }
+    const recursive=definition(3);recursive.inputSchema=[{name:'text',label:'Typed text',type:'json',required:true,schema:{type:'object',properties:{profile:{type:'object',properties:{name:{type:'string',minLength:1},scores:{type:'array',items:{type:'integer',minimum:0},minItems:1}},required:['name','scores'],additionalProperties:false}},required:['profile'],additionalProperties:false}}];const recursiveOutput=recursive.nodes.find(node=>node.kind==='inference');if(!recursiveOutput||recursiveOutput.kind!=='inference')throw Error('missing inference');recursiveOutput.output='json';recursiveOutput.outputSchema={type:'object',properties:{name:{type:'string'}},required:['name'],additionalProperties:true};
+    const recursivePayload={definition:recursive};
+    expect(Value.Check(wireContract.operations.validate.input,recursivePayload),'recursive schema TypeBox').toBe(true);
+    expect(validateJsonSchemaValue({schema:wireContract.operations.validate.input,cacheKey:'loops-recursive-schema',cache:false,value:recursivePayload}),'recursive schema host validator').toMatchObject({ok:true});
+    expect(await s.action('validate',recursivePayload)).toMatchObject({ok:true,result:{valid:true}});
+    expect(await commandJson(s,'validate',recursivePayload)).toMatchObject({valid:true});
+    expect(await toolJson(s,'validate',recursivePayload,'recursive-schema-tool')).toMatchObject({valid:true});
     const upload={$loopsUpload:'a'.repeat(64)};
     for(const [operation,field] of [['create','definition'],['edit','changes'],['draft','definition'],['save','definition'],['validate','definition'],['test','definition']] as const){
       const input=wireContract.operations[operation].input;

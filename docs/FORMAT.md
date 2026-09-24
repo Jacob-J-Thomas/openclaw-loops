@@ -4,6 +4,20 @@ Ordinary new definitions use schemaVersion 2; existing v1/v2 definitions and run
 
 Inference supports optional `model`, `agentId`, `reasoning` and `advanced`. Advanced keys: `temperature`, `topP`, `topK`, `minP`, `typicalP`, `frequencyPenalty`, `presencePenalty`, `repetitionPenalty`, `seed`, `stop`, `maxTokens`. Omit to inherit; zero is a value. `loops_capabilities` and `loops_validate` report actual SDK support.
 
+## Recursive data schemas (v3)
+
+Version 3 input fields may add `schema` to a `type: "json"` field, and any non-Input node may add `outputSchema`. An Inference node with `outputSchema` must use JSON output mode: the schema checks the parsed generated `value`, while other node schemas check their complete output. The supported recursive language is deliberately data-only: `object` with `properties`, `required`, and boolean `additionalProperties`; `array` with `items`; scalar `string`, `number`, `integer`, `boolean`, and `null`; `enum`; scalar and collection limits; and `json` for an explicit unrestricted JSON value. For example:
+
+```json
+{"type":"object","properties":{"profile":{"type":"object","properties":{"name":{"type":"string","minLength":1},"scores":{"type":"array","items":{"type":"integer","minimum":0}}},"required":["name","scores"],"additionalProperties":false}},"required":["profile"],"additionalProperties":false}
+```
+
+An importable disabled definition is available in [recursive-data-schema-v3.example.json](../examples/recursive-data-schema-v3.example.json).
+
+Definitions reject schemas over 128 KiB, deeper than 32 levels, or with more than 512 nodes before they reach AJV. Property names cannot use prototype-sensitive keys; patterns must be short anchored expressions with at most one bounded quantifier and no groups or alternation. Input validation happens before run admission. Output validation happens before the node output is traced, checkpointed, or committed to shared context, so an invalid output leaves no committed output for that node. Diagnostics identify the failing JSON Pointer, including escaped property names such as `/a~1b`. JSON output mode asks the model for JSON text and validates the returned value locally; the public host completion API used here does not attest provider-enforced structured generation.
+
+The editor provides nested object/array controls, including keyboard-operable **Add nested schema** and **Add property** buttons. Existing flat v1/v2/v3 input fields remain unchanged when they do not declare `schema`; a pinned run retains its saved definition. Recursive schemas are plain definition content: they do not infer files, tools, executable behavior, credentials, or any new grant.
+
 `loops_draft` preserves publication. `loops_publish` enables an immutable revision. `loops_restore` creates a new draft. Legacy `enabled:false` retains its disabling meaning. `loops_test` executes without publishing. Versions/history/inspect/output operations expose complete evidence. Archive/delete preserve recoverable history.
 
 ## Current binding and predicate behavior

@@ -4,11 +4,13 @@ import {executionError} from './errors.js';
 import {NodeValueSchema,type NodeValue,type Json} from './node-values.js';
 import {ContextNodeConfigSchema,type ContextNodeConfig} from './context.js';
 import {type EvaluationResult,type Evaluator} from './evaluation.js';
+import type {DataSchema} from './data-schema.js';
 export type {Json,NodeValue} from './node-values.js';
 
 export const identifierSchema=Type.String({pattern:'^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$'});
 const text=Type.String(),strict={additionalProperties:false} as const;
 const identity={id:identifierSchema,label:Type.String({minLength:1,maxLength:100})};
+const outputExtension={outputSchema:Type.Optional(Type.Unsafe<DataSchema>(Type.Unknown()))};
 const predicateSchema=<V extends TSchema>(value:V)=>Type.Object({
   left:value,op:Type.Union([Type.Literal('equals'),Type.Literal('not-equals'),Type.Literal('contains'),Type.Literal('less-than'),Type.Literal('greater-than'),Type.Literal('truthy')]),right:value,
 },strict);
@@ -33,23 +35,23 @@ return {
 const schemas=schemasForValues(NodeValueSchema),legacySchemas=schemasForValues(text);
 export const NodeSchema=Type.Union([schemas.input,schemas.inference,schemas.action,schemas.condition,schemas.repeat,schemas.wait,schemas.review,schemas.return,schemas.fail]);
 export const LegacyNodeSchema=Type.Union([legacySchemas.input,legacySchemas.inference,legacySchemas.action,legacySchemas.condition,legacySchemas.repeat,legacySchemas.wait,legacySchemas.review,legacySchemas.return,legacySchemas.fail]);
-type BaseGraphNode=Static<typeof NodeSchema>&{context?:ContextNodeConfig};
-type EvaluateNode={id:string;kind:'evaluate';label:string;value:NodeValue;evaluator:Evaluator;context?:ContextNodeConfig};
-type GateNode={id:string;kind:'gate';label:string;evaluationId:string;context?:ContextNodeConfig};
+type BaseGraphNode=Static<typeof NodeSchema>&{context?:ContextNodeConfig;outputSchema?:DataSchema};
+type EvaluateNode={id:string;kind:'evaluate';label:string;value:NodeValue;evaluator:Evaluator;context?:ContextNodeConfig;outputSchema?:DataSchema};
+type GateNode={id:string;kind:'gate';label:string;evaluationId:string;context?:ContextNodeConfig;outputSchema?:DataSchema};
 export type GraphNode=BaseGraphNode|EvaluateNode|GateNode;
 const contextExtension=Type.Object({context:Type.Optional(ContextNodeConfigSchema)},strict);
-const withContext=(schema:{properties:Record<string,TSchema>})=>Type.Object({...schema.properties,...contextExtension.properties},strict);
+const withContext=(schema:{properties:Record<string,TSchema>})=>Type.Object({...schema.properties,...outputExtension,...contextExtension.properties},strict);
 const evaluatorSchema=Type.Union([
   Type.Object({kind:Type.Literal('json-schema-2020'),version:Type.String({minLength:1,maxLength:256}),schema:Type.Unknown()},strict),
   Type.Object({kind:Type.Literal('predicate'),version:Type.String({minLength:1,maxLength:256}),predicate:Type.Object({op:Type.Union([Type.Literal('equals'),Type.Literal('not-equals'),Type.Literal('contains'),Type.Literal('less-than'),Type.Literal('greater-than'),Type.Literal('truthy')]),expected:Type.Optional(Type.Unknown())},strict)},strict),
 ]);
-const evaluateSchema=Type.Object({...identity,kind:Type.Literal('evaluate'),value:NodeValueSchema,evaluator:evaluatorSchema,...contextExtension.properties},strict);
-const gateSchema=Type.Object({...identity,kind:Type.Literal('gate'),evaluationId:identifierSchema,...contextExtension.properties},strict);
+const evaluateSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('evaluate'),value:NodeValueSchema,evaluator:evaluatorSchema,...contextExtension.properties},strict);
+const gateSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('gate'),evaluationId:identifierSchema,...contextExtension.properties},strict);
 const contextSchemas={
-  input:withContext(schemas.input),inference:withContext(schemas.inference),action:withContext(schemas.action),condition:withContext(schemas.condition),
+  input:Type.Object({...schemas.input.properties,...contextExtension.properties},strict),inference:withContext(schemas.inference),action:withContext(schemas.action),condition:withContext(schemas.condition),
   wait:withContext(schemas.wait),review:withContext(schemas.review),return:withContext(schemas.return),fail:withContext(schemas.fail),
 };
-const contextRepeatSchema=Type.Object({...identity,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:Type.Tuple([contextSchemas.inference,contextSchemas.condition]),...contextExtension.properties},strict);
+const contextRepeatSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:Type.Tuple([contextSchemas.inference,contextSchemas.condition]),...contextExtension.properties},strict);
 export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail,evaluateSchema,gateSchema]));
 export type Predicate=Static<typeof PredicateSchema>;
 export type NodeKind=GraphNode['kind'];
@@ -71,6 +73,7 @@ export type NodeExecutionContext={
   begin:(node:GraphNode,iteration:number)=>number;
   finish:(checkpoint:number,output:Json)=>void;
   setOutput:(nodeId:string,output:Json)=>void;
+  validateOutput:(node:GraphNode,output:Json)=>Json;
   commitContext:(node:GraphNode,output:Json)=>void;
 };
 type NodeContract<K extends NodeKind>={
@@ -122,10 +125,10 @@ export const nodeContracts:{[K in NodeKind]:NodeContract<K>}={
         context.signal.throwIfAborted();context.checkAuthority();
         const [inference,condition]=node.body;
         const inferenceCheckpoint=context.begin(inference,iteration);
-        last=await context.infer(inference,iteration);context.signal.throwIfAborted();
+        last=context.validateOutput(inference,await context.infer(inference,iteration));context.signal.throwIfAborted();
         context.finish(inferenceCheckpoint,last);context.setOutput(inference.id,last);context.commitContext(inference,last);
         const conditionCheckpoint=context.begin(condition,iteration);
-        succeeded=context.compare(condition.predicate,condition,iteration);context.finish(conditionCheckpoint,{value:succeeded});context.setOutput(condition.id,{value:succeeded});context.commitContext(condition,{value:succeeded});
+        succeeded=context.compare(condition.predicate,condition,iteration);const conditionOutput=context.validateOutput(condition,{value:succeeded});context.finish(conditionCheckpoint,conditionOutput);context.setOutput(condition.id,conditionOutput);context.commitContext(condition,conditionOutput);
         if(succeeded)break;
       }
       return {output:{...(last as Record<string,Json>),succeeded,iterations:Math.min(iteration,node.maxIterations),exhausted:!succeeded}};
