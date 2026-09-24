@@ -21,7 +21,8 @@ plugin_ready() {
 if [[ "${1:-}" == setup ]]; then
   "$node_bin" scripts/init-codex-profile.mjs
   if ! plugin_ready codex; then
-    bash scripts/dev.sh plugins install @openclaw/codex --accept-capabilities
+    host_version=$("$node_bin" -p 'require("./package.json").devDependencies.openclaw')
+    bash scripts/dev.sh plugins install "@openclaw/codex@$host_version" --accept-capabilities
   fi
   if ! plugin_ready loops-poc; then
     package_file=$("$node_bin" --input-type=module -e 'import {readFileSync} from "node:fs"; const p=JSON.parse(readFileSync("package.json","utf8")); console.log(p.name+"-"+p.version+".tgz");')

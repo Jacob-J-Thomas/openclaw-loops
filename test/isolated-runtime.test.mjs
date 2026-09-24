@@ -1,4 +1,5 @@
 import {afterEach,describe,it,expect} from 'vitest';
+import {createHash} from 'node:crypto';
 import {existsSync,mkdtempSync,mkdirSync,readFileSync,realpathSync,readdirSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {spawn,spawnSync} from 'node:child_process';
@@ -21,7 +22,7 @@ async function fixture(name='ollama'){
   const root=realpathSync(mkdtempSync(join(tmpdir(),'loops-isolated-')));roots.push(root);
   const module=join(root,'node_modules','openclaw'),profile=join(root,'.dev-profile',name==='ollama'?'':name);
   mkdirSync(module,{recursive:true});mkdirSync(join(profile,'workspace'),{recursive:true});
-  writeFileSync(join(root,'package.json'),JSON.stringify({devDependencies:{openclaw:'2026.9.5'}}));
+  writeFileSync(join(root,'package.json'),JSON.stringify({name:'openclaw-loops-poc',version:'1.0.0',devDependencies:{openclaw:'2026.9.5'}}));
   writeFileSync(join(module,'package.json'),JSON.stringify({name:'openclaw',version:'2026.9.5'}));
   writeFileSync(join(module,'openclaw.mjs'),"import {writeFileSync} from 'node:fs'; writeFileSync(new URL('../../output.json',import.meta.url),JSON.stringify({args:process.argv.slice(2),env:process.env}));");
   const port=await freePort();
@@ -48,18 +49,30 @@ describe('isolated runtime admission',()=>{
     mkdirSync(join(installed,'dist'),{recursive:true});writeFileSync(source,'export default {}');
     const config=JSON.parse(readFileSync(file));
     config.plugins={entries:{codex:{enabled:true}}};writeFileSync(file,JSON.stringify(config));
-    const info={plugin:{id:'codex',enabled:true,activated:true,status:'loaded',source},install:{installPath:installed}};
+    const info={plugin:{id:'codex',packageName:'@openclaw/codex',packageVersion:'2026.9.5',version:'2026.9.5',enabled:true,activated:true,status:'loaded',source},install:{installPath:installed,source:'clawhub',spec:'clawhub:@openclaw/codex@2026.9.5',version:'2026.9.5'}};
     expect(installedProfilePlugin(info,f.profile,'codex')).toBe(true);
     const accepted=spawnSync(process.execPath,[resolve('scripts/profile-plugin-status.mjs'),'codex'],{cwd:f.root,input:JSON.stringify(info),encoding:'utf8'});
     expect(accepted.status).toBe(0);
     expect(installedProfilePlugin({...info,install:null},f.profile,'codex')).toBe(false);
     expect(installedProfilePlugin({...info,plugin:{...info.plugin,status:'disabled'}},f.profile,'codex')).toBe(false);
+    expect(installedProfilePlugin({...info,plugin:{...info.plugin,version:'2026.9.6'}},f.profile,'codex')).toBe(false);
+    expect(installedProfilePlugin({...info,install:{...info.install,spec:'clawhub:@openclaw/codex@2026.9.6'}},f.profile,'codex')).toBe(false);
     const foreign=realpathSync(mkdtempSync(join(tmpdir(),'loops-foreign-plugin-')));roots.push(foreign);
     expect(installedProfilePlugin({...info,install:{installPath:foreign}},f.profile,'codex')).toBe(false);
     delete config.plugins.entries.codex;writeFileSync(file,JSON.stringify(config));
     expect(installedProfilePlugin(info,f.profile,'codex')).toBe(false);
     const check=spawnSync(process.execPath,[resolve('scripts/profile-plugin-status.mjs'),'codex'],{cwd:f.root,input:JSON.stringify(info),encoding:'utf8'});
     expect(check.status).toBe(1);
+  });
+  it('matches the installed Loops plugin to this worktree archive',async()=>{
+    const f=await fixture('codex-test'),file=join(f.profile,'openclaw.json');
+    const installed=join(f.profile,'state','npm','projects','openclaw-loops-poc','node_modules','openclaw-loops-poc');
+    const source=join(installed,'dist','index.js'),archive=join(f.root,'openclaw-loops-poc-1.0.0.tgz');
+    mkdirSync(join(installed,'dist'),{recursive:true});writeFileSync(source,'export default {}');writeFileSync(archive,'archive-one');
+    const config=JSON.parse(readFileSync(file));config.plugins={entries:{'loops-poc':{enabled:true}}};writeFileSync(file,JSON.stringify(config));
+    const info={plugin:{id:'loops-poc',packageName:'openclaw-loops-poc',packageVersion:'1.0.0',version:'1.0.0',enabled:true,activated:true,status:'loaded',source},install:{installPath:installed,source:'npm',spec:'openclaw-loops-poc@1.0.0',version:'1.0.0',npmShasum:createHash('sha1').update('archive-one').digest('hex')}};
+    expect(installedProfilePlugin(info,f.profile,'loops-poc')).toBe(true);
+    writeFileSync(archive,'archive-two');expect(installedProfilePlugin(info,f.profile,'loops-poc')).toBe(false);
   });
   it('initializes and admits an explicit alternate provider port in every environment',async()=>{
     const f=await fixture();
@@ -250,6 +263,7 @@ describe('isolated runtime admission',()=>{
     const f=await fixture(),archive=join(f.root,'candidate.tgz');writeFileSync(archive,'fixture');
     expect(admitOpenClawArgs(f.root,['plugins','build'])).toBe('build');
     expect(admitOpenClawArgs(f.root,['plugins','install','npm-pack:'+archive,'--force','--accept-capabilities'])).toBe('runtime');
+    expect(admitOpenClawArgs(f.root,['plugins','install','@openclaw/codex@2026.9.5','--accept-capabilities'])).toBe('codex-install');
     expect(admitOpenClawArgs(f.root,['gateway','call','plugins.sessionAction','--params','{}','--json','--timeout','60000'])).toBe('gateway-call');
     expect(admitOpenClawArgs(f.root,['agent','--agent','main','--session-key','synthetic','--message','hello','--json'])).toBe('agent');
     for(const args of [
@@ -257,6 +271,8 @@ describe('isolated runtime admission',()=>{
       ['gateway','run','--port=18789'],['config','set','gateway.bind','lan'],
       ['gateway','call','config.set','--params','{}','--json'],
       ['plugins','install','npm-pack:/private/foreign.tgz'],
+      ['plugins','install','@openclaw/codex','--accept-capabilities'],
+      ['plugins','install','@openclaw/codex@2026.9.6','--accept-capabilities'],
     ])expect(()=>admitOpenClawArgs(f.root,args)).toThrow();
     expect(admitOllamaArgs(['serve'])).toBe('serve');
     expect(admitOllamaArgs(['pull','qwen3.5:4b'])).toBe('pull');

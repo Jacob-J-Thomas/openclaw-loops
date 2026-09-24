@@ -64,6 +64,8 @@ bash scripts/codex.sh copy-secret
 bash scripts/codex.sh gateway run
 ```
 
+Setup installs `@openclaw/codex` at the exact version of this checkout's pinned OpenClaw host. It accepts an existing installation only when the enabled plugin and its installed path/version match that host; the Loops installation must also match this checkout's package version and archive hash. A plugin-info lookup alone does not establish that either plugin is installed in this profile.
+
 Complete the host's sign-in flow if authentication is missing or expired. Open [the Codex Loops page](http://127.0.0.1:19691/plugin?plugin=loops-poc&id=loops) and paste the copied Gateway secret into the connection form. This profile uses the official `@openclaw/codex` runtime with `openai/gpt-6-astra` as its initial default. The candidate uses an explicit node model first, otherwise the host agent's configured model on every path through generic public-plugin completion. Unset reasoning follows the selected runtime. New runs do not copy a conversation account or reasoning pin; legacy pinned accounts and honest host-policy denials remain preserved. Automatic conversation model/account inheritance parity remains deferred. The initializer preserves an existing profile and does not enable personal-session catalog discovery.
 
 For source updates, rebuild/package, install that tarball explicitly in each desired dev profile and restart only its Gateway. Setup installs a missing plugin; it does not silently replace an installed version. Stop a dev Gateway with Ctrl-C in its own terminal.

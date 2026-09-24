@@ -72,7 +72,8 @@ export function admitOpenClawArgs(root,args){
   if(args[0]==='plugins'&&args[1]==='install'&&args.length>=3){
     const spec=args[2],flags=args.slice(3);
     assert(flags.every(flag=>['--force','--accept-capabilities'].includes(flag))&&new Set(flags).size===flags.length,'Unapproved plugin install option.');
-    if(spec==='@openclaw/codex')return 'codex-install';
+    const manifest=JSON.parse(readFileSync(join(canonical(root),'package.json'),'utf8'));
+    if(spec==='@openclaw/codex@'+manifest.devDependencies.openclaw)return 'codex-install';
     assert(spec.startsWith('npm-pack:'),'Only a checked-out package archive or @openclaw/codex can be installed.');
     const archive=canonical(spec.slice('npm-pack:'.length)),project=canonical(root);
     assert(inside(archive,project)&&archive.endsWith('.tgz'),'Plugin archive must be inside this checkout.');
