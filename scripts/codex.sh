@@ -14,14 +14,22 @@ if [[ -z "$node_bin" || ! -x "$node_bin" ]]; then
 fi
 export LOOPS_NODE_BIN="$node_bin"
 
+plugin_ready() {
+  bash scripts/dev.sh plugins info "$1" --json 2>/dev/null | "$node_bin" scripts/profile-plugin-status.mjs "$1"
+}
+
 if [[ "${1:-}" == setup ]]; then
   "$node_bin" scripts/init-codex-profile.mjs
-  if ! bash scripts/dev.sh plugins info codex --json >/dev/null 2>&1; then
+  if ! plugin_ready codex; then
     bash scripts/dev.sh plugins install @openclaw/codex --accept-capabilities
   fi
-  if ! bash scripts/dev.sh plugins info loops-poc --json >/dev/null 2>&1; then
+  if ! plugin_ready loops-poc; then
     package_file=$("$node_bin" --input-type=module -e 'import {readFileSync} from "node:fs"; const p=JSON.parse(readFileSync("package.json","utf8")); console.log(p.name+"-"+p.version+".tgz");')
     bash scripts/dev.sh plugins install "npm-pack:$PWD/$package_file" --force --accept-capabilities
+  fi
+  if ! plugin_ready codex || ! plugin_ready loops-poc; then
+    echo 'Both plugins must be installed, enabled and loaded from this disposable profile.' >&2
+    exit 1
   fi
   "$node_bin" scripts/init-codex-profile.mjs finish
   exec bash scripts/dev.sh config validate

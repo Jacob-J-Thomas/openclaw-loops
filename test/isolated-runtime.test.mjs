@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {acquireLease,activeLease,admitOllamaArgs,admitOpenClawArgs,assertNode,assertSetupLocation,buildEnvironment,cleanEnvironment,installedHost,ollamaEnvironment,ollamaPort,ownedLoopbackListener,portOccupied,profileEnvironment,runOllama,runOpenClaw,runOwned} from '../scripts/isolated-runtime.mjs';
+import {installedProfilePlugin} from '../scripts/profile-plugin-status.mjs';
 
 const roots=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
@@ -40,6 +41,25 @@ describe('isolated runtime admission',()=>{
     const f=await fixture();expect(installedHost(f.root)).toBe(join(f.module,'openclaw.mjs'));
     rmSync(f.module,{recursive:true});
     expect(()=>installedHost(f.root)).toThrow(/missing/);
+  });
+  it('distinguishes bundled plugin metadata from an enabled disposable install',async()=>{
+    const f=await fixture('codex-test'),file=join(f.profile,'openclaw.json');
+    const installed=join(f.profile,'state','extensions','codex'),source=join(installed,'dist','index.js');
+    mkdirSync(join(installed,'dist'),{recursive:true});writeFileSync(source,'export default {}');
+    const config=JSON.parse(readFileSync(file));
+    config.plugins={entries:{codex:{enabled:true}}};writeFileSync(file,JSON.stringify(config));
+    const info={plugin:{id:'codex',enabled:true,activated:true,status:'loaded',source},install:{installPath:installed}};
+    expect(installedProfilePlugin(info,f.profile,'codex')).toBe(true);
+    const accepted=spawnSync(process.execPath,[resolve('scripts/profile-plugin-status.mjs'),'codex'],{cwd:f.root,input:JSON.stringify(info),encoding:'utf8'});
+    expect(accepted.status).toBe(0);
+    expect(installedProfilePlugin({...info,install:null},f.profile,'codex')).toBe(false);
+    expect(installedProfilePlugin({...info,plugin:{...info.plugin,status:'disabled'}},f.profile,'codex')).toBe(false);
+    const foreign=realpathSync(mkdtempSync(join(tmpdir(),'loops-foreign-plugin-')));roots.push(foreign);
+    expect(installedProfilePlugin({...info,install:{installPath:foreign}},f.profile,'codex')).toBe(false);
+    delete config.plugins.entries.codex;writeFileSync(file,JSON.stringify(config));
+    expect(installedProfilePlugin(info,f.profile,'codex')).toBe(false);
+    const check=spawnSync(process.execPath,[resolve('scripts/profile-plugin-status.mjs'),'codex'],{cwd:f.root,input:JSON.stringify(info),encoding:'utf8'});
+    expect(check.status).toBe(1);
   });
   it('initializes and admits an explicit alternate provider port in every environment',async()=>{
     const f=await fixture();
