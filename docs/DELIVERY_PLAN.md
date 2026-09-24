@@ -54,7 +54,7 @@ All 25 original findings remain accounted for. The 1.0 column is the acceptance 
 
 Existing Inference/Repeat Advanced editing and saved values remain compatible. Unset means inherit host/provider behavior, including an unspecified default. Preserve explicit zero, individual/section reset, import/export/version round trips and incompatibility diagnostics. Never erase overrides on a model switch or change shared configuration for one invocation.
 
-The pinned OpenClaw 2026.9.5 isolated completion contract exposes temperature/output-token hints and normalized reasoning. Other stored fields may be unsupported. Unset unsupported controls must not block an otherwise usable model; incompatible explicit overrides need a clear reason and reset path. Requested or transmitted-to-host values are not proof of provider enforcement.
+The pinned OpenClaw 2026.9.6 isolated completion contract exposes temperature/output-token hints and normalized reasoning. Other stored fields may be unsupported. Unset unsupported controls must not block an otherwise usable model; incompatible explicit overrides need a clear reason and reset path. Requested or transmitted-to-host values are not proof of provider enforcement.
 
 Full top-p/top-k/min-p/typical-p, penalty, seed/stop forwarding, complete dynamic descriptors and actual applied-value/account attribution are post-1.0. No upstream contribution or extra provider control is needed just to complete this release.
 

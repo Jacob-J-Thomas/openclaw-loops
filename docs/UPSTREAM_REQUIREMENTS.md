@@ -15,13 +15,28 @@ Owner scope revision, September 21, 2026. Loops 1.0 uses the public APIs of its 
 
 A missing enhancement in this table does not block 1.0. Do not invent authority, suppress an actual in-scope defect, add a direct provider client, or remove saved settings to make a test pass. Test a practical public-API path first and record any genuine remaining limitation.
 
+## OpenClaw 2026.9.6 adoption candidate
+
+[Bolt #273](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/273) pins the published [v2026.9.6](https://github.com/openclaw/openclaw/releases/tag/v2026.9.6) npm package, released at `eb377ac59e6c9fd6c7705028034812becf00271b` with registry integrity `sha512-Ie0kyQSCVfFqixsgVg39vevUDq01Ch5u3+7Yu5Y3qARczmdAe+lzp8bVnO9925rHiW/+CFp70zfORCyPmCH31g==`. The exact peer, development SDK and build metadata all require 9.6. Typechecking the installed public declarations confirms the named SDK01–04/06 consumer shapes and the native-agent/tool consumer shapes. This is a source compatibility check; package lifecycle, native UI and real provider behavior require separate receipts for this host.
+
+| Contract | Adopted from the released 9.6 public package | Still outside this upgrade |
+|---|---|---|
+| SDK01 | Isolated completion retains advisory `temperature`/`maxTokens`, normalized reasoning and optional response attribution; the compile-only consumer checks the actual installed types. | Full per-call sampling, dynamic capability discovery and provider-applied values. |
+| SDK02 | The explicit model/configured-default route and optional policy-gated `authProfileId` keep their named type shapes. | Automatic conversation account/runtime parity and attested two-account selection. |
+| SDK03 | Current command/tool/action identity and session lookup remain typed. The new opt-in v2 tool factory carries `assertInvocationCurrent`; Loops' existing v1 registrations do not receive or claim that assertion. The new `registerGatewayAccessPolicy` is available but unused by Loops. | Independent principal/team and newly selected target authority, reassignment and cross-session recovery. |
+| SDK04 | Named subagent run, wait and inspection shapes still compile. Loops continues authorized persisted-result retrieval. | Durable requester-bound destination, notification cancellation and restart delivery. |
+| SDK05 | Native coding-tool and embedded-agent public consumers still compile; the existing separate disposable-host probes are version-specific evidence. A public `runtime.decisions.evaluate` surface is present in 9.6, but this upgrade adds no Decision node. | A new Agent/Decision node or general tools/plans/context adoption in Loops. |
+| SDK06 | Synchronous task cancellation and asynchronous persisted-task resolution shapes still compile. | Remote physical settlement and durable host-runner adoption. |
+
+The separately published `@openclaw/typesafe` provider is optional to the host and is not a Loops dependency. This plugin does not install a provider or claim its real-service behavior. The 9.6 host package declares the supported Node floor as `>=24.16.0 <25 || >=26.1.0`, matching this plugin's matrix.
+
 ## Historical qualification
 
 The following receipts describe the stated host/source versions. They remain useful evidence, not claims of current upstream issue state, comprehensive provider support or a stable registry release.
 
 ## Verified baseline
 
-- Current pinned peer: **OpenClaw 2026.9.5**. [Bolt #186 acceptance](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/186#issuecomment-5753434803) records the merged alpha.18 source, ordinary local upgrade, real Codex/Ollama routes, four-platform lifecycle/workload checks and final archive identity. Alpha.19 retains that peer; changed runtime bytes require their own qualification.
+- Earlier pinned peer: **OpenClaw 2026.9.5**. [Bolt #186 acceptance](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/186#issuecomment-5753434803) records the merged alpha.18 source, ordinary local upgrade, real Codex/Ollama routes, four-platform lifecycle/workload checks and final archive identity. Alpha.19 retained that peer; changed runtime bytes require their own qualification.
 - Published upstream release under qualification: [v2026.9.5](https://github.com/openclaw/openclaw/releases/tag/v2026.9.5), published September 19, commit `ec9c1a13db8938e5a3eaa51fca2e981cde2395a9`; npm integrity is `sha512-TCO/ImVLh5HkF4tdfo7iriIa7kT6iYkIr/jR5ZOkePGFGhUx5Oe7DE716Y1DzzG2teRAVDdCjgJDu1A24Yta7w==`.
 - The released [2026.9.5 runtime contract](https://github.com/openclaw/openclaw/blob/ec9c1a13db8938e5a3eaa51fca2e981cde2395a9/src/plugins/runtime/types.ts) is unchanged from 2026.9.4 for `subagent`: it exposes `run({disableTools:true})`, idempotency, wait/inspection and `completionDelivery:"current-requester"`, but not `subagent.abortSession`. Declaration presence alone does not establish availability from every external-plugin invocation context or durable requester authority.
 - The [2026.9.5 completion contract](https://github.com/openclaw/openclaw/blob/ec9c1a13db8938e5a3eaa51fca2e981cde2395a9/src/plugins/runtime/types-core.ts) still exposes only advisory temperature/maxTokens and normalized reasoning as isolated generation controls. Results add optional `responseModel` and `stopReason`; `responseFormat` and `requiredAuthMode` are direct-provider-only and isolated completion rejects them. Isolated completion still accepts a fresh single user prompt and an optional host-policy-gated `authProfileId`. A caller-provided account ID is not a host-attested account binding.

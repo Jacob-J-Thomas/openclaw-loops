@@ -1,7 +1,7 @@
 import type {OpenClawPluginApi} from 'openclaw/plugin-sdk/core';
 
 // Compile-only external-plugin consumer. It never dispatches a subagent run.
-// npm run typecheck pins the named public SDK04 shape to the 2026.9.5 peer.
+// npm run typecheck pins the named public SDK04 shape to the 2026.9.6 peer.
 type Subagent = OpenClawPluginApi['runtime']['subagent'];
 type Run = Subagent['run'];
 type RunRequest = Parameters<Run>[0];
