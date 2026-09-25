@@ -511,6 +511,67 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
         await page.getByLabel('Select node to edit',{exact:true}).selectOption('remember');
         return page;
       };
+      const exportedDraft=async page=>{const download=page.waitForEvent('download');await page.getByRole('button',{name:'Export',exact:true}).click();return JSON.parse(await readFile(await (await download).path(),'utf8'));};
+      for(const [name,policy] of [
+        ['Memory null graph mutations',{version:1,enabled:true,nodes:null}],
+        ['Memory missing graph mutations',{version:1,enabled:true}],
+        ['Memory string graph mutations',{version:1,enabled:true,nodes:'invalid'}],
+        ['Memory array graph mutations',{version:1,enabled:true,nodes:[{readPrefixes:['notes'],writeScopes:[],forgetPrefixes:[]}]}],
+      ]){
+        const page=await loadInvalid(policy,name),original=await exportedDraft(page);
+        const effects=await page.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>['test','run','publish'].includes(call.id)||call.mode==='publish').length);
+        await page.getByRole('button',{name:'Duplicate node'}).click();
+        const duplicated=await exportedDraft(page),copy=duplicated.nodes.find(node=>node.kind==='memory'&&!['remember','sibling'].includes(node.id));
+        assert.ok(copy,`${name}: duplicate Memory node is present`);assert.deepEqual(duplicated.memoryPolicy,original.memoryPolicy);
+        await page.getByRole('button',{name:'Undo',exact:true}).click();assert.equal((await exportedDraft(page)).nodes.some(node=>node.id===copy.id),false);
+        await page.getByRole('button',{name:'Redo',exact:true}).click();assert.equal((await exportedDraft(page)).nodes.some(node=>node.id===copy.id),true);
+        await page.getByLabel('Select node to edit',{exact:true}).selectOption('remember');
+        await page.getByRole('button',{name:'Remove selected node'}).click();
+        const withoutMemory=await exportedDraft(page);assert.equal(withoutMemory.nodes.some(node=>node.id==='remember'),false);assert.deepEqual(withoutMemory.memoryPolicy,original.memoryPolicy);
+        await page.getByRole('button',{name:'Undo',exact:true}).click();assert.equal((await exportedDraft(page)).nodes.some(node=>node.id==='remember'),true);
+        await page.getByLabel('Select node to edit',{exact:true}).selectOption('return');
+        const returnNode=page.locator('.react-flow__node[data-id="return"]');await returnNode.focus();await page.keyboard.press('Delete');
+        const withoutReturn=await exportedDraft(page);assert.equal(withoutReturn.nodes.some(node=>node.id==='return'),false);assert.deepEqual(withoutReturn.memoryPolicy,original.memoryPolicy);
+        await page.getByRole('button',{name:'Undo',exact:true}).click();assert.equal((await exportedDraft(page)).nodes.some(node=>node.id==='return'),true);
+        assert.equal(await page.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+        assert.equal(await page.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),true);
+        assert.equal(await page.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>['test','run','publish'].includes(call.id)||call.mode==='publish').length),effects);
+        if(policy.nodes===null){
+          await page.getByRole('button',{name:'Save draft',exact:true}).click();await page.getByText('Revision 1 saved as a draft').waitFor();
+          const saved=await page.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+          assert.deepEqual(saved.memoryPolicy,policy);
+          await page.locator('details.lp-definition-settings summary').click();await page.locator('details.lp-definition-settings input').first().fill(`${name} unsaved`);
+          await page.waitForFunction(value=>{for(let i=0;i<globalThis.localStorage.length;i++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(i))?.includes(value))return true;return false;},`${name} unsaved`);
+          await page.reload();await waitFor(page,'select[aria-label="Load an example"]');
+          const drafts=page.locator('.lp-local-drafts');await drafts.locator('summary').waitFor();if(!await drafts.evaluate(element=>element.open))await drafts.locator('summary').click();
+          await drafts.getByRole('button',{name:new RegExp(`^Recover ${name} unsaved draft`)}).first().click();
+          const recovered=await exportedDraft(page);assert.deepEqual(recovered.memoryPolicy,policy);assert.equal(recovered.name,`${name} unsaved`);
+          assert.equal(recovered.nodes.some(node=>node.id===copy.id),true);
+          assert.equal(await page.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+          assert.equal(await page.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),true);
+        }
+        receipt.checks.push(`synthetic browser: ${name} preserves raw policy through duplicate, inspector and keyboard delete, Undo/Redo${policy.nodes===null?', save/reload/local recovery':''}, without dispatch`);
+        await page.close();
+      }
+      {
+        const policy={version:1,enabled:true,nodes:{remember:{readPrefixes:['notes'],writeScopes:[],forgetPrefixes:[]},sibling:{readPrefixes:'invalid',writeScopes:[null],forgetPrefixes:[]}}};
+        const page=await loadInvalid(policy,'Memory record graph mutations');
+        await page.getByRole('button',{name:'Duplicate node'}).click();
+        const copied=await exportedDraft(page),copy=copied.nodes.find(node=>node.kind==='memory'&&!['remember','sibling'].includes(node.id));
+        assert.ok(copy);assert.deepEqual(copied.memoryPolicy.nodes[copy.id],policy.nodes.remember);
+        assert.deepEqual(copied.memoryPolicy.nodes.sibling,policy.nodes.sibling);
+        await page.getByLabel('Select node to edit',{exact:true}).selectOption('remember');
+        await page.getByRole('button',{name:'Remove selected node'}).click();
+        const removed=await exportedDraft(page);assert.equal(Object.hasOwn(removed.memoryPolicy.nodes,'remember'),false);
+        assert.deepEqual(removed.memoryPolicy.nodes[copy.id],policy.nodes.remember);
+        assert.deepEqual(removed.memoryPolicy.nodes.sibling,policy.nodes.sibling);
+        await page.getByRole('button',{name:'Undo',exact:true}).click();
+        assert.deepEqual((await exportedDraft(page)).memoryPolicy.nodes.remember,policy.nodes.remember);
+        assert.equal(await page.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+        assert.equal(await page.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),true);
+        receipt.checks.push('synthetic browser: record Memory policy copies only the selected rule and deletion preserves malformed sibling rules through Undo');
+        await page.close();
+      }
       const nullPage=await loadInvalid({version:1,enabled:true,nodes:null},'Memory null nodes');
       const nullControls=nullPage.getByRole('region',{name:'Memory node settings'});
       await nullControls.getByRole('alert').getByText(/node collection is invalid/i).waitFor();
