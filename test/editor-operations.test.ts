@@ -24,10 +24,12 @@ const chain=(schemaVersion:1|2,count:number,edges=true):Definition=>{
 };
 
 describe('automatic graph layout',()=>{
-  it('promotes palette additions for v3-only evaluation evidence without changing other node families',()=>{
+  it('promotes palette additions for v3-only evaluation and Switch contracts without changing other node families',()=>{
     expect(schemaVersionForAddedNode(2,'evaluate')).toBe(3);
     expect(schemaVersionForAddedNode(2,'gate')).toBe(3);
     expect(schemaVersionForAddedNode(1,'evaluate')).toBe(3);
+    expect(schemaVersionForAddedNode(2,'switch')).toBe(3);
+    expect(schemaVersionForAddedNode(1,'switch')).toBe(3);
     expect(schemaVersionForAddedNode(3,'return')).toBe(3);
     expect(schemaVersionForAddedNode(2,'inference')).toBe(2);
   });
