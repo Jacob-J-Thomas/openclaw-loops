@@ -500,9 +500,9 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
       }
       await target.fill('/working');await paths.fill('/working');
       await overlapPage.waitForFunction(name=>{
-        for(let index=0;index<localStorage.length;index++){
-          const key=localStorage.key(index);if(!key?.startsWith('loops-editor:v2:'))continue;
-          try{const draft=JSON.parse(localStorage.getItem(key));if(draft.definition?.name===name&&draft.definition.nodes?.find(node=>node.id==='step')?.lifecycle?.target==='/working')return true;}catch{}
+        for(let index=0;index<globalThis.localStorage.length;index++){
+          const key=globalThis.localStorage.key(index);if(!key?.startsWith('loops-editor:v2:'))continue;
+          try{const draft=JSON.parse(globalThis.localStorage.getItem(key));if(draft.definition?.name===name&&draft.definition.nodes?.find(node=>node.id==='step')?.lifecycle?.target==='/working')return true;}catch{ /* Skip unrelated malformed local drafts. */ }
         }
         return false;
       },fixture.name);
