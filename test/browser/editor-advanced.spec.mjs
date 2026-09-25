@@ -216,6 +216,36 @@ export async function runSwitchCaseDraftRegression({receiptPath}={}){
   return receipt;
 }
 
+export async function runTimeoutVersionRegression({receiptPath}={}){
+  const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
+  const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
+  const receipt={runner:'mounted-timeout-version-playwright',transport:'synthetic fake backend; no provider invoked',checks:[],errors:[]};let browser;
+  try{
+    browser=await chromium.launch({headless:true});const page=await browser.newPage();page.setDefaultTimeout(10_000);page.on('pageerror',error=>receipt.errors.push(error.message));
+    await page.goto(url);await waitFor(page,'select[aria-label="Load an example"]');
+    const base={id:'timeout-v1',slug:'timeout-v1',name:'Timeout version 1',description:'',revision:1,schemaVersion:1,inputSchema:[{name:'text',label:'Text',type:'text',required:true}],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.text}}'}],edges:[{id:'next',source:'input',target:'return',port:'next'}],layout:{input:{x:0,y:0},return:{x:200,y:0}},limits:{maxExecutions:2,timeoutMs:120000,maxOutputBytes:4096}};
+    const v2={...structuredClone(base),id:'timeout-v2',slug:'timeout-v2',name:'Timeout version 2',schemaVersion:2,limits:{maxExecutions:2,maxOutputBytes:4096}};
+    const v3={...structuredClone(v2),id:'timeout-v3',slug:'timeout-v3',name:'Timeout version 3',schemaVersion:3,inputSchema:[{name:'payload',label:'Payload',type:'json',required:true,schema:{type:'object',properties:{answer:{type:'number'}},required:['answer'],additionalProperties:false}}],nodes:[{id:'input',kind:'input',label:'Input',context:{version:1,projection:{mode:'omit'},patch:{mode:'replace',target:'/answer',source:{kind:'literal',value:{literalJson:'0'}}}}},{id:'return',kind:'return',label:'Return',value:'{{context.answer}}',outputSchema:{type:'number'},context:{version:1,projection:{mode:'consume',paths:['/answer']},patch:{mode:'omit'}}}]};
+    await page.evaluate(definitions=>{const state=globalThis.__editorRegression;for(const definition of definitions)state.records.set(definition.id,{definition,enabledRevision:null,publishedRevision:null,grants:[],revisions:{1:structuredClone(definition)}});state.refresh();},[base,v2,v3]);
+    for(const [definition,expectedVersion] of [[base,2],[v2,2],[v3,3]]){
+      await page.locator('.lp-loop-card').filter({hasText:definition.name}).click();await page.locator('.lp-canvas-heading h2').filter({hasText:definition.name}).waitFor();
+      const details=page.locator('details.lp-definition-settings');if(!await details.getByLabel('Active timeout (seconds)',{exact:true}).isVisible())await details.locator('summary').click();
+      const timeout=page.getByLabel('Active timeout (seconds)',{exact:true});await timeout.fill('123');await page.getByRole('button',{name:'Save draft'}).click();
+      await page.waitForFunction(({id})=>globalThis.__editorRegression.records.get(id)?.definition.revision===2,{id:definition.id});
+      let saved=await page.evaluate(id=>structuredClone(globalThis.__editorRegression.records.get(id).definition),definition.id);
+      assert.equal(saved.schemaVersion,expectedVersion);assert.equal(saved.limits.timeoutMs,123000);assert.deepEqual(saved.nodes,definition.nodes);assert.deepEqual(saved.inputSchema,definition.inputSchema);
+      const loadsBefore=await page.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>call.id==='load').length);await page.evaluate(()=>globalThis.__editorRegression.refresh());await page.waitForFunction(before=>globalThis.__editorRegression.calls.filter(call=>call.id==='load').length>before,loadsBefore);assert.equal(await timeout.inputValue(),'123');
+      await timeout.fill('');await page.getByRole('button',{name:'Save draft'}).click();await page.waitForFunction(({id})=>globalThis.__editorRegression.records.get(id)?.definition.revision===3,{id:definition.id});
+      saved=await page.evaluate(id=>structuredClone(globalThis.__editorRegression.records.get(id).definition),definition.id);assert.equal(saved.schemaVersion,expectedVersion);assert.equal(Object.hasOwn(saved.limits,'timeoutMs'),false);assert.deepEqual(saved.nodes,definition.nodes);assert.deepEqual(saved.inputSchema,definition.inputSchema);
+      assert.equal(await page.getByText('✓ Valid graph').count(),1);receipt.checks.push(`${definition.name} set, save/reload, and clear retain version ${expectedVersion} and authored graph`);
+    }
+    await page.selectOption('select[aria-label="Select node to edit"]','return');assert.equal(await page.getByLabel('Context projection').inputValue(),'consume');
+    await page.selectOption('select[aria-label="Select node to edit"]','input');assert.equal(await page.getByLabel('Input payload nested schema value type').inputValue(),'object');receipt.checks.push('v3 context and recursive schema controls remain usable after timeout edits');
+    assert.deepEqual(receipt.errors,[]);receipt.passed=true;
+  }catch(error){receipt.failure=error.message;throw error;}finally{if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');await browser?.close();await new Promise(resolve=>server.close(resolve));}
+  return receipt;
+}
+
 export async function runBranchingReviewRegression({receiptPath}={}){
   const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
   const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
@@ -368,4 +398,4 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
   if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n'); return receipt;
 }
 
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():process.argv[2]==='schema-renames'?runDataSchemaRenameRegression():process.argv[2]==='switch-drafts'?runSwitchCaseDraftRegression():process.argv[2]==='schema-history'?runUnvisitedSchemaHistoryRegression():process.argv[2]==='branching-review'?runBranchingReviewRegression():runEditorAdvancedRegression()),null,2));
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():process.argv[2]==='schema-renames'?runDataSchemaRenameRegression():process.argv[2]==='switch-drafts'?runSwitchCaseDraftRegression():process.argv[2]==='schema-history'?runUnvisitedSchemaHistoryRegression():process.argv[2]==='timeout-version'?runTimeoutVersionRegression():process.argv[2]==='branching-review'?runBranchingReviewRegression():runEditorAdvancedRegression()),null,2));
