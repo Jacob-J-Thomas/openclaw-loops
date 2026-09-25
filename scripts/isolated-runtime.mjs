@@ -167,6 +167,7 @@ export function validateProfileConfig(config,name,project,profile,selectedOllama
   const workspace=join(profile,'workspace'),state=join(profile,'state');
   const defaults=config.agents.defaults;
   validateAgentModels(defaults,prefix);
+  assert(defaults.sandbox===undefined,'Explicit agent sandbox overrides are not admitted.');
   confinedPath(defaults.workspace,workspace,project,'Default workspace');
   confinedPath(defaults.cwd,workspace,project,'Default cwd');
   confinedPath(defaults.repoRoot,workspace,project,'Default repoRoot');
@@ -174,6 +175,7 @@ export function validateProfileConfig(config,name,project,profile,selectedOllama
   for(const [id,agent] of Object.entries(config.agents?.entries??{})){
     assert(/^[a-z0-9_][a-z0-9_-]{0,63}$/i.test(id),'Invalid agent id.');
     validateAgentModels(agent,prefix);
+    assert(agent.sandbox===undefined,'Explicit agent sandbox overrides are not admitted.');
     confinedPath(agent.workspace,workspace,project,'Agent workspace');
     confinedPath(agent.cwd,workspace,project,'Agent cwd');
     confinedPath(agent.agentDir,state,project,'Agent directory');
@@ -192,14 +194,10 @@ export function validateProfileConfig(config,name,project,profile,selectedOllama
   for(const [id,entry] of Object.entries(config.plugins?.entries??{})){
     if(entry?.enabled!==false)assert(admittedPlugins.has(id),'An unrelated enabled plugin is not admitted in this profile.');
   }
-  assert(config.plugins?.entries?.codex?.config?.sessionCatalog?.enabled!==true,'Personal session-catalog discovery is not admitted.');
+  if(name==='codex-test')assert.deepEqual(config.plugins?.entries?.codex?.config,{sessionCatalog:{enabled:false}},
+    'Codex plugin requires only the disabled disposable session catalog.');
   for(const entry of Object.values(config.channels??{}))assert(entry?.enabled===false,'External channel delivery is not admitted in this profile.');
-  const browser=config.browser??{};
-  assert(!browser.cdpUrl&&!browser.wsEndpoint,'External browser endpoints are not admitted.');
-  for(const entry of Object.values(browser.profiles??{})){
-    assert(!entry.cdpUrl&&!entry.wsEndpoint,'External browser profile endpoints are not admitted.');
-    if(entry.userDataDir)assert(inside(canonical(entry.userDataDir),join(profile,'browser')),'Browser profile path escapes this profile.');
-  }
+  assert.deepEqual(config.browser,{enabled:false},'Runtime browser access is disabled until separate native browser qualification.');
   assert(!config.env||Object.keys(config.env).length===0,'Profile environment overrides are not admitted.');
 }
 export function profileEnvironment(root,name='ollama',source=process.env){

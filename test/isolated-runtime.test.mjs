@@ -1,6 +1,6 @@
 import {afterEach,describe,it,expect} from 'vitest';
 import {createHash} from 'node:crypto';
-import {copyFileSync,existsSync,mkdtempSync,mkdirSync,readFileSync,realpathSync,readdirSync,rmdirSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
+import {copyFileSync,existsSync,mkdtempSync,mkdirSync,readFileSync,realpathSync,readdirSync,renameSync,rmdirSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {spawn,spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
@@ -11,6 +11,22 @@ import {installedProfilePlugin} from '../scripts/profile-plugin-status.mjs';
 
 const roots=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
+function publishMarker(file,value){const staged=file+'.'+process.pid+'.tmp';writeFileSync(staged,String(value));renameSync(staged,file);}
+function positivePid(file){
+  const raw=readFileSync(file,'utf8').trim();
+  if(!/^[1-9]\d*$/.test(raw)||!Number.isSafeInteger(Number(raw)))throw Error('Incomplete or invalid positive PID marker '+file+': '+JSON.stringify(raw));
+  return Number(raw);
+}
+async function waitForPositivePid(file){
+  let last='marker absent';
+  for(let attempt=0;attempt<150;attempt++){
+    if(existsSync(file)){
+      try{return positivePid(file);}catch(error){last=error.message;}
+    }
+    await new Promise(done=>setTimeout(done,10));
+  }
+  throw Error('PID marker did not publish a positive ID: '+last);
+}
 async function freePort(){
   const server=createServer();
   await new Promise(done=>server.listen(0,'127.0.0.1',done));
@@ -31,6 +47,7 @@ async function fixture(name='ollama'){
     discovery:{mdns:{mode:'off'}},browser:{enabled:false},logging:{file:join(profile,'gateway.log')},
     agents:{defaults:{workspace:join(profile,'workspace'),model:{primary:name==='ollama'?'ollama/test:latest':'openai/test',fallbacks:[]}}},
     models:{providers:name==='ollama'?{ollama:{baseUrl:'http://127.0.0.1:11439',api:'ollama',apiKey:'ollama-local',models:[]}}:{openai:{agentRuntime:{id:'codex'}}}},
+    ...(name==='codex-test'?{plugins:{entries:{codex:{enabled:false,config:{sessionCatalog:{enabled:false}}}}}}:{}),
   }));
   return {root,profile,module,port,output:join(root,'output.json')};
 }
@@ -48,7 +65,7 @@ describe('isolated runtime admission',()=>{
     const installed=join(f.profile,'state','extensions','codex'),source=join(installed,'dist','index.js');
     mkdirSync(join(installed,'dist'),{recursive:true});writeFileSync(source,'export default {}');
     const config=JSON.parse(readFileSync(file));
-    config.plugins={entries:{codex:{enabled:true}}};writeFileSync(file,JSON.stringify(config));
+    config.plugins.entries.codex.enabled=true;writeFileSync(file,JSON.stringify(config));
     const info={plugin:{id:'codex',packageName:'@openclaw/codex',packageVersion:'2026.9.5',version:'2026.9.5',enabled:true,activated:true,status:'loaded',source},install:{installPath:installed,source:'clawhub',spec:'clawhub:@openclaw/codex@2026.9.5',version:'2026.9.5'}};
     expect(installedProfilePlugin(info,f.profile,'codex')).toBe(true);
     expect(installedProfilePlugin({...info,install:{...info.install,source:'npm',spec:'@openclaw/codex@2026.9.5'}},f.profile,'codex')).toBe(true);
@@ -263,19 +280,19 @@ describe('isolated runtime admission',()=>{
     const f=await fixture(),lease=join(f.root,'term.lease.json'),pidFile=join(f.root,'child.pid');
     const helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
     const childFile=join(f.root,'child.mjs'),runner=join(f.root,'runner.mjs');
-    writeFileSync(childFile,"import {writeFileSync} from 'node:fs'; writeFileSync(process.env.LOOPS_TEST_OUTPUT,String(process.pid)); setInterval(()=>{},1000);");
+    writeFileSync(childFile,"import {writeFileSync,renameSync} from 'node:fs'; const file=process.env.LOOPS_TEST_OUTPUT; writeFileSync(file+'.tmp',String(process.pid)); renameSync(file+'.tmp',file); setInterval(()=>{},1000);");
     writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,['+JSON.stringify(childFile)+'],{...process.env,LOOPS_TEST_OUTPUT:'+JSON.stringify(pidFile)+'},acquireLease('+JSON.stringify(lease)+',\'gateway\',null,'+JSON.stringify(join(f.root,'receipts'))+'));');
     const parent=spawn(process.execPath,[runner],{stdio:'ignore'});
     try{
-      for(let attempt=0;attempt<100&&!existsSync(pidFile);attempt++)await new Promise(done=>setTimeout(done,20));
-      expect(existsSync(pidFile)).toBe(true);expect(existsSync(lease)).toBe(true);
-      const childPid=Number(readFileSync(pidFile,'utf8'));
+      const childPid=await waitForPositivePid(pidFile);
+      for(let attempt=0;attempt<100&&JSON.parse(readFileSync(lease,'utf8')).childPid!==childPid;attempt++)await new Promise(done=>setTimeout(done,20));
+      expect(JSON.parse(readFileSync(lease,'utf8')).childPid).toBe(childPid);
       parent.kill('SIGTERM');
       await new Promise(done=>parent.once('exit',done));
       expect(existsSync(lease)).toBe(false);
       expect(()=>process.kill(childPid,0)).toThrow();
       const receipt=JSON.parse(readFileSync(join(f.root,'receipts',readdirSync(join(f.root,'receipts'))[0])));
-      expect(receipt.signal).toBe('SIGTERM');expect(receipt.leaseRemoved).toBe(true);
+      expect(receipt.childPid).toBe(childPid);expect(receipt.signal).toBe('SIGTERM');expect(receipt.leaseRemoved).toBe(true);
     }finally{if(parent.exitCode===null)parent.kill('SIGKILL');}
   });
   it('cancels before spawn when SIGTERM arrives during startup',async()=>{
@@ -313,19 +330,19 @@ describe('isolated runtime admission',()=>{
     const f=await fixture(),lease=join(f.root,'kill.lease.json'),pidFile=join(f.root,'kill-child.pid');
     const helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
     const childFile=join(f.root,'kill-child.mjs'),runner=join(f.root,'kill-runner.mjs');
-    writeFileSync(childFile,'import {writeFileSync} from \'node:fs\'; process.on(\'SIGTERM\',()=>{}); writeFileSync('+JSON.stringify(pidFile)+',String(process.pid)); setInterval(()=>{},1000);');
+    writeFileSync(childFile,'import {writeFileSync,renameSync} from \'node:fs\'; process.on(\'SIGTERM\',()=>{}); const file='+JSON.stringify(pidFile)+'; writeFileSync(file+".tmp",String(process.pid));renameSync(file+".tmp",file); setInterval(()=>{},1000);');
     writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,['+JSON.stringify(childFile)+'],process.env,acquireLease('+JSON.stringify(lease)+',\'gateway\',null,'+JSON.stringify(join(f.root,'receipts'))+'));');
     const parent=spawn(process.execPath,[runner],{stdio:'ignore'});
     try{
-      for(let attempt=0;attempt<100&&!existsSync(pidFile);attempt++)await new Promise(done=>setTimeout(done,20));
-      expect(existsSync(pidFile)).toBe(true);
-      const childPid=Number(readFileSync(pidFile,'utf8'));
+      const childPid=await waitForPositivePid(pidFile);
+      for(let attempt=0;attempt<100&&JSON.parse(readFileSync(lease,'utf8')).childPid!==childPid;attempt++)await new Promise(done=>setTimeout(done,20));
+      expect(JSON.parse(readFileSync(lease,'utf8')).childPid).toBe(childPid);
       parent.kill('SIGTERM');
       const exit=await new Promise((done,reject)=>{const timer=setTimeout(()=>{parent.kill('SIGKILL');reject(Error('Forced kill did not exit.'));},9000);parent.once('exit',(code,signal)=>{clearTimeout(timer);done({code,signal});});});
       expect(exit.code).toBe(137);expect(exit.signal).toBe(null);
       expect(()=>process.kill(childPid,0)).toThrow();expect(existsSync(lease)).toBe(false);
       const receipt=JSON.parse(readFileSync(join(f.root,'receipts',readdirSync(join(f.root,'receipts'))[0])));
-      expect(receipt.signal).toBe('SIGKILL');expect(receipt.childAlive).toBe(false);expect(receipt.leaseRemoved).toBe(true);
+      expect(receipt.childPid).toBe(childPid);expect(receipt.signal).toBe('SIGKILL');expect(receipt.childAlive).toBe(false);expect(receipt.leaseRemoved).toBe(true);
     }finally{if(parent.exitCode===null)parent.kill('SIGKILL');}
   },12000);
   it('sanitizes inherited host and provider variables',()=>{
@@ -382,7 +399,97 @@ describe('isolated runtime admission',()=>{
   });
 });
 
+describe('final review bounded profile admission',()=>{
+  it('requires the exact disabled Codex catalog before any profile dispatch',async()=>{
+    const f=await fixture('codex-test'),file=join(f.profile,'openclaw.json'),safe=JSON.parse(readFileSync(file));
+    expect(()=>profileEnvironment(f.root,'codex-test')).not.toThrow();
+    for(const edit of [
+      config=>{delete config.plugins.entries.codex.config;},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{enabled:true}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{homes:['/foreign/codex-home']}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{enabled:false,homes:[{path:'/foreign/codex-home'}]}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{enabled:false},appServer:{command:'/foreign/custom-runtime'}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{enabled:false},appServer:{args:['--foreign']}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{enabled:false},appServer:{transport:'ws',url:'ws://127.0.0.1:39222'}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{enabled:false},appServer:{transport:'unix',socketPath:'/foreign/runtime.sock'}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{enabled:false},discovery:{endpoints:[{url:'http://127.0.0.1:39222'}]}};},
+      config=>{config.plugins.entries.codex.config={sessionCatalog:{enabled:false},supervision:{command:'/foreign/supervisor'}};},
+    ]){
+      const config=structuredClone(safe);config.plugins.entries.codex.enabled=true;edit(config);writeFileSync(file,JSON.stringify(config));
+      await expect(runOpenClaw(f.root,['plugins','info','codex','--json'],{LOOPS_PROFILE:'codex-test'})).rejects.toThrow(/Codex plugin/);
+      expect(existsSync(f.output)).toBe(false);
+    }
+    writeFileSync(file,JSON.stringify(safe));
+    await runOpenClaw(f.root,['config','validate'],{LOOPS_PROFILE:'codex-test'});
+    expect(existsSync(f.output)).toBe(true);
+  });
+  it('initializes the safe Codex config before install and retains it for an installed profile',async()=>{
+    const f=await fixture('codex-test'),file=join(f.profile,'openclaw.json');
+    rmSync(f.profile,{recursive:true});
+    writeFileSync(join(f.root,'openclaw.plugin.json'),JSON.stringify({contracts:{tools:[]}}));
+    const init=resolve('scripts/init-codex-profile.mjs');
+    const fresh=spawnSync(process.execPath,[init],{cwd:f.root,encoding:'utf8'});
+    expect(fresh.status).toBe(0);
+    const config=JSON.parse(readFileSync(file));
+    expect(config.plugins.entries.codex.config).toEqual({sessionCatalog:{enabled:false}});
+    expect(config.browser).toEqual({enabled:false});
+    expect(()=>profileEnvironment(f.root,'codex-test')).not.toThrow();
+    config.plugins.entries.codex.enabled=true;writeFileSync(file,JSON.stringify(config));
+    const installed=spawnSync(process.execPath,[init],{cwd:f.root,encoding:'utf8'});
+    expect(installed.status).toBe(0);
+    expect(JSON.parse(readFileSync(file)).plugins.entries.codex.config).toEqual({sessionCatalog:{enabled:false}});
+  });
+  it('rejects browser attachment, import, MCP and launch overrides before dispatch',async()=>{
+    const f=await fixture(),file=join(f.profile,'openclaw.json'),safe=JSON.parse(readFileSync(file));
+    for(const browser of [
+      undefined,{enabled:true},{enabled:false,allowSystemProfileImport:true},
+      {enabled:true,profiles:{foreign:{driver:'existing-session',mcpArgs:['--browserUrl','http://127.0.0.1:39222']}}},
+      {enabled:true,profiles:{foreign:{driver:'existing-session',mcpArgs:['--autoConnect']}}},
+      {enabled:true,profiles:{foreign:{driver:'extension'}}},
+      {enabled:true,profiles:{foreign:{attachOnly:true}}},
+      {enabled:false,mcpCommand:'/foreign/mcp'},
+      {enabled:false,profiles:{foreign:{mcpArgs:['--browserUrl','http://127.0.0.1:39222']}}},
+      {enabled:false,executablePath:'/foreign/browser'},
+      {enabled:false,profiles:{foreign:{userDataDir:'/foreign/browser-data'}}},
+    ]){
+      const config=structuredClone(safe);if(browser===undefined)delete config.browser;else config.browser=browser;
+      writeFileSync(file,JSON.stringify(config));
+      await expect(runOpenClaw(f.root,['config','validate'])).rejects.toThrow(/browser/);
+      expect(existsSync(f.output)).toBe(false);
+    }
+    writeFileSync(file,JSON.stringify(safe));expect(()=>profileEnvironment(f.root)).not.toThrow();
+  });
+  it('rejects explicit default and entry sandbox execution routes before dispatch',async()=>{
+    const f=await fixture(),file=join(f.profile,'openclaw.json'),safe=JSON.parse(readFileSync(file));
+    for(const sandbox of [
+      {mode:'all',workspaceRoot:'/foreign/workspace'},
+      {mode:'all',docker:{binds:['/foreign:/foreign:rw'],env:{SECRET:'fixture'},setupCommand:'cat /foreign'}},
+      {mode:'all',ssh:{target:'foreign-host',identityFile:'/foreign/key',command:'ssh'}},
+    ])for(const location of ['defaults','entry']){
+      const config=structuredClone(safe);
+      if(location==='defaults')config.agents.defaults.sandbox=sandbox;
+      else config.agents.entries={worker:{sandbox}};
+      writeFileSync(file,JSON.stringify(config));
+      await expect(runOpenClaw(f.root,['config','validate'])).rejects.toThrow(/sandbox/);
+      expect(existsSync(f.output)).toBe(false);
+    }
+    writeFileSync(file,JSON.stringify(safe));expect(()=>profileEnvironment(f.root)).not.toThrow();
+  });
+});
+
 describe('round-two isolation boundaries',()=>{
+  it('waits through delayed empty PID publication and rejects PID zero',async()=>{
+    const f=await fixture(),marker=join(f.root,'delayed.pid');
+    writeFileSync(marker,'');
+    expect(()=>positivePid(marker)).toThrow(/Incomplete or invalid positive PID/);
+    writeFileSync(marker,'0');
+    expect(()=>positivePid(marker)).toThrow(/Incomplete or invalid positive PID/);
+    writeFileSync(marker,'');
+    const timer=setTimeout(()=>publishMarker(marker,34567),40);
+    try{expect(await waitForPositivePid(marker)).toBe(34567);}
+    finally{clearTimeout(timer);}
+  });
   it('validates canonical agent entries and effective paths and model routes',async()=>{
     const f=await fixture(),file=join(f.profile,'openclaw.json'),original=JSON.parse(readFileSync(file));
     const foreign=realpathSync(mkdtempSync(join(tmpdir(),'loops-foreign-agent-')));roots.push(foreign);
@@ -464,18 +571,20 @@ describe('round-two isolation boundaries',()=>{
     const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
     const grandchild=join(f.root,'grandchild.mjs'),leader=join(f.root,'leader.mjs'),runner=join(f.root,'runner.mjs');
     const pidFile=join(f.root,'descendant.pid'),lease=join(f.root,'group.lease.json'),receipts=join(f.root,'group-receipts');
-    writeFileSync(grandchild,'import {writeFileSync} from "node:fs"; writeFileSync('+JSON.stringify(pidFile)+',String(process.pid)); setInterval(()=>{},1000); setTimeout(()=>process.exit(0),10000);');
+    writeFileSync(grandchild,'import {writeFileSync,renameSync} from "node:fs"; const file='+JSON.stringify(pidFile)+'; writeFileSync(file+".tmp",String(process.pid));renameSync(file+".tmp",file); setInterval(()=>{},1000); setTimeout(()=>process.exit(0),10000);');
     writeFileSync(leader,'import {spawn} from "node:child_process"; import {existsSync} from "node:fs"; spawn(process.execPath,['+JSON.stringify(grandchild)+'],{stdio:"ignore"}); const timer=setInterval(()=>{if(existsSync('+JSON.stringify(pidFile)+')){clearInterval(timer);process.exit(0);}},10);');
     writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,['+JSON.stringify(leader)+'],process.env,()=>acquireLease('+JSON.stringify(lease)+',"inference-worker",null,'+JSON.stringify(receipts)+'));');
     const unrelated=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
     try{
       const finished=spawnSync(process.execPath,[runner],{encoding:'utf8',timeout:7000});
-      expect(finished.status).toBe(0);expect(existsSync(pidFile)).toBe(true);
-      const descendantPid=Number(readFileSync(pidFile));
+      expect(finished.status).toBe(0);
+      const descendantPid=await waitForPositivePid(pidFile);
       expect(()=>process.kill(descendantPid,0)).toThrow();
       expect(()=>process.kill(unrelated.pid,0)).not.toThrow();
       expect(existsSync(lease)).toBe(false);
       const saved=JSON.parse(readFileSync(join(receipts,readdirSync(receipts)[0])));
+      expect(saved.childPid).toBeGreaterThan(0);expect(saved.childPid).not.toBe(descendantPid);
+      expect(()=>process.kill(-saved.childPid,0)).toThrow();
       expect(saved.groupSettled).toBe(true);expect(saved.leaseRemoved).toBe(true);
       const next=acquireLease(lease,'inference-worker');next.release();
     }finally{unrelated.kill('SIGTERM');}
@@ -497,13 +606,14 @@ describe('round-two isolation boundaries',()=>{
     const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
     const file=join(f.root,'contended.lease.json'),go=join(f.root,'go'),stop=join(f.root,'stop'),runner=join(f.root,'contender.mjs');
     writeFileSync(file,JSON.stringify({id:'stale',parentPid:99999999,childPid:null}));mkdirSync(file+'.gate',{mode:0o700});
-    writeFileSync(runner,'import {existsSync,writeFileSync} from "node:fs"; import {setTimeout} from "node:timers/promises"; import {acquireLease} from '+JSON.stringify(helper)+'; const [file,go,stop,out]=process.argv.slice(2); while(!existsSync(go))await setTimeout(5); writeFileSync(out+".ready","ready"); try{const lease=acquireLease(file,"inference-worker");writeFileSync(out,"won:"+process.pid);while(!existsSync(stop))await setTimeout(10);lease.release();}catch(error){writeFileSync(out,"lost:"+error.message);}');
+    writeFileSync(runner,'import {existsSync,writeFileSync,renameSync} from "node:fs"; import {setTimeout} from "node:timers/promises"; import {acquireLease} from '+JSON.stringify(helper)+'; const [file,go,stop,out,receipts]=process.argv.slice(2); const publish=(path,value)=>{const tmp=path+"."+process.pid+".tmp";writeFileSync(tmp,value);renameSync(tmp,path);}; while(!existsSync(go))await setTimeout(5); publish(out+".ready","ready"); try{const lease=acquireLease(file,"inference-worker",null,receipts);publish(out,"won:"+process.pid);while(!existsSync(stop))await setTimeout(10);lease.release();}catch(error){publish(out,"lost:"+error.message);}');
     const outputs=[join(f.root,'one'),join(f.root,'two')];
-    const contenders=outputs.map(out=>spawn(process.execPath,[runner,file,go,stop,out],{stdio:'ignore'}));
+    const receipts=join(f.root,'contender-receipts');
+    const contenders=outputs.map(out=>spawn(process.execPath,[runner,file,go,stop,out,receipts],{stdio:'ignore'}));
     try{
-      writeFileSync(go,'go');
-      for(let attempt=0;attempt<150&&!outputs.every(out=>existsSync(out+'.ready'));attempt++)await new Promise(done=>setTimeout(done,5));
-      expect(outputs.every(out=>existsSync(out+'.ready'))).toBe(true);
+      publishMarker(go,'go');
+      for(let attempt=0;attempt<150&&!outputs.every(out=>existsSync(out+'.ready')&&readFileSync(out+'.ready','utf8')==='ready');attempt++)await new Promise(done=>setTimeout(done,5));
+      expect(outputs.every(out=>existsSync(out+'.ready')&&readFileSync(out+'.ready','utf8')==='ready')).toBe(true);
       expect(JSON.parse(readFileSync(file)).id).toBe('stale');
       rmdirSync(file+'.gate');
       for(let attempt=0;attempt<200&&!outputs.every(existsSync);attempt++)await new Promise(done=>setTimeout(done,10));
@@ -511,11 +621,15 @@ describe('round-two isolation boundaries',()=>{
       const results=outputs.map(out=>readFileSync(out,'utf8'));
       expect(results.filter(value=>value.startsWith('won:'))).toHaveLength(1);
       expect(results.filter(value=>value.startsWith('lost:'))).toHaveLength(1);
-      const owner=Number(results.find(value=>value.startsWith('won:')).slice(4));
+      const ownerText=results.find(value=>value.startsWith('won:')).slice(4);
+      expect(ownerText).toMatch(/^[1-9]\d*$/);
+      const owner=Number(ownerText);expect(Number.isSafeInteger(owner)).toBe(true);
       expect(JSON.parse(readFileSync(file)).parentPid).toBe(owner);
-      writeFileSync(stop,'stop');
+      publishMarker(stop,'stop');
       await Promise.all(contenders.map(child=>child.exitCode!==null?Promise.resolve():new Promise(done=>child.once('exit',done))));
       expect(existsSync(file)).toBe(false);
-    }finally{writeFileSync(stop,'stop');if(existsSync(file+'.gate'))rmdirSync(file+'.gate');for(const child of contenders)if(child.exitCode===null)child.kill('SIGKILL');}
+      const saved=JSON.parse(readFileSync(join(receipts,readdirSync(receipts)[0])));
+      expect(saved.parentPid).toBe(owner);expect(saved.leaseRemoved).toBe(true);
+    }finally{publishMarker(stop,'stop');if(existsSync(file+'.gate'))rmdirSync(file+'.gate');for(const child of contenders)if(child.exitCode===null)child.kill('SIGKILL');}
   },10000);
 });
