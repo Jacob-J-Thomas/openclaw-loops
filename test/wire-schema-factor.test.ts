@@ -86,10 +86,10 @@ describe('strict public tool wire factoring',()=>{
     expect(count(baseline.test).nodes).toBe(1972);
   });
 
-  it('preserves all required full-definition fields, version discrimination, and unknown-field rejection',()=>{
-    for(const version of [1,2,3] as const){
-      const valid=definition(version);expect(parseDefinition(valid)).toEqual(valid);
-      for(const operation of full){
+  for(const version of [1,2,3] as const){
+    for(const operation of full){
+      it(`preserves required full-definition fields, discrimination, and unknown-field rejection for v${version} ${operation}`,()=>{
+        const valid=definition(version);expect(parseDefinition(valid)).toEqual(valid);
         parity(operation,payload(operation,valid),true);
         const union=(baseline[operation] as TSchema&{properties:{definition:{anyOf:[{anyOf:Array<{properties:Record<string,unknown>;required:string[]}>}]}}}).properties.definition.anyOf[0];
         const variant=union.anyOf[version-1]!;
@@ -105,9 +105,9 @@ describe('strict public tool wire factoring',()=>{
         parity(operation,payload(operation,{...valid,schemaVersion:4}),false);
         expect(()=>parseDefinition({...valid,alien:true})).toThrow();
         expect(()=>parseDefinition({...valid,schemaVersion:4})).toThrow();
-      }
+      });
     }
-  });
+  }
 
   it('keeps creation content and editable patch closed without granting server identity fields',()=>{
     for(const version of [2,3] as const){
