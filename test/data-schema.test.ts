@@ -1,6 +1,8 @@
 import {describe,expect,it,vi} from 'vitest';
 import {Value} from 'typebox/value';
+import {Ajv2020} from 'ajv/dist/2020.js';
 import {dataSchemaIssues,validateDataValue,type DataSchema} from '../src/data-schema.js';
+import {DataSchemaDrafts,hasActiveDataSchemaDrafts,inputSchemaScope,outputSchemaScope} from '../src/data-schema-editor.js';
 import {validateGraph,validateInput,type Definition} from '../src/graph.js';
 import {Engine,type Actor,type HostCapabilities,type Storage} from '../src/engine.js';
 import {examples} from '../src/examples.js';
@@ -16,6 +18,31 @@ function definition():Definition{
   return value;
 }
 describe('bounded recursive data schemas',()=>{
+  it('keeps invalid source attached to stable input identities through duplicate names and removal',()=>{
+    const base=definition();base.inputSchema.push({name:'second',label:'Second',type:'json',required:false,schema:{type:'object',properties:{},additionalProperties:false}});
+    const drafts=new DataSchemaDrafts(),first=[...inputSchemaScope(base.id,drafts.inputFieldId(0)),'properties','profile','properties','scores','items'],second=inputSchemaScope(base.id,drafts.inputFieldId(1));
+    drafts.set(JSON.stringify(first),'{first');drafts.set(JSON.stringify(second),'{second');
+    const before=drafts.snapshot(),duplicate=structuredClone(base);duplicate.inputSchema[1]!.name=base.inputSchema[0]!.name;drafts.reconcile(duplicate);
+    expect(drafts.get(JSON.stringify(first))).toBe('{first');expect(drafts.get(JSON.stringify(second))).toBe('{second');
+    const duplicatePaths=drafts.snapshot(),removed=structuredClone(duplicate);removed.inputSchema.shift();drafts.removeInput(0);drafts.reconcile(removed);
+    expect(hasActiveDataSchemaDrafts(removed,drafts)).toBe(true);expect(drafts.get(JSON.stringify(inputSchemaScope(base.id,drafts.inputFieldId(0))))).toBe('{second');
+    drafts.restore(duplicatePaths);expect(drafts.get(JSON.stringify(first))).toBe('{first');expect(drafts.get(JSON.stringify(second))).toBe('{second');
+    drafts.restore(before);expect(hasActiveDataSchemaDrafts(base,drafts)).toBe(true);
+  });
+  it('retains distinct property drafts through numeric renames and inactive-path reuse',()=>{
+    const base=definition(),node=base.nodes.find(item=>item.kind==='inference');if(!node||node.kind!=='inference')throw Error();
+    node.outputSchema={type:'object',properties:{alpha:{type:'string'},beta:{type:'number'}},additionalProperties:false};
+    const drafts=new DataSchemaDrafts(),scope=outputSchemaScope(base.id,node.id),alpha=JSON.stringify([...scope,'properties','alpha']),beta=JSON.stringify([...scope,'properties','beta']);
+    drafts.set(alpha,'{alpha');drafts.set(beta,'{beta');const before=drafts.snapshot();
+    const renamed=structuredClone(base),next=renamed.nodes.find(item=>item.id===node.id);if(!next||!next.outputSchema||next.outputSchema.type!=='object')throw Error();next.outputSchema.properties={'1':{type:'number'},alpha:{type:'string'}};
+    drafts.move([...scope,'properties','beta'],[...scope,'properties','1']);drafts.reconcile(renamed);const after=drafts.snapshot();
+    expect(drafts.get(alpha)).toBe('{alpha');expect(drafts.get(JSON.stringify([...scope,'properties','1']))).toBe('{beta');
+    drafts.restore(before);expect(drafts.get(alpha)).toBe('{alpha');expect(drafts.get(beta)).toBe('{beta');
+    drafts.restore(after);expect(drafts.get(JSON.stringify([...scope,'properties','1']))).toBe('{beta');
+    const removed=structuredClone(renamed),removedNode=removed.nodes.find(item=>item.id===node.id);if(!removedNode||!removedNode.outputSchema||removedNode.outputSchema.type!=='object')throw Error();delete removedNode.outputSchema.properties!['1'];drafts.reconcile(removed);
+    const replacement=structuredClone(renamed);drafts.reconcile(replacement);drafts.ensure([...scope,'properties','1']);drafts.set(JSON.stringify([...scope,'properties','1']),'{new');expect(drafts.get(JSON.stringify([...scope,'properties','1']))).toBe('{new');
+    drafts.restore(after);expect(drafts.get(JSON.stringify([...scope,'properties','1']))).toBe('{beta');
+  });
   it('validates nested object and array values with escaped JSON Pointer diagnostics',()=>{
     expect(dataSchemaIssues(recursive)).toEqual([]);
     expect(validateDataValue(recursive,{profile:{name:'Zoë🙂',scores:[0,2],extra:true}})).toContainEqual(expect.objectContaining({instancePath:'/profile',keyword:'additionalProperties'}));
@@ -28,11 +55,38 @@ describe('bounded recursive data schemas',()=>{
     expect(dataSchemaIssues(deep).map(issue=>issue.keyword)).toContain('maxDepth');
     expect(dataSchemaIssues({type:'string',pattern:'(a+)+'}).map(issue=>issue.keyword)).toContain('pattern');
     expect(dataSchemaIssues({type:'string',pattern:'^a*a*a*$'}).map(issue=>issue.keyword)).toContain('pattern');
+    for(const pattern of ['^\\_$','^\\a+$']){
+      expect(dataSchemaIssues({type:'string',pattern}).map(issue=>issue.keyword),pattern).toContain('pattern');
+      expect(()=>validateDataValue({type:'string',pattern},'a'),pattern).not.toThrow();
+      expect(validateDataValue({type:'string',pattern},'a')).toContainEqual(expect.objectContaining({instancePath:'/pattern',keyword:'pattern'}));
+    }
     expect(dataSchemaIssues({type:'string',pattern:'^[a-z]+$'})).toEqual([]);
     expect(dataSchemaIssues({type:'string',enum:[]}).map(issue=>issue.keyword)).toContain('enum');
     expect(dataSchemaIssues({type:'object',properties:{a:{type:'string'}},required:['a','a']}).map(issue=>issue.keyword)).toContain('required');
     expect(dataSchemaIssues(new Date()).map(issue=>issue.keyword)).toContain('type');
     expect(dataSchemaIssues({type:'string',title:'x'.repeat(140000)}).map(issue=>issue.keyword)).toContain('maxBytes');
+  });
+  it('rejects Unicode-invalid input and output patterns before any inference admission',async()=>{
+    const host:HostCapabilities={check:vi.fn(),complete:vi.fn(async()=>({text:'"a"'})),modelInfo:vi.fn(async()=>({}))};
+    for(const pattern of ['^\\_$','^\\a+$']){
+      const input=definition();input.inputSchema[0]!.schema=structuredClone(input.inputSchema[0]!.schema);const field=input.inputSchema[0]!.schema as DataSchema;
+      ((field.properties!.profile.properties!.name) as DataSchema).pattern=pattern;
+      const inputIssues=validateGraph(input).map(item=>item.message).join(' ');
+      expect(inputIssues,pattern).toMatch(/pattern/i);
+      expect(()=>new Engine(new Memory(),host).validate(actor(),input),pattern).not.toThrow();
+      expect(new Engine(new Memory(),host).validate(actor(),input).valid,pattern).toBe(false);
+      await expect(new Engine(new Memory(),host).test(actor(),input,{data:{profile:{name:'a',scores:[0]}}},`invalid-input-${pattern}`)).rejects.toThrow(/pattern/i);
+      const output=definition(),node=output.nodes.find(item=>item.kind==='inference');if(!node||node.kind!=='inference')throw Error();
+      node.output='json';node.outputSchema={type:'string',pattern};
+      expect(validateGraph(output).map(item=>item.message).join(' '),pattern).toMatch(/pattern/i);
+      await expect(new Engine(new Memory(),host).test(actor(),output,{data:{profile:{name:'a',scores:[0]}}},`invalid-output-${pattern}`)).rejects.toThrow(/pattern/i);
+    }
+    expect(host.complete).not.toHaveBeenCalled();
+  });
+  it('classifies unexpected AJV compilation rejection as bounded schema evidence',()=>{
+    const spy=vi.spyOn(Ajv2020.prototype,'compile').mockImplementationOnce(()=>{throw new Error('synthetic compiler rejection '+ 'x'.repeat(2000));});
+    try{expect(validateDataValue({type:'string'},'a')).toEqual([{instancePath:'',keyword:'schemaCompile',message:'Schema compiler rejected an authored constraint.'}]);}
+    finally{spy.mockRestore();}
   });
   it('rejects inapplicable structural keywords and structurally duplicate enum values before runtime compilation',()=>{
     const invalid=[

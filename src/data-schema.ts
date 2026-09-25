@@ -66,7 +66,9 @@ function safePattern(value:string){
     const bounds=/^\{(\d+)(?:,(\d+))?\}$/.exec(quantifiers[0]);
     if(!bounds||Number(bounds[1])>1024||bounds[2]!==undefined&&Number(bounds[2])>1024)return false;
   }
-  try{new RegExp(value);return true;}catch{return false;}
+  // Ajv compiles JSON Schema patterns with Unicode semantics. Accepting a
+  // legacy-only escape here would make a valid authored graph fail at runtime.
+  try{new RegExp(value,'u');return true;}catch{return false;}
 }
 export function dataSchemaIssues(value:unknown):DataSchemaDiagnostic[]{
   const issues:DataSchemaDiagnostic[]=[],seen=new Set<object>();let nodes=0;
@@ -132,7 +134,9 @@ export class DataSchemaFailure extends Error{
 }
 export function validateDataValue(schema:unknown,value:unknown):DataSchemaDiagnostic[]{
   let checked:DataSchema;try{checked=validateDataSchema(schema);}catch(error){return error instanceof DataSchemaFailure?error.diagnostics:[issue('','schema','Schema is invalid.')];}
-  const validate=new Ajv2020({allErrors:true,strict:true,validateSchema:true}).compile(toJsonSchema(checked));
+  let validate:ReturnType<Ajv2020['compile']>;
+  try{validate=new Ajv2020({allErrors:true,strict:true,validateSchema:true}).compile(toJsonSchema(checked));}
+  catch{return [issue('','schemaCompile','Schema compiler rejected an authored constraint.')];}
   if(validate(value))return [];
   return (validate.errors??[]).map((error:ErrorObject)=>issue(error.instancePath,error.keyword,error.message??'Value does not satisfy schema.'));
 }

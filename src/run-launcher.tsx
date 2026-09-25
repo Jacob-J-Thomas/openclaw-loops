@@ -32,7 +32,7 @@ export function RunLauncher({draft,published,enabled,dirty,invalid,busy,authoriz
     if(value===undefined)delete values[name];else values[name]=value;
     return {...previous,[target]:{key,values}};
   });
-  const start=(event:React.MouseEvent<HTMLButtonElement>)=>{if(!definition)return;try{onRun({target,definition,input:runInput(definition,values)},event.currentTarget);}catch(error){onError(error);}};
+  const start=(event:React.MouseEvent<HTMLButtonElement>)=>{if(!definition)return;if(target==='draft'&&invalid){onError(new Error('Resolve invalid editor text or draft validation issues before testing this draft.'));return;}try{onRun({target,definition,input:runInput(definition,values)},event.currentTarget);}catch(error){onError(error);}};
   return <div className="lp-run-input">
     <div className="lp-section-heading"><h2>Run this loop</h2><span>{definition?`r${definition.revision}${target==='draft'&&dirty?' · unsaved':''}`:'—'}</span></div>
     <label className="lp-field"><span>Run target</span><select value={target} onChange={event=>setTarget(event.target.value as Target)}>
