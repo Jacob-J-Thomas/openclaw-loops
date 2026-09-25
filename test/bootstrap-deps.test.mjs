@@ -48,7 +48,7 @@ describe('dependency bootstrap before lifecycle execution',()=>{
     for(const mode of ['toolchain','ci']){
       const result=launch(probe,mode,'24.16.0',inherited);
       expect(result.status,`${mode}: ${result.stderr}`).toBe(0);
-      const value=observed(probe,mode==='toolchain'?'install':'ci');
+      const value=observed(probe.root,mode==='toolchain'?'install':'ci');
       expect(value.argv[0]).toBe(mode==='toolchain'?'install':'ci');
       expect(value.nested).toEqual({status:0,version:'10.9.7'});
       expect(value.env.HOME).toBe(join(probe.root,'.dev-profile','bootstrap','home'));
@@ -65,7 +65,7 @@ describe('dependency bootstrap before lifecycle execution',()=>{
 
   it('rejects a linked private home and a linked pinned executable before npm dispatch',()=>{
     const probe=fixture(),external=realpathSync(mkdtempSync(join(tmpdir(),'loops-bootstrap-external-')));fixtures.push(external);
-    const base=join(probe.root,'.dev-profile','bootstrap');mkdirSync(base,{recursive:true});symlinkSync(external,join(base,'home'));
+    const base=join(probe.root,'.dev-profile','bootstrap');mkdirSync(base,{recursive:true,mode:0o700});symlinkSync(external,join(base,'home'));
     const rejected=launch(probe,'toolchain');expect(rejected.status).not.toBe(0);expect(rejected.stderr).toContain('Symlink in bootstrap path');
     expect(existsSync(join(external,'observed-install.json'))).toBe(false);
     rmSync(join(base,'home'));
