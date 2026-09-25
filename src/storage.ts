@@ -10,7 +10,8 @@ const persistedBudgets={...defaultBudgets,definitionBytes:Number.MAX_SAFE_INTEGE
 import {Value} from 'typebox/value';
 import {outputs,runMetadataSchema} from './output-schemas.js';
 import {RetiredAdmissionSchema,type RetiredAdmission} from './retention.js';
-import {LoopError,storageError} from './errors.js';
+import {LoopError,storageError,requestError} from './errors.js';
+import type {MemoryPage,MemoryReceipt,MemoryRecord,MemoryRepository,MemoryWrite} from './memory-core.js';
 import {assertContextState} from './context.js';
 
 export function validateState(value:unknown):State{
@@ -41,7 +42,7 @@ export function validateState(value:unknown):State{
   return state;
 }
 
-export class SqliteStorage implements Storage,IndexedRunStorage{
+export class SqliteStorage implements Storage,IndexedRunStorage,MemoryRepository{
   readonly indexed:IndexedRunStorage=this;
   private worker?:Worker;
   private port?:MessagePort;
@@ -140,6 +141,19 @@ export class SqliteStorage implements Storage,IndexedRunStorage{
   history(ownerKey:string,cursor:number,limit:number){const result=this.call<{items:RunSummary[];nextCursor:number|null;total:number}>('history',{owner:ownerKey,cursor,limit});if(!Value.Check(outputs.history,result))throw new Error('Invalid saved history page.');return result;}
   runSummaries(ownerKey:string){const result=this.call<RunSummary[]>('run-summaries',ownerKey);if(!Value.Check(outputs.runs,result))throw new Error('Invalid saved history summary.');return result;}
   hasOpenRuns(loopId:string){return this.call<boolean>('has-open-runs',loopId);}
+  get(scope:string,loopId:string,key:string){return this.call<MemoryRecord|undefined>('memory-get',{scope,loopId,key});}
+  page(scope:string,loopId:string,prefix:string,cursor:string|undefined,limit:number){return this.call<MemoryPage>('memory-page',{scope,loopId,prefix,cursor,limit});}
+  mutation(scope:string,loopId:string,mutationId:string){return this.call<MemoryReceipt[]|undefined>('memory-mutation',{scope,loopId,mutationId});}
+  commit(write:MemoryWrite){return this.commitBatch([write],write.mutationId)[0];}
+  commitBatch(writes:MemoryWrite[],mutationId:string){
+    try{return this.call<MemoryReceipt[]>('memory-commit',{writes,mutationId});}
+    catch(error){
+      const code=error&&typeof error==='object'&&'code' in error?error.code:undefined;
+      if(code==='LOOPS_MEMORY_CONFLICT')throw requestError('Memory key or mutation changed; reload before retrying.','LOOPS_MEMORY_CONFLICT');
+      if(code==='LOOPS_MEMORY_QUOTA')throw requestError('Memory quota exceeded.','LOOPS_MEMORY_QUOTA');
+      throw error;
+    }
+  }
   write(state:State){this.call('write',state);}
   writeWorkingState(state:State){this.call('write-working',state);}
   // Execution checkpoints send only their changed run. Authoring, migration and

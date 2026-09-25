@@ -6,6 +6,9 @@ import {identifierSchema as key,NodeSchema,ContextNodeSchema,LegacyNodeSchema,no
 import {switchPorts,validateSwitch,validateTypedCondition} from './branching.js';
 import {assertMutableContextPath,bindingTokens,contextBindingSegments,contextPatchLiteral,contextPathForBinding,pathSegments,type ContextNodeConfig} from './context.js';
 import {validateLifecycle} from './context-lifecycle.js';
+import {MemoryPolicySchema,MemorySchemasSchema,validateMemoryDefinition,type MemorySchemaEntry} from './memory-definition.js';
+import {validateMemoryNode} from './memory-node.js';
+import type {MemoryPolicy} from './memory-policy.js';
 import {isJson,literalValue,type NodeValue} from './node-values.js';
 import {evaluatorConfigurationIssue} from './evaluation-authoring.js';
 import {dataSchemaIssues,validateDataValue} from './data-schema.js';
@@ -22,13 +25,15 @@ export const DefinitionFields = {
   edges:Type.Array(Type.Object({id:key,source:key,target:key,port:Type.Union([Type.Literal('next'),Type.Literal('true'),Type.Literal('false'),Type.Literal('approve'),Type.Literal('reject')])},obj)),
   layout:Type.Record(key,Type.Object({x:Type.Number({minimum:-10000,maximum:10000}),y:Type.Number({minimum:-10000,maximum:10000})},obj)),
   capabilities:Type.Array(Type.Union([Type.Literal('llm'),Type.Literal('model-info')]),{maxItems:2,uniqueItems:true}),
+  memoryPolicy:Type.Optional(Type.Unsafe<MemoryPolicy>(MemoryPolicySchema)),memorySchemas:Type.Optional(Type.Unsafe<MemorySchemaEntry[]>(MemorySchemasSchema)),
   limits:Type.Object({maxExecutions:Type.Integer({minimum:2}),timeoutMs:Type.Optional(Type.Integer({minimum:1000})),maxOutputBytes:Type.Integer({minimum:128})},obj),
 };
+const {memoryPolicy:_memoryPolicy,memorySchemas:_memorySchemas,...legacyDefinitionFields}=DefinitionFields;
 const v2Layout=Type.Record(key,Type.Object({x:Type.Number({minimum:-Number.MAX_SAFE_INTEGER,maximum:Number.MAX_SAFE_INTEGER}),y:Type.Number({minimum:-Number.MAX_SAFE_INTEGER,maximum:Number.MAX_SAFE_INTEGER})},obj));
 const v3Edges=Type.Array(Type.Object({id:key,source:key,target:key,port:key},obj));
 export const DefinitionVersionSchemas={
-  1:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(1),inputSchema:Type.Array(flatInputFieldSchema),nodes:Type.Array(LegacyNodeSchema,{minItems:2}),limits:Type.Required(DefinitionFields.limits,obj)},obj),
-  2:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(2),inputSchema:Type.Array(flatInputFieldSchema),nodes:Type.Array(NodeSchema,{minItems:2}),layout:v2Layout},obj),
+  1:Type.Object({...legacyDefinitionFields,schemaVersion:Type.Literal(1),inputSchema:Type.Array(flatInputFieldSchema),nodes:Type.Array(LegacyNodeSchema,{minItems:2}),limits:Type.Required(DefinitionFields.limits,obj)},obj),
+  2:Type.Object({...legacyDefinitionFields,schemaVersion:Type.Literal(2),inputSchema:Type.Array(flatInputFieldSchema),nodes:Type.Array(NodeSchema,{minItems:2}),layout:v2Layout},obj),
   3:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(3),edges:v3Edges,layout:v2Layout},obj),
 };
 // Editable state can be temporarily inconsistent while a user changes format.
@@ -67,6 +72,12 @@ export function validateGraph(d:Definition):Issue[] {
     if(ids.has(n.id))error('Node IDs must be unique.',n.id);
     ids.add(n.id);
     for(const b of childNodes(n)){if(ids.has(b.id)||d.nodes.some(x=>x.id===b.id))error('Body node IDs must be unique.',n.id);ids.add(b.id);}
+  }
+  for(const message of validateMemoryDefinition(d,d.schemaVersion,new Set(d.nodes.filter(node=>node.kind==='memory').map(node=>node.id))))error(message);
+  if(d.schemaVersion===3)for(const node of d.nodes)if(node.kind==='memory'){
+    try{validateMemoryNode(node.memory);}catch(cause){error(cause instanceof Error?cause.message:'Invalid Memory node.',node.id);}
+    if(!d.memoryPolicy?.enabled||!d.memoryPolicy.nodes?.[node.id])error('Memory node requires an enabled authored node policy.',node.id);
+    if(['write','update','forget','retention-apply','reset-apply'].includes(node.memory.operation)&&(node.outputSchema!==undefined||node.context?.patch.mode!=='omit'&&node.context?.patch!==undefined))error('Memory effects cannot have an output schema or context patch after the durable mutation.',node.id);
   }
   if(d.schemaVersion===3)for(const node of d.nodes.flatMap(node=>[node,...childNodes(node)])){
     if(node.kind==='evaluate'){const issue=evaluatorConfigurationIssue(node.evaluator);if(issue)error(issue,node.id);}

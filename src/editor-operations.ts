@@ -39,7 +39,7 @@ export function withActiveTimeout(definition:Definition,timeoutMs:number|undefin
 // These nodes carry v3-only contracts. Palette additions must upgrade the
 // editable draft before it can be saved or published.
 export function schemaVersionForAddedNode(version:Definition['schemaVersion'],kind:GraphNode['kind']):Definition['schemaVersion']{
-  return kind==='evaluate'||kind==='gate'||kind==='switch'||kind==='context-lifecycle'?3:version;
+  return kind==='evaluate'||kind==='gate'||kind==='switch'||kind==='context-lifecycle'||kind==='memory'?3:version;
 }
 
 export function autoLayout(definition:Definition):Definition{
@@ -70,7 +70,9 @@ export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:
     for(const child of duplicate.body)remapContextLiteral(child,previous,duplicate.body[0].id);
   }
   const position=definition.layout[nodeId]??{x:0,y:0};
-  return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}}};
+  const memoryPolicy=definition.memoryPolicy?.enabled&&original.kind==='memory'&&definition.memoryPolicy.nodes[original.id]
+    ?{...definition.memoryPolicy,nodes:{...definition.memoryPolicy.nodes,[duplicate.id]:structuredClone(definition.memoryPolicy.nodes[original.id])}}:definition.memoryPolicy;
+  return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}},...memoryPolicy?{memoryPolicy}:{}};
 }
 export function bindingChoices(definition:Definition,consumer:GraphNode):string[]{
   const reachableWithout=(blocked:string)=>{
@@ -90,6 +92,10 @@ export function insertBinding(node:GraphNode,binding:string):GraphNode{
     if(node.lifecycle.operation==='inject'&&!node.lifecycle.source)return {...node,lifecycle:{...node.lifecycle,value:replaceOrAppend(node.lifecycle.value)}};
     return node;
   }
+  if(node.kind==='memory'){
+    if(node.memory.operation==='write'||node.memory.operation==='update')return {...node,memory:{...node.memory,value:replaceOrAppend(node.memory.value)}};
+    return {...node,memory:{...node.memory,key:replaceOrAppend(node.memory.key)}};
+  }
   if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
   if(node.kind==='return')return {...node,value:binding};
   if(node.kind==='condition')return 'condition'in node?{...node,condition:{...node.condition,value:binding}}:{...node,predicate:{...node.predicate,left:binding}};
@@ -101,7 +107,7 @@ export function insertBinding(node:GraphNode,binding:string):GraphNode{
 }
 export function revisionChanges(before:Definition,after:Definition):string[]{
   const changes:string[]=[];
-  for(const key of ['schemaVersion','name','slug','description','inputSchema','capabilities','limits','edges','layout'] as const)if(JSON.stringify(before[key])!==JSON.stringify(after[key]))changes.push(`${key} changed`);
+  for(const key of ['schemaVersion','name','slug','description','inputSchema','capabilities','limits','edges','layout','memoryPolicy','memorySchemas'] as const)if(JSON.stringify(before[key])!==JSON.stringify(after[key]))changes.push(`${key} changed`);
   for(const node of after.nodes){const old=before.nodes.find(n=>n.id===node.id);if(!old)changes.push(`Added ${node.label}`);else if(JSON.stringify(old)!==JSON.stringify(node))changes.push(`Changed ${node.label}`);}
   for(const node of before.nodes)if(!after.nodes.some(n=>n.id===node.id))changes.push(`Removed ${node.label}`);
   return changes;

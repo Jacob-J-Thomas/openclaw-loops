@@ -17,11 +17,14 @@ import {applyContextPatch,assertContextState,contextBytes,initialContext,project
 import {EvaluationFailure,commitEvaluation,evaluate as evaluateDeterministically,isCommittedEvaluation,type Evaluator} from './evaluation.js';
 import {validateDataValue,type DataSchema} from './data-schema.js';
 import {lifecycleMutation,lifecycleValue,selected,selectedIfPresent,selectRetainedSource,validateLifecycle,type ContextLifecycle} from './context-lifecycle.js';
+import {MemoryCore,type MemoryInvocation,type MemoryRemovalPlan,type MemoryRepository} from './memory-core.js';
+import {memorySchemaValidator,assertNoMemorySchemaRedefinition} from './memory-definition.js';
+import type {MemoryNodeOperation} from './memory-node.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type RouteTrace={port:string;caseId?:string;observed:string;truncated?:boolean;available?:true}|{port:string;caseId?:string;available:false};
-export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:RouteTrace};
+export type NodeEvidence={nodeId:string;kind:string;iteration?:number;memoryMutationId?:string;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:RouteTrace};
 export type ExecutionSettings=Pick<Actor,'model'|'reasoning'|'authProfileId'>&{agentModels?:Record<string,string>};
 export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;context?:ContextState;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
@@ -245,6 +248,7 @@ export class Engine{
     if((previous?.definition.revision??0)!==expectedRevision||d.revision!==expectedRevision)throw requestError('Save conflict: reload the current revision before saving.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');
     if(previous?.deletedAt)throw requestError('Loop was deleted; recover it explicitly before editing.');
     this.assertSlugAvailable(d.id,d.slug);
+    if(previous)assertNoMemorySchemaRedefinition(Object.values(previous.revisions??{}).map(revision=>revision.memorySchemas??[]),d.memorySchemas);
     d.revision=expectedRevision+1;const issues=this.validate(actor,d).issues;
     // Validate and check the caller before committing either definition or grants.
     // A rejected publish leaves the previous revision and activation untouched.
@@ -441,6 +445,7 @@ export class Engine{
   }
   private async pump(actor:Actor,r:Run,signal:AbortSignal):Promise<Run>{
     const ctx:BindingContext={input:r.input,nodes:r.outputs};
+    let pendingMemoryMutationId:string|undefined;
     const assertBudget=(context:ContextState|undefined,outputs:Record<string,Json>)=>{
       if(!context)return;
       const limit=this.budgets.inputBytes+r.definition.limits.maxOutputBytes;
@@ -467,9 +472,11 @@ export class Engine{
         begin:(node,iteration)=>{this.begin(r,node,iteration);return r.trace.length-1;},
         finish:(sequence,output)=>this.finish(r,r.trace[sequence],output),setOutput:(id,output)=>{assertBudget(r.context,{...r.outputs,[id]:output});r.outputs[id]=output;},validateOutput,commitContext,
         lifecycle:node=>this.lifecycle(actor,r,node,contextFor(node),signal,assertBudget),
+        memory:node=>this.memoryNode(actor,r,node,contextFor(node),signal,evidence.memoryMutationId!),
       };
       const dispatched=nodeContract(n.kind).execute(n,execution);
       const outcome=dispatched instanceof Promise?await dispatched:dispatched;
+      if(n.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(n.memory.operation))pendingMemoryMutationId=evidence.memoryMutationId;
       const result=outcome.park?outcome.output:validateOutput(n,outcome.output),port=outcome.port??'next';
       if(outcome.route){const route=outcome.route,identity={port:route.port,...route.caseId?{caseId:route.caseId}:{}};if(route.available){const observed=textPage(display(route.observed),0,512);evidence.route={...identity,available:true,observed:observed.text,...observed.nextOffset===null?{}:{truncated:true}};}else evidence.route={...identity,available:false};}
       if(outcome.park){
@@ -491,16 +498,72 @@ export class Engine{
       r.outputs[n.id]=result;if(nextContext)r.context=nextContext;
       if(r.state==='running')r.cursor=this.next(r,n.id,port);
       this.checkpoint(r);
+      pendingMemoryMutationId=undefined;
     }}catch(error){
       delete r.pending;delete r.result;
       if(r.state!=='cancelled'&&r.state!=='interrupted'){r.state='failed';r.errorDetail=errorDetail(error,{phase:'execution',nodeId:r.trace.findLast(t=>t.state==='running')?.nodeId,model:actor.model});r.error=r.errorDetail.message;}
+      const uncertainMutationId=pendingMemoryMutationId??(error instanceof LoopError&&error.code==='LOOPS_MEMORY_UNCERTAIN'?r.trace.findLast(t=>t.kind==='memory'&&t.state==='running')?.memoryMutationId:undefined);
+      if(uncertainMutationId)r.uncertainty=`Memory mutation ${uncertainMutationId} may have committed. Inspect its mutation receipt and key before explicit recovery; the effect will not replay automatically.`;
       if(signal.aborted&&!r.uncertainty)r.uncertainty='A dispatched host call may have completed; this run will not replay it.';
       for(const t of r.trace)if(t.state==='running'){t.state=r.state==='cancelled'?'cancelled':r.state==='interrupted'?'interrupted':'failed';t.error=r.error??'Cancelled';t.endedAt=now();}
       this.checkpoint(r);
     }
     return r;
   }
-  private begin(r:Run,n:{id:string;kind:string},iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{}};r.trace.push(e);this.checkpoint(r);return e;}
+  private begin(r:Run,n:GraphNode,iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const memoryEffect=n.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(n.memory.operation);const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{},...memoryEffect?{memoryMutationId:hash(`${r.id}:${r.trace.length}:${n.id}`)}:{}};r.trace.push(e);this.checkpoint(r);return e;}
+  private memoryCore(r:Run){
+    const repository=this.storage as Storage&Partial<MemoryRepository>;
+    if(!repository.get||!repository.page||!repository.mutation||!repository.commit||!repository.commitBatch)throw requestError('Plugin-owned memory storage is unavailable.','LOOPS_MEMORY_STORAGE_UNAVAILABLE');
+    const record=this.state.loops[r.definition.id];
+    const entries=[...Object.values(record?.revisions??{}).flatMap(revision=>revision.memorySchemas??[]),...(r.definition.memorySchemas??[])];
+    return new MemoryCore(repository as MemoryRepository,memorySchemaValidator(entries));
+  }
+  private memoryInvocation(actor:Actor,r:Run,nodeId:string,signal?:AbortSignal):MemoryInvocation{
+    if(r.testMode)throw requestError('Memory requires a saved, enabled loop revision; unpublished tests cannot read or write memory.','LOOPS_MEMORY_DISABLED');
+    return {owner:r.owner,loopId:r.definition.id,loopRevision:r.definition.revision,runId:r.id,nodeId,grantGeneration:r.grantGeneration??legacyGrantGeneration,policy:r.definition.memoryPolicy,assertAuthorized:()=>this.allowedRun(actor,r),...signal?{signal}:{}};
+  }
+  private memoryNode(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'memory'}>,ctx:BindingContext,signal:AbortSignal,mutationId:string):Json{
+    const config=node.memory,key=bind(config.key,ctx);
+    if(typeof key!=='string')throw requestError('Memory key must resolve to text.','LOOPS_MEMORY_KEY');
+    const value=config.value===undefined?undefined:bind(config.value,ctx);
+    const version=config.expectedVersion===undefined?undefined:bind(config.expectedVersion,ctx);
+    const plan=config.plan===undefined?undefined:bind(config.plan,ctx);
+    return this.memoryCall(this.memoryCore(r),this.memoryInvocation(actor,r,node.id,signal),config.operation,key,mutationId,value,version,plan,config.limit);
+  }
+  private memoryCall(core:MemoryCore,inv:MemoryInvocation,operation:MemoryNodeOperation,key:string,mutationId:string,value?:Json,version?:Json,plan?:Json,limit?:number):Json{
+    switch(operation){
+      case 'consume':return core.consume(inv,key) as unknown as Json;
+      case 'inspect':return core.inspect(inv,key) as unknown as Json;
+      case 'search':return core.search(inv,key,undefined,limit) as unknown as Json;
+      case 'write':return core.write(inv,key,value!,mutationId) as unknown as Json;
+      case 'update':if(!Number.isSafeInteger(version)||Number(version)<1)throw requestError('Memory update requires a positive expected version.','LOOPS_MEMORY_CONFLICT');return core.update(inv,key,value!,Number(version),mutationId) as unknown as Json;
+      case 'forget':if(!Number.isSafeInteger(version)||Number(version)<1)throw requestError('Memory forget requires a positive expected version.','LOOPS_MEMORY_CONFLICT');return core.forget(inv,key,Number(version),mutationId) as unknown as Json;
+      case 'mutation':return {receipts:core.mutation(inv,key)??null} as Json;
+      case 'retention-preview':return core.removalPreview(inv,key,'retention') as unknown as Json;
+      case 'reset-preview':return core.removalPreview(inv,key,'reset') as unknown as Json;
+      case 'retention-apply':case 'reset-apply':{
+        const mode=operation==='retention-apply'?'retention':'reset';
+        const selected=typeof plan==='string'?core.removalPreview(inv,key,mode):plan as MemoryRemovalPlan;
+        if(typeof plan==='string'&&selected.planId!==plan)throw requestError('Memory removal changed since preview. No values were removed.','LOOPS_MEMORY_CONFLICT');
+        return {receipts:core.applyRemoval(inv,selected,mutationId)} as unknown as Json;
+      }
+    }
+  }
+  memoryQuery(actor:Actor,input:{runId:string;nodeId:string;operation:'consume'|'search'|'inspect'|'mutation'|'retention-preview'|'reset-preview';key:string;cursor?:string;limit?:number}){
+    const run=this.own(actor,input.runId),node=run.definition.nodes.find(item=>item.id===input.nodeId);
+    if(!node||node.kind!=='memory')throw requestError('Memory query requires an authored Memory node in this run.','LOOPS_MEMORY_DENIED');
+    const core=this.memoryCore(run),inv=this.memoryInvocation(actor,run,node.id);
+    let result:Json;
+    switch(input.operation){
+      case 'consume':result=core.consume(inv,input.key) as unknown as Json;break;
+      case 'inspect':result=core.inspect(inv,input.key) as unknown as Json;break;
+      case 'search':result=core.search(inv,input.key,input.cursor,input.limit) as unknown as Json;break;
+      case 'mutation':result={receipts:core.mutation(inv,input.key)??null};break;
+      case 'retention-preview':result=core.removalPreview(inv,input.key,'retention') as unknown as Json;break;
+      case 'reset-preview':result=core.removalPreview(inv,input.key,'reset') as unknown as Json;break;
+    }
+    return {kind:'loops-memory-result' as const,operation:input.operation,result};
+  }
   private finish(r:Run,e:NodeEvidence,result:Json){const output=display(result);if(Buffer.byteLength(output)>r.definition.limits.maxOutputBytes)throw executionError(`Output-size limit exceeded at ${e.nodeId}.`,'LOOPS_OUTPUT_LIMIT');if(r.definition.schemaVersion===1&&r.trace.reduce((size,t)=>size+Buffer.byteLength(t.output??''),0)+Buffer.byteLength(output)>48000)throw executionError('Run evidence output budget exceeded.','LOOPS_OUTPUT_LIMIT');e.output=output;e.state='completed';e.endedAt=now();}
   private async lifecycle(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'context-lifecycle'}>,ctx:BindingContext,signal:AbortSignal,assertBudget:(context:ContextState|undefined,outputs:Record<string,Json>)=>void):Promise<{output:Json;context:ContextState}>{
     if(!r.context)throw executionError('Context lifecycle requires a version 3 run context.','LOOPS_CONTEXT_UNAVAILABLE');

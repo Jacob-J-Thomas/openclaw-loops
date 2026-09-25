@@ -671,6 +671,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await invoke('runs')).toEqual(expect.arrayContaining([expect.objectContaining({id:first.id,state:'completed'})]));
     expect(await invoke('history',{limit:1})).toMatchObject({total:1,nextCursor:null,items:[{id:first.id}]});
     expect(await invoke('inspect',{runId:first.id})).toMatchObject({result:'Complete result',definition:{revision:5},input:{text:'Complete result'}});
+    expect(await invoke('memory',{runId:first.id,nodeId:'missing',operation:'inspect',key:'notes'})).toMatchObject({kind:'loops-error'});
     expect(await invoke('output',{runId:first.id})).toMatchObject({text:'Complete result',nextOffset:null});
     // Exceed the actual feature string envelope, stage bounded UTF-8 JSON and
     // reconstruct the returned immutable document on every surface.
@@ -1244,7 +1245,22 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=await setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=await setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(38);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_memory','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(39);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('reads an authored SQLite memory value through UI, command and tool adapters',async()=>{
+    const s=await setup();
+    const {id:_id,revision:_revision,...content}=structuredClone(examples[0]);
+    content.schemaVersion=3;content.slug='adapter-memory';content.capabilities=[];content.inputSchema=[];
+    content.nodes=[{id:'input',kind:'input',label:'Input'},{id:'remember',kind:'memory',label:'Remember',memory:{operation:'write',key:'notes.fact',value:{literalJson:'"seen"'}}},{id:'return',kind:'return',label:'Return',value:'{{nodes.remember.version}}'}];
+    content.edges=[{id:'a',source:'input',target:'remember',port:'next'},{id:'b',source:'remember',target:'return',port:'next'}];
+    Object.assign(content,{memoryPolicy:{version:1,enabled:true,nodes:{remember:{readPrefixes:['notes'],writeScopes:[{prefix:'notes',schemaId:'note',schemaVersion:1,retentionDays:30}],forgetPrefixes:[]}}},memorySchemas:[{id:'note',version:1,schema:{type:'string'}}]});
+    const created=await s.action('create',{definition:content,enabled:true});expect(created).toMatchObject({result:{issues:[]}});
+    const started=await s.action('run',{slug:content.slug,input:{},requestId:'memory-adapter-write'});expect(started).toMatchObject({result:{state:'completed',result:1}});
+    const runId=(started as {result:RunReceipt}).result.id,input={runId,nodeId:'remember',operation:'consume',key:'notes.fact'};
+    expect(await s.action('memory',input)).toMatchObject({result:{kind:'loops-memory-result',result:{value:'seen',version:1}}});
+    expect(await commandJson(s,'memory',input)).toMatchObject({kind:'loops-memory-result',result:{value:'seen',version:1}});
+    expect(await toolJson(s,'memory',input)).toMatchObject({kind:'loops-memory-result',result:{value:'seen',version:1}});
+    expect(s.complete).not.toHaveBeenCalled();
+  });
   it('authors through real SDK tools and shares definitions with the UI across registry scopes',async()=>{
     const gateway=await setup(),s=await setup({root:gateway.root,start:false});
     const call=(name:string,p:Record<string,unknown>)=>s.tools.find(t=>t.name===name)!.execute('authoring-call',p);

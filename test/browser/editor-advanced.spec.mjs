@@ -426,6 +426,43 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
       assert.equal(Object.hasOwn(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle,'source'),false);
       receipt.checks.push('synthetic browser: all five lifecycle operations author and save without stale source or value');await lifecyclePage.close();
     }
+    {
+      const memoryPage=await browser.newPage();await memoryPage.goto(url);await waitFor(memoryPage,'select[aria-label="Load an example"]');
+      await memoryPage.selectOption('select[aria-label="Load an example"]','summarize-text');
+      await memoryPage.selectOption('select[aria-label="Node family"]','memory');await memoryPage.getByRole('button',{name:'+ Add node'}).click();
+      const controls=memoryPage.getByRole('region',{name:'Memory node settings'});
+      await controls.getByRole('combobox',{name:'Memory operation'}).selectOption('write');
+      await controls.getByRole('checkbox',{name:'Enable memory for this loop'}).check();
+      await controls.getByRole('button',{name:'Add write scope'}).click();
+      await controls.getByRole('textbox',{name:'Write prefix 1'}).fill('notes');
+      const memorySchemaId=controls.getByRole('textbox',{name:'Schema ID'});
+      await memorySchemaId.focus();await memoryPage.keyboard.type('x');
+      assert.equal(await memorySchemaId.inputValue(),'notex');
+      await memoryPage.keyboard.press('Backspace');
+      await controls.getByRole('textbox',{name:'Schema ID'}).fill('note');
+      await memoryPage.getByRole('button',{name:'Save draft'}).click();await memoryPage.getByText('Revision 1 saved as a draft').waitFor();
+      let savedMemory=await memoryPage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedMemory.schemaVersion,3);assert.equal(savedMemory.memoryPolicy.enabled,true);
+      assert.equal(savedMemory.nodes.find(node=>node.kind==='memory').memory.operation,'write');
+      assert.equal(savedMemory.memoryPolicy.nodes[savedMemory.nodes.find(node=>node.kind==='memory').id].writeScopes[0].prefix,'notes');
+      assert.equal(savedMemory.memorySchemas.length,1);
+      assert.equal(savedMemory.memorySchemas.some(entry=>entry.id==='note'&&entry.version===1),true);
+      const memoryEnum=controls.getByRole('textbox',{name:'Enum JSON values'});
+      await memoryEnum.fill('[');
+      assert.equal(await memoryPage.getByRole('button',{name:'Save draft'}).isDisabled(),true);
+      assert.equal(await memoryPage.getByRole('button',{name:'Save & publish'}).isDisabled(),true);
+      assert.equal(await memoryPage.getByRole('button',{name:'Export',exact:true}).isDisabled(),true);
+      await controls.getByRole('button',{name:'Discard invalid enum text'}).click();
+      assert.equal(await memoryEnum.inputValue(),'');
+      await memoryPage.evaluate(()=>globalThis.__editorRegression.refresh());await controls.getByRole('combobox',{name:'Memory operation'}).waitFor();
+      await controls.getByRole('combobox',{name:'Memory operation'}).selectOption('reset-preview');
+      await controls.getByRole('textbox',{name:'Memory forget prefixes'}).fill('notes');
+      await memoryPage.getByRole('button',{name:'Save draft'}).click();await memoryPage.getByText('Revision 2 saved as a draft').waitFor();
+      savedMemory=await memoryPage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedMemory.nodes.find(node=>node.kind==='memory').memory.operation,'reset-preview');
+      assert.deepEqual(savedMemory.memoryPolicy.nodes[savedMemory.nodes.find(node=>node.kind==='memory').id].forgetPrefixes,['notes']);
+      receipt.checks.push('synthetic browser: v3 opt-in Memory write policy, versioned schema and reset preview survive save and refresh');await memoryPage.close();
+    }
     receipt.definitions=state.records.map(([id,item])=>({id,revision:item.definition.revision,enabledRevision:item.enabledRevision,publishedRevision:item.publishedRevision,advanced:advanced(item.definition)}));
     receipt.operations=state.calls.filter(call=>call.mode||call.id).map(call=>call.mode??call.id); receipt.passed=true;
   } catch(error){receipt.failure=error.message;if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');throw error;} finally { await browser?.close(); if(importDirectory)await rm(importDirectory,{recursive:true,force:true}); await new Promise(resolve=>server.close(resolve)); }
