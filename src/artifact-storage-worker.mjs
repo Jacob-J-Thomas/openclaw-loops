@@ -26,7 +26,9 @@ function metadataUsage(database,scope){
   const items=database.prepare('SELECT count(*) AS n,coalesce(sum(length(CAST(record AS BLOB))),0) AS b FROM artifact_items WHERE scope=?').get(scope);
   const live=database.prepare("SELECT count(*) AS n FROM artifact_items WHERE scope=? AND status IN ('reserved','published','released')").get(scope).n;
   const pending=database.prepare("SELECT count(*) AS n FROM artifact_items WHERE scope=? AND status='reserved'").get(scope).n;
-  const links=database.prepare("SELECT count(*) AS n,coalesce(sum(length(CAST(run_id AS BLOB))+length(CAST(node_id AS BLOB))+length(CAST(artifact_id AS BLOB))),0) AS b FROM artifact_links WHERE scope=?").get(scope);
+  const runLinks=database.prepare("SELECT count(*) AS n,coalesce(sum(length(CAST(run_id AS BLOB))+length(CAST(node_id AS BLOB))+length(CAST(artifact_id AS BLOB))),0) AS b FROM artifact_links WHERE scope=?").get(scope);
+  const memoryLinks=database.prepare("SELECT count(*) AS n,coalesce(sum(length(CAST(loop_id AS BLOB))+length(CAST(memory_key AS BLOB))+length(CAST(artifact_id AS BLOB))),0) AS b FROM artifact_memory_links WHERE scope=?").get(scope);
+  const links={n:runLinks.n+memoryLinks.n,b:runLinks.b+memoryLinks.b};
   const audit=database.prepare(`SELECT count(*) AS n,coalesce(sum(length(CAST(record AS BLOB))),0) AS b FROM (
     SELECT record FROM artifact_gc_receipts WHERE scope=? UNION ALL SELECT record FROM artifact_recovery_receipts WHERE scope=?)`).get(scope,scope);
   return {operations,items,live,pending,links,audit};
@@ -49,6 +51,9 @@ export const artifactSchema=`
   CREATE INDEX IF NOT EXISTS artifact_items_operation ON artifact_items(scope,operation_id);
   CREATE TABLE IF NOT EXISTS artifact_links(scope TEXT NOT NULL,run_id TEXT NOT NULL,node_id TEXT NOT NULL,artifact_id TEXT NOT NULL,active INTEGER NOT NULL CHECK(active IN (0,1)),PRIMARY KEY(scope,run_id,node_id,artifact_id),FOREIGN KEY(artifact_id) REFERENCES artifact_items(id) ON DELETE RESTRICT);
   CREATE INDEX IF NOT EXISTS artifact_links_item ON artifact_links(artifact_id,active);
+  CREATE TABLE IF NOT EXISTS artifact_memory_links(scope TEXT NOT NULL,loop_id TEXT NOT NULL,memory_key TEXT NOT NULL,artifact_id TEXT NOT NULL,PRIMARY KEY(scope,loop_id,memory_key,artifact_id),FOREIGN KEY(scope,loop_id,memory_key) REFERENCES memory_records(scope,loop_id,key) ON DELETE RESTRICT,FOREIGN KEY(artifact_id) REFERENCES artifact_items(id) ON DELETE RESTRICT);
+  CREATE INDEX IF NOT EXISTS artifact_memory_links_item ON artifact_memory_links(artifact_id);
+  CREATE TABLE IF NOT EXISTS artifact_memory_opaque(scope TEXT NOT NULL,loop_id TEXT NOT NULL,memory_key TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),value_sha256 TEXT NOT NULL,PRIMARY KEY(scope,loop_id,memory_key),FOREIGN KEY(scope,loop_id,memory_key) REFERENCES memory_records(scope,loop_id,key) ON DELETE RESTRICT);
   CREATE TABLE IF NOT EXISTS artifact_gc(scope TEXT PRIMARY KEY,token TEXT NOT NULL,started_at TEXT NOT NULL,plan TEXT NOT NULL CHECK(json_valid(plan)));
   CREATE TABLE IF NOT EXISTS artifact_gc_receipts(scope TEXT NOT NULL,token TEXT NOT NULL,record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,token));
   CREATE TABLE IF NOT EXISTS artifact_recovery_receipts(scope TEXT NOT NULL,recovery_id TEXT NOT NULL,target_type TEXT NOT NULL CHECK(target_type IN ('publication','cleanup')),target_id TEXT NOT NULL,at TEXT NOT NULL,record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,recovery_id));
@@ -109,6 +114,7 @@ function protectedIds(database,scope){
     WHERE links.scope=? AND links.active=1`).all(scope)){
     if(row.run===null||protectedRun(JSON.parse(row.run)))ids.add(row.id);
   }
+  for(const row of database.prepare('SELECT artifact_id AS id FROM artifact_memory_links WHERE scope=?').all(scope))ids.add(row.id);
   return [...ids].sort();
 }
 function findRefs(value,nodeId,found,depth=0){
@@ -116,8 +122,10 @@ function findRefs(value,nodeId,found,depth=0){
   if(Array.isArray(value)){for(const item of value)findRefs(item,nodeId,found,depth+1);return;}
   if(!value||typeof value!=='object')return;
   if(value.kind==='loops-artifact'){
-    if(!validReference(value))throw conflict('Malformed artifact reference in a run checkpoint.');
-    found.set(`${nodeId}\0${value.id}`,{nodeId,reference:value});return;
+    if(!validReference(value))throw conflict('Malformed artifact reference in a saved value.');
+    const key=`${nodeId}\0${value.id}`,prior=found.get(key);
+    if(prior&&!same(prior.reference,value))throw conflict('Conflicting artifact reference identities.');
+    found.set(key,{nodeId,reference:value});return;
   }
   for(const child of Object.values(value))findRefs(child,nodeId,found,depth+1);
 }
@@ -128,6 +136,20 @@ function checkpointRefs(run){
   for(const [nodeId,value] of Object.entries(run.outputs??{}))findRefs(value,nodeId,found);
   findRefs(run.result,'result',found);
   return [...found.values()];
+}
+function memoryRefs(record){
+  const found=new Map();
+  if(!record.deleted)findRefs(record.value,'memory',found);
+  return [...found.values()].map(item=>item.reference);
+}
+
+// Schema 4 predates artifact custody. Keep its existing JSON values opaque at
+// their exact version/hash; a later v5 write must establish real custody.
+export function markLegacyMemoryOpaque(database){
+  for(const row of database.prepare('SELECT scope,loop_id,key,record FROM memory_records WHERE deleted=0').iterate()){
+    const record=JSON.parse(row.record);
+    database.prepare('INSERT INTO artifact_memory_opaque(scope,loop_id,memory_key,version,value_sha256) VALUES (?,?,?,?,?)').run(row.scope,row.loop_id,row.key,record.version,record.valueSha256);
+  }
 }
 
 export function artifactStore(database){
@@ -186,7 +208,7 @@ export function artifactStore(database){
         const origin=JSON.parse(item.record);
         if(origin.runId!==`capture-${operationId}`||origin.nodeId!=='upload'||database.prepare('SELECT 1 FROM runs WHERE id=? LIMIT 1').get(origin.runId))throw conflict('Artifact release requires standalone capture provenance without a run.');
         if(item.released_at!==null&&['released','retired'].includes(item.status))return {id,operationId,status:item.status,releasedAt:item.released_at};
-        if(item.status!=='published'||item.ever_linked!==0||database.prepare('SELECT 1 FROM artifact_links WHERE artifact_id=? LIMIT 1').get(id))throw conflict('Artifact release requires a never-linked published reference.');
+        if(item.status!=='published'||item.ever_linked!==0||database.prepare('SELECT 1 FROM artifact_links WHERE artifact_id=? LIMIT 1').get(id)||database.prepare('SELECT 1 FROM artifact_memory_links WHERE artifact_id=? LIMIT 1').get(id))throw conflict('Artifact release requires a never-linked published reference.');
         database.prepare("UPDATE artifact_items SET status='released',released_at=? WHERE scope=? AND operation_id=? AND id=? AND status='published'").run(at,scope,operationId,id);
         return {id,operationId,status:'released',releasedAt:at};
       });
@@ -203,7 +225,7 @@ export function artifactStore(database){
         const statuses=new Set(readback.map(item=>item.status));
         if(statuses.size!==1)throw conflict('Mixed artifact custody readback requires explicit investigation.');
         const outcome=statuses.has('published')?'published':'abandoned';
-        if(outcome==='abandoned'&&saved.references.some(item=>database.prepare('SELECT 1 FROM artifact_links WHERE artifact_id=? LIMIT 1').get(item.reference.id)))throw conflict('Linked artifact cannot be abandoned.');
+        if(outcome==='abandoned'&&saved.references.some(item=>database.prepare('SELECT 1 FROM artifact_links WHERE artifact_id=? LIMIT 1').get(item.reference.id)||database.prepare('SELECT 1 FROM artifact_memory_links WHERE artifact_id=? LIMIT 1').get(item.reference.id)))throw conflict('Linked artifact cannot be abandoned.');
         database.prepare('UPDATE artifact_operations SET status=? WHERE scope=? AND operation_id=?').run(outcome,scope,operationId);
         database.prepare('UPDATE artifact_items SET status=? WHERE scope=? AND operation_id=?').run(outcome,scope,operationId);
         const receipt={operationId,recoveryId,outcome,at,readback};
@@ -320,6 +342,25 @@ export function artifactStore(database){
       const links=metadataUsage(database,scope).links;
       if(links.n>limits.links||links.b>limits.linkBytes)throw quota('immutable run-link history');
     },
+    reconcileMemory:(record)=>{
+      const {scope,loopId,key}=record;
+      if(!digest.test(scope)||typeof loopId!=='string'||typeof key!=='string')throw conflict('Invalid memory artifact owner scope.');
+      const desired=memoryRefs(record),old=database.prepare('SELECT artifact_id FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=?').all(scope,loopId,key);
+      if(old.length||desired.length)assertNoGc(database);
+      for(const ref of desired){
+        if(ref.ownerScope!==scope)throw conflict('Artifact owner scope does not match memory.');
+        const item=database.prepare('SELECT status,record FROM artifact_items WHERE id=? AND scope=?').get(ref.id,scope);
+        if(!item||item.status!=='published'||!same(JSON.parse(item.record),ref))throw conflict('Memory references an unpublished or changed artifact.');
+      }
+      database.prepare('DELETE FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=?').run(scope,loopId,key);
+      for(const ref of desired){
+        database.prepare('INSERT INTO artifact_memory_links(scope,loop_id,memory_key,artifact_id) VALUES (?,?,?,?)').run(scope,loopId,key,ref.id);
+        database.prepare('UPDATE artifact_items SET ever_linked=1 WHERE id=?').run(ref.id);
+      }
+      database.prepare('DELETE FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=?').run(scope,loopId,key);
+      const links=metadataUsage(database,scope).links;
+      if(links.n>limits.links||links.b>limits.linkBytes)throw quota('artifact link history and live memory links');
+    },
     retireRun:(runId)=>database.prepare('UPDATE artifact_links SET active=0 WHERE run_id=?').run(runId),
   };
 }
@@ -329,6 +370,8 @@ export function validateArtifactStore(database){
     artifact_operations:[['scope','TEXT',1,1],['operation_id','TEXT',1,2],['status','TEXT',1,0],['reference_count','INTEGER',1,0]],
     artifact_items:[['id','TEXT',0,1],['scope','TEXT',1,0],['operation_id','TEXT',1,0],['status','TEXT',1,0],['ever_linked','INTEGER',1,0],['released_at','TEXT',0,0],['record','TEXT',1,0]],
     artifact_links:[['scope','TEXT',1,1],['run_id','TEXT',1,2],['node_id','TEXT',1,3],['artifact_id','TEXT',1,4],['active','INTEGER',1,0]],
+    artifact_memory_links:[['scope','TEXT',1,1],['loop_id','TEXT',1,2],['memory_key','TEXT',1,3],['artifact_id','TEXT',1,4]],
+    artifact_memory_opaque:[['scope','TEXT',1,1],['loop_id','TEXT',1,2],['memory_key','TEXT',1,3],['version','INTEGER',1,0],['value_sha256','TEXT',1,0]],
     artifact_gc:[['scope','TEXT',0,1],['token','TEXT',1,0],['started_at','TEXT',1,0],['plan','TEXT',1,0]],
     artifact_gc_receipts:[['scope','TEXT',1,1],['token','TEXT',1,2],['record','TEXT',1,0]],
     artifact_recovery_receipts:[['scope','TEXT',1,1],['recovery_id','TEXT',1,2],['target_type','TEXT',1,0],['target_id','TEXT',1,0],['at','TEXT',1,0],['record','TEXT',1,0]],
@@ -341,11 +384,13 @@ export function validateArtifactStore(database){
   for(const [table,expected] of Object.entries({
     artifact_items:[[0,0,'artifact_operations','scope','scope','RESTRICT'],[0,1,'artifact_operations','operation_id','operation_id','RESTRICT']],
     artifact_links:[[0,0,'artifact_items','artifact_id','id','RESTRICT']],
+    artifact_memory_links:[[0,0,'artifact_items','artifact_id','id','RESTRICT'],[1,0,'memory_records','scope','scope','RESTRICT'],[1,1,'memory_records','loop_id','loop_id','RESTRICT'],[1,2,'memory_records','memory_key','key','RESTRICT']],
+    artifact_memory_opaque:[[0,0,'memory_records','scope','scope','RESTRICT'],[0,1,'memory_records','loop_id','loop_id','RESTRICT'],[0,2,'memory_records','memory_key','key','RESTRICT']],
   })){
     const actual=database.prepare(`PRAGMA foreign_key_list(${table})`).all().map(row=>[row.id,row.seq,row.table,row.from,row.to,row.on_delete]);
     if(!same(actual,expected))throw corrupt(`foreign key ${table}`);
   }
-  for(const [name,table,columns] of [['artifact_items_operation','artifact_items',['scope','operation_id']],['artifact_links_item','artifact_links',['artifact_id','active']]]){
+  for(const [name,table,columns] of [['artifact_items_operation','artifact_items',['scope','operation_id']],['artifact_links_item','artifact_links',['artifact_id','active']],['artifact_memory_links_item','artifact_memory_links',['artifact_id']]]){
     const index=database.prepare('SELECT type,tbl_name FROM sqlite_schema WHERE name=?').get(name);
     const info=database.prepare(`PRAGMA index_info(${name})`).all().map(row=>row.name);
     if(index?.type!=='index'||index.tbl_name!==table||!same(info,columns))throw corrupt(`index ${name}`);
@@ -357,7 +402,7 @@ export function validateArtifactStore(database){
       row.status==='released'&&(!iso(row.released_at)||row.ever_linked!==0)||row.status!=='released'&&row.released_at!==null&&!(row.status==='retired'&&iso(row.released_at)))throw corrupt('reference identity');
     const op=database.prepare('SELECT status FROM artifact_operations WHERE scope=? AND operation_id=?').get(row.scope,row.operation_id);
     if(!op||op.status==='reserved'&&row.status!=='reserved'||op.status==='published'&&!['published','released','retired'].includes(row.status)||op.status==='abandoned'&&row.status!=='abandoned')throw corrupt('publication identity');
-    if(row.released_at!==null&&database.prepare('SELECT 1 FROM artifact_links WHERE artifact_id=? LIMIT 1').get(row.id))throw corrupt('released reference link');
+    if(row.released_at!==null&&(database.prepare('SELECT 1 FROM artifact_links WHERE artifact_id=? LIMIT 1').get(row.id)||database.prepare('SELECT 1 FROM artifact_memory_links WHERE artifact_id=? LIMIT 1').get(row.id)))throw corrupt('released reference link');
   }
   for(const op of database.prepare('SELECT scope,operation_id,status,reference_count FROM artifact_operations').iterate()){
     if(!digest.test(op.scope)||!operationName.test(op.operation_id)||!['reserved','published','abandoned'].includes(op.status)||!Number.isSafeInteger(op.reference_count)||op.reference_count<1||database.prepare('SELECT count(*) AS count FROM artifact_items WHERE scope=? AND operation_id=?').get(op.scope,op.operation_id).count!==op.reference_count)throw corrupt('reservation count');
@@ -366,6 +411,22 @@ export function validateArtifactStore(database){
     const item=database.prepare('SELECT scope,status,record FROM artifact_items WHERE id=?').get(link.artifact_id);
     const run=database.prepare('SELECT record FROM runs WHERE id=?').get(link.run_id);
     if(!item||item.scope!==link.scope||!uuid.test(link.artifact_id)||typeof link.run_id!=='string'||!link.run_id||typeof link.node_id!=='string'||!link.node_id||![0,1].includes(link.active)||link.active===1&&item.status!=='published'||link.active===1&&!run||link.active===1&&!checkpointRefs(JSON.parse(run.record)).some(found=>found.nodeId===link.node_id&&found.reference.id===link.artifact_id&&same(found.reference,JSON.parse(item.record))))throw corrupt('run link');
+  }
+  for(const row of database.prepare('SELECT scope,loop_id,memory_key,version,value_sha256 FROM artifact_memory_opaque').iterate()){
+    const saved=database.prepare('SELECT version,deleted,record FROM memory_records WHERE scope=? AND loop_id=? AND key=?').get(row.scope,row.loop_id,row.memory_key);
+    if(!saved||saved.deleted!==0||saved.version!==row.version||!digest.test(row.value_sha256)||JSON.parse(saved.record).valueSha256!==row.value_sha256||
+      database.prepare('SELECT 1 FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=? LIMIT 1').get(row.scope,row.loop_id,row.memory_key))throw corrupt('legacy opaque memory identity');
+  }
+  for(const row of database.prepare('SELECT scope,loop_id,key,deleted,record FROM memory_records').iterate()){
+    const opaque=database.prepare('SELECT 1 FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=?').get(row.scope,row.loop_id,row.key);
+    if(opaque)continue;
+    const expected=memoryRefs(JSON.parse(row.record));
+    const links=database.prepare('SELECT artifact_id FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=? ORDER BY artifact_id').all(row.scope,row.loop_id,row.key).map(item=>item.artifact_id);
+    if(!same(links,[...new Set(expected.map(ref=>ref.id))].sort())||row.deleted===1&&links.length)throw corrupt('memory reference links');
+    for(const ref of expected){
+      const item=database.prepare('SELECT scope,status,record,ever_linked FROM artifact_items WHERE id=?').get(ref.id);
+      if(ref.ownerScope!==row.scope||!item||item.scope!==row.scope||item.status!=='published'||item.ever_linked!==1||!same(JSON.parse(item.record),ref))throw corrupt('memory reference custody');
+    }
   }
   for(const lease of database.prepare('SELECT scope,token,started_at,plan FROM artifact_gc').iterate())if(!digest.test(lease.scope)||!uuid.test(lease.token)||!iso(lease.started_at)||!validPlan(JSON.parse(lease.plan),lease.scope))throw corrupt('cleanup lease');
   for(const receipt of database.prepare('SELECT scope,token,record FROM artifact_gc_receipts').iterate()){
@@ -389,7 +450,7 @@ export function validateArtifactStore(database){
     }
   }
   for(const {scope} of database.prepare(`SELECT scope FROM artifact_operations UNION SELECT scope FROM artifact_gc_receipts
-    UNION SELECT scope FROM artifact_recovery_receipts UNION SELECT scope FROM artifact_links`).iterate()){
+    UNION SELECT scope FROM artifact_recovery_receipts UNION SELECT scope FROM artifact_links UNION SELECT scope FROM artifact_memory_links`).iterate()){
     const u=metadataUsage(database,scope);
     if(u.operations.n>limits.operations||u.operations.b>limits.operationBytes||u.items.n>limits.items||u.items.b>limits.itemBytes||u.live>limits.live||
       u.links.n>limits.links||u.links.b>limits.linkBytes||u.audit.n>limits.receipts||u.audit.b>limits.receiptBytes)throw corrupt('metadata quota');

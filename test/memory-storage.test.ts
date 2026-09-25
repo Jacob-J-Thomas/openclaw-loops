@@ -112,7 +112,7 @@ describe('plugin-owned SQLite memory repository',()=>{
     const definition={...structuredClone(examples[0]),revision:1};
     storage.write({version:1,loops:{[definition.id]:{definition,enabledRevision:1,grants:[]}},runs:{}});
     await storage.close();
-    const legacy=new DatabaseSync(file);legacy.exec('DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; PRAGMA user_version=3;');
+    const legacy=new DatabaseSync(file);legacy.exec('DROP TABLE artifact_memory_links; DROP TABLE artifact_memory_opaque; DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; PRAGMA user_version=3;');
     const loops=legacy.prepare('SELECT * FROM loops').all(),revisions=legacy.prepare('SELECT * FROM revisions').all(),runs=legacy.prepare('SELECT * FROM runs').all();legacy.close();
     const upgraded=new SqliteStorage(file);cleanups.push(()=>upgraded.close());
     const backups=readdirSync(directory).filter(name=>name.startsWith('loops.sqlite.before-schema-5-')&&name.endsWith('.bak'));
@@ -164,7 +164,7 @@ describe('plugin-owned SQLite memory repository',()=>{
 
   it('refuses unexpected memory tables under a v3 header before taking a migration backup',async()=>{
     const {directory,file,storage}=setup();await storage.close();
-    const stale=new DatabaseSync(file);stale.exec('DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; CREATE TABLE memory_records(id TEXT); PRAGMA user_version=3; PRAGMA journal_mode=DELETE;');stale.close();
+    const stale=new DatabaseSync(file);stale.exec('DROP TABLE artifact_memory_links; DROP TABLE artifact_memory_opaque; DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; CREATE TABLE memory_records(id TEXT); PRAGMA user_version=3; PRAGMA journal_mode=DELETE;');stale.close();
     const before=readFileSync(file);
     expect(()=>new SqliteStorage(file)).toThrow(/Unexpected memory tables/);
     await vi.waitFor(()=>expect(existsSync(file+'.lock')).toBe(false));

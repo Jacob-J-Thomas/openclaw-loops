@@ -71,6 +71,28 @@ cleanup-pending, uncertain and interrupted runs. A failure after `begin` leaves
 the durable GC lease for explicit reconciliation, even when no file was
 removed. Neither side silently clears pending intents or GC leases.
 
+The v5 SQLite custody schema also keeps current `artifact_memory_links` for
+artifact references in live owner-scoped Memory values. The Memory CAS batch
+updates its record, immutable mutation receipt, and exact artifact links in
+one SQLite transaction. Each newly written reference must match a published
+custody item byte-for-byte and its owner scope must equal the trusted Memory
+row scope. Updating, forgetting, resetting, or retaining a Memory key removes
+its former links; another key or run can continue to protect the same item.
+GC snapshots and cleanup admission include these links, so explicit run
+retention cannot release bytes still referenced by Memory. A foreign,
+released, malformed, or changed reference aborts the entire Memory mutation.
+Cold admission verifies Memory values, link identities, item publication, and
+the link index before opening a writable store.
+
+Schema 4 had no artifact custody authority. During its backed-up migration to
+the still-unreleased v5 schema, existing Memory values are preserved as
+opaque legacy data, with a marker bound to each row's version and value hash.
+Even artifact-shaped JSON in those values receives no custody link or grant.
+A later v5 Memory update removes the marker only in the same transaction as
+new reference validation and link replacement. Tampering with a marker or
+its row blocks cold writable admission. This preserves old data without
+allowing a lookalike value to claim published artifact bytes.
+
 The older uncoordinated `put`, `import`, `previewCleanup` and `applyCleanup`
 remain preparatory core primitives for focused tests; the installed engine
 must use the coordinated methods. The core deliberately makes no SQLite

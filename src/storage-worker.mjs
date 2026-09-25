@@ -2,7 +2,7 @@ import {parentPort,workerData} from 'node:worker_threads';
 import {DatabaseSync,backup} from 'node:sqlite';
 import {chmodSync,existsSync} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {artifactSchema,artifactStore,validateArtifactStore} from './artifact-storage-worker.mjs';
+import {artifactSchema,artifactStore,markLegacyMemoryOpaque,validateArtifactStore} from './artifact-storage-worker.mjs';
 
 // Only this worker opens the plugin database. The host database is never used.
 let database;
@@ -90,7 +90,7 @@ if(existsSync(workerData.file)){
     if(database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get())throw new Error('Invalid unversioned Loops database schema.');
   }else{
       if(schemaVersion<4&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('memory_records','memory_mutations','memory_receipts') LIMIT 1").get())throw new Error('Unexpected memory tables in an older Loops schema.');
-      if(schemaVersion<5&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('artifact_operations','artifact_items','artifact_links','artifact_gc','artifact_gc_receipts','artifact_recovery_receipts','artifact_items_operation','artifact_links_item') LIMIT 1").get())throw new Error('Unexpected artifact custody tables in an older Loops schema.');
+      if(schemaVersion<5&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('artifact_operations','artifact_items','artifact_links','artifact_memory_links','artifact_memory_opaque','artifact_gc','artifact_gc_receipts','artifact_recovery_receipts','artifact_items_operation','artifact_links_item','artifact_memory_links_item') LIMIT 1").get())throw new Error('Unexpected artifact custody tables in an older Loops schema.');
       // Check required columns and JSON syntax without materializing cold history.
       // Schema 1 legitimately lacks the retired-admission table added by schema 2.
       const tables={metadata:'key,value',loops:'id,record',revisions:'loop_id,revision,definition',runs:'id,owner_key,state,created_at,record',admissions:'request_key,fingerprint,run_id',attempts:'run_id,sequence,node_id,state,evidence',outputs:'run_id,node_id,value',events:'sequence,run_id,state,at',...schemaVersion>=2?{retired_admissions:'request_key,record'}:{},...schemaVersion>=4?{memory_records:'scope,loop_id,key,version,deleted,value_bytes,record',memory_mutations:'scope,loop_id,mutation_id,kind,receipt_count,receipt_bytes',memory_receipts:'scope,loop_id,mutation_id,ordinal,record'}:{}};
@@ -144,6 +144,11 @@ try{database.exec(`
   CREATE TABLE IF NOT EXISTS attempts(run_id TEXT NOT NULL, sequence INTEGER NOT NULL, node_id TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(run_id,sequence));
   CREATE TABLE IF NOT EXISTS outputs(run_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(run_id,node_id));
   CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
+  `);
+// Legacy schema 4 had no artifact authority. Its preexisting JSON stays
+// byte-identical and is explicitly opaque until a fresh v5 Memory write.
+if(schemaVersion===4)markLegacyMemoryOpaque(database);
+database.exec(`
   PRAGMA user_version=${currentSchemaVersion};
 `);
 validateMemoryStore();
@@ -271,7 +276,10 @@ function memoryCommit({writes,mutationId}){
       FROM memory_mutations WHERE scope=? AND loop_id=?`).get(scope,loopId);
     if(kind==='effect'&&(metadata.effects+1>budget.maxMutations||metadata.effect_bytes+receiptBytes>budget.maxReceiptBytes)||
       kind==='cleanup'&&(metadata.cleanups+1>metadata.effect_receipts||metadata.cleanup_bytes+receiptBytes>metadata.effect_receipts*CLEANUP_RECEIPT_RESERVE_BYTES))throw memoryQuota();
-    for(const item of prepared)database.prepare('INSERT INTO memory_records(scope,loop_id,key,version,deleted,value_bytes,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(scope,loop_id,key) DO UPDATE SET version=excluded.version,deleted=excluded.deleted,value_bytes=excluded.value_bytes,record=excluded.record').run(scope,loopId,item.write.key,item.record.version,Number(item.record.deleted),item.bytes,JSON.stringify(item.record));
+    for(const item of prepared){
+      database.prepare('INSERT INTO memory_records(scope,loop_id,key,version,deleted,value_bytes,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(scope,loop_id,key) DO UPDATE SET version=excluded.version,deleted=excluded.deleted,value_bytes=excluded.value_bytes,record=excluded.record').run(scope,loopId,item.write.key,item.record.version,Number(item.record.deleted),item.bytes,JSON.stringify(item.record));
+      artifacts.reconcileMemory(item.record);
+    }
     database.prepare('INSERT INTO memory_mutations(scope,loop_id,mutation_id,kind,receipt_count,receipt_bytes) VALUES (?,?,?,?,?,?)').run(scope,loopId,mutationId,kind,prepared.length,receiptBytes);
     for(let ordinal=0;ordinal<prepared.length;ordinal++)database.prepare('INSERT INTO memory_receipts(scope,loop_id,mutation_id,ordinal,record) VALUES (?,?,?,?,?)').run(scope,loopId,mutationId,ordinal,prepared[ordinal].receiptJson);
     database.exec('COMMIT');
