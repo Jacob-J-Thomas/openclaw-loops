@@ -15,6 +15,12 @@ generation from the current saved admission. Imported JSON and public calls
 cannot supply those values. Every operation checks current host and loop
 authority, and commits use a synchronous compare-and-swap through one SQLite
 worker. A different agent or conversation has a different owner scope.
+An operator with read-only access to the same conversation may inspect its
+authorized run history and authored memory query results. A Memory write,
+update, forget or removal apply additionally requires a current agent tool or
+operator write authority, checked again immediately before the synchronous
+storage commit. A read-only invocation of a saved write loop fails without a
+memory mutation.
 
 The Memory node supports consume, search, inspect, write, update, forget,
 mutation receipt lookup, retention preview/apply and reset preview/apply.
