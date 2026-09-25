@@ -2,7 +2,7 @@ import {parentPort,workerData} from 'node:worker_threads';
 import {DatabaseSync,backup} from 'node:sqlite';
 import {chmodSync,existsSync} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {artifactSchema,artifactStore,markLegacyMemoryOpaque,validateArtifactStore} from './artifact-storage-worker.mjs';
+import {artifactSchema,artifactStore,markLegacyMemoryOpaque,markLegacyRunsOpaque,validateArtifactStore} from './artifact-storage-worker.mjs';
 
 // Only this worker opens the plugin database. The host database is never used.
 let database;
@@ -90,7 +90,7 @@ if(existsSync(workerData.file)){
     if(database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get())throw new Error('Invalid unversioned Loops database schema.');
   }else{
       if(schemaVersion<4&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('memory_records','memory_mutations','memory_receipts') LIMIT 1").get())throw new Error('Unexpected memory tables in an older Loops schema.');
-      if(schemaVersion<5&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('artifact_operations','artifact_items','artifact_links','artifact_memory_links','artifact_memory_opaque','artifact_gc','artifact_gc_receipts','artifact_recovery_receipts','artifact_items_operation','artifact_links_item','artifact_memory_links_item') LIMIT 1").get())throw new Error('Unexpected artifact custody tables in an older Loops schema.');
+      if(schemaVersion<5&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('artifact_operations','artifact_items','artifact_links','artifact_memory_links','artifact_memory_opaque','artifact_legacy_origins','artifact_legacy_run_refs','artifact_gc','artifact_gc_receipts','artifact_recovery_receipts','artifact_items_operation','artifact_links_item','artifact_memory_links_item','artifact_legacy_origins_source','artifact_legacy_run_refs_origin') LIMIT 1").get())throw new Error('Unexpected artifact custody tables in an older Loops schema.');
       // Check required columns and JSON syntax without materializing cold history.
       // Schema 1 legitimately lacks the retired-admission table added by schema 2.
       const tables={metadata:'key,value',loops:'id,record',revisions:'loop_id,revision,definition',runs:'id,owner_key,state,created_at,record',admissions:'request_key,fingerprint,run_id',attempts:'run_id,sequence,node_id,state,evidence',outputs:'run_id,node_id,value',events:'sequence,run_id,state,at',...schemaVersion>=2?{retired_admissions:'request_key,record'}:{},...schemaVersion>=4?{memory_records:'scope,loop_id,key,version,deleted,value_bytes,record',memory_mutations:'scope,loop_id,mutation_id,kind,receipt_count,receipt_bytes',memory_receipts:'scope,loop_id,mutation_id,ordinal,record'}:{}};
@@ -147,7 +147,7 @@ try{database.exec(`
   `);
 // Legacy schema 4 had no artifact authority. Its preexisting JSON stays
 // byte-identical and is explicitly opaque until a fresh v5 Memory write.
-if(schemaVersion===4)markLegacyMemoryOpaque(database);
+if(schemaVersion===4){markLegacyMemoryOpaque(database);markLegacyRunsOpaque(database);}
 database.exec(`
   PRAGMA user_version=${currentSchemaVersion};
 `);
@@ -335,7 +335,7 @@ function write(next,mode='full'){
         if(database.prepare('SELECT 1 FROM outputs WHERE run_id=? AND node_id=? AND value=?').get(id,node,output))continue;
         database.prepare('INSERT INTO outputs VALUES (?,?,?) ON CONFLICT(run_id,node_id) DO UPDATE SET value=excluded.value').run(id,node,output);
       }
-      artifacts.reconcileRun(run);
+      artifacts.reconcileRun(run,{newRun:!previous});
       if(!previous||previous.state!==run.state)database.prepare('INSERT INTO events(run_id,state,at) VALUES (?,?,?)').run(id,run.state,run.updatedAt);
     }
     if(!runOnly){

@@ -506,7 +506,7 @@ describe('SQLite artifact reservations, run links and cleanup leases',()=>{
     memory.write(invocation,'research.lookalike',{text:'v4 placeholder'},'mutation_lookalike',at+1);
     await storage.close();
     const old=new DatabaseSync(file);
-    old.exec('DROP TABLE artifact_memory_links; DROP TABLE artifact_memory_opaque; DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; PRAGMA user_version=4; PRAGMA journal_mode=DELETE;');
+    old.exec('DROP TABLE artifact_legacy_run_refs; DROP TABLE artifact_legacy_origins; DROP TABLE artifact_memory_links; DROP TABLE artifact_memory_opaque; DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; PRAGMA user_version=4; PRAGMA journal_mode=DELETE;');
     const v4=JSON.parse((old.prepare("SELECT record FROM memory_records WHERE key='research.lookalike'").get() as {record:string}).record);
     v4.value={artifact:lookalike};v4.valueSha256=fingerprintJson(v4.value);
     old.prepare("UPDATE memory_records SET value_bytes=?,record=? WHERE key='research.lookalike'").run(Buffer.byteLength(JSON.stringify(v4.value)),JSON.stringify(v4));
@@ -521,12 +521,12 @@ describe('SQLite artifact reservations, run links and cleanup leases',()=>{
     expect(new MemoryCore(upgraded,{check:(id,version)=>id==='note'&&version===1}).consume(invocation,'research.note',at+1).value).toEqual({text:'held'});
     expect(new MemoryCore(upgraded,{check:(id,version)=>id==='note'&&version===1}).consume(invocation,'research.lookalike',at+2).value).toEqual({artifact:lookalike});
     const migrated=new DatabaseSync(file,{readOnly:true});
-    try{expect(migrated.prepare('SELECT count(*) AS n FROM artifact_memory_opaque').get()).toEqual({n:2});expect(migrated.prepare('SELECT count(*) AS n FROM artifact_memory_links').get()).toEqual({n:0});}
+    try{expect(migrated.prepare('SELECT count(*) AS n FROM artifact_memory_opaque').get()).toEqual({n:1});expect(migrated.prepare('SELECT count(*) AS n FROM artifact_memory_links').get()).toEqual({n:0});}
     finally{migrated.close();}
     expect(()=>new MemoryCore(upgraded,{check:(id,version)=>id==='note'&&version===1}).update(invocation,'research.lookalike',{artifact:lookalike},1,'mutation_rebind',at+3)).toThrow();
     new MemoryCore(upgraded,{check:(id,version)=>id==='note'&&version===1}).update(invocation,'research.lookalike',{text:'now v5'},1,'mutation_plain',at+4);
     const cleared=new DatabaseSync(file,{readOnly:true});
-    try{expect(cleared.prepare("SELECT count(*) AS n FROM artifact_memory_opaque WHERE memory_key='research.lookalike'").get()).toEqual({n:0});}
+    try{expect(cleared.prepare("SELECT version FROM artifact_memory_opaque WHERE memory_key='research.lookalike'").get()).toEqual({version:1});expect(cleared.prepare("SELECT version FROM memory_records WHERE key='research.lookalike'").get()).toEqual({version:2});}
     finally{cleared.close();}
     await upgraded.close();
     const corrupt=new DatabaseSync(file);corrupt.exec("INSERT INTO artifact_operations VALUES ('"+'a'.repeat(64)+"','00000000-0000-0000-0000-000000000000','reserved',1); PRAGMA journal_mode=DELETE;");corrupt.close();

@@ -75,7 +75,7 @@ describe('explicit history retention',()=>{
   });
   it('upgrades a version 1 SQLite schema without changing its existing records',async()=>{
     const {engine,storage,filename,directory}=setup();const run=await engine.test(actor,definition(),{},'upgrade');const before=storage.read();await engine.close();
-    const legacy=new DatabaseSync(filename);legacy.exec('DROP TABLE artifact_memory_links; DROP TABLE artifact_memory_opaque; DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; DROP TABLE retired_admissions; PRAGMA user_version=1;');legacy.close();
+    const legacy=new DatabaseSync(filename);legacy.exec('DROP TABLE artifact_legacy_run_refs; DROP TABLE artifact_legacy_origins; DROP TABLE artifact_memory_links; DROP TABLE artifact_memory_opaque; DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; DROP TABLE retired_admissions; PRAGMA user_version=1;');legacy.close();
     const upgraded=new SqliteStorage(filename);cleanups.push(()=>upgraded.close());expect(upgraded.read()).toEqual(before);expect(upgraded.read()?.runs[run.id].state).toBe('completed');
     expect(upgraded.integrity()).toEqual([{integrity_check:'ok'}]);
     const saved=readdirSync(directory).find(name=>name.startsWith('loops.sqlite.before-schema-5-'));expect(saved).toBeDefined();

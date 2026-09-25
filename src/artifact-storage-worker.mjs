@@ -53,7 +53,11 @@ export const artifactSchema=`
   CREATE INDEX IF NOT EXISTS artifact_links_item ON artifact_links(artifact_id,active);
   CREATE TABLE IF NOT EXISTS artifact_memory_links(scope TEXT NOT NULL,loop_id TEXT NOT NULL,memory_key TEXT NOT NULL,artifact_id TEXT NOT NULL,PRIMARY KEY(scope,loop_id,memory_key,artifact_id),FOREIGN KEY(scope,loop_id,memory_key) REFERENCES memory_records(scope,loop_id,key) ON DELETE RESTRICT,FOREIGN KEY(artifact_id) REFERENCES artifact_items(id) ON DELETE RESTRICT);
   CREATE INDEX IF NOT EXISTS artifact_memory_links_item ON artifact_memory_links(artifact_id);
-  CREATE TABLE IF NOT EXISTS artifact_memory_opaque(scope TEXT NOT NULL,loop_id TEXT NOT NULL,memory_key TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),value_sha256 TEXT NOT NULL,PRIMARY KEY(scope,loop_id,memory_key),FOREIGN KEY(scope,loop_id,memory_key) REFERENCES memory_records(scope,loop_id,key) ON DELETE RESTRICT);
+  CREATE TABLE IF NOT EXISTS artifact_memory_opaque(scope TEXT NOT NULL,loop_id TEXT NOT NULL,memory_key TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),value_sha256 TEXT NOT NULL,record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,loop_id,memory_key));
+  CREATE TABLE IF NOT EXISTS artifact_legacy_origins(origin_id TEXT PRIMARY KEY,scope TEXT NOT NULL,ref_hash TEXT NOT NULL,ref_record TEXT NOT NULL CHECK(json_valid(ref_record)),source_kind TEXT NOT NULL CHECK(source_kind IN ('v4-run','v4-memory')),source_record TEXT NOT NULL CHECK(json_valid(source_record)));
+  CREATE INDEX IF NOT EXISTS artifact_legacy_origins_source ON artifact_legacy_origins(scope,source_kind,source_record);
+  CREATE TABLE IF NOT EXISTS artifact_legacy_run_refs(run_id TEXT NOT NULL,origin_id TEXT NOT NULL,input_allowed INTEGER NOT NULL CHECK(input_allowed IN (0,1)),proof_kind TEXT NOT NULL CHECK(proof_kind IN ('v4-run','memory','retry')),proof_source TEXT NOT NULL,PRIMARY KEY(run_id,origin_id),FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE RESTRICT,FOREIGN KEY(origin_id) REFERENCES artifact_legacy_origins(origin_id) ON DELETE RESTRICT);
+  CREATE INDEX IF NOT EXISTS artifact_legacy_run_refs_origin ON artifact_legacy_run_refs(origin_id);
   CREATE TABLE IF NOT EXISTS artifact_gc(scope TEXT PRIMARY KEY,token TEXT NOT NULL,started_at TEXT NOT NULL,plan TEXT NOT NULL CHECK(json_valid(plan)));
   CREATE TABLE IF NOT EXISTS artifact_gc_receipts(scope TEXT NOT NULL,token TEXT NOT NULL,record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,token));
   CREATE TABLE IF NOT EXISTS artifact_recovery_receipts(scope TEXT NOT NULL,recovery_id TEXT NOT NULL,target_type TEXT NOT NULL CHECK(target_type IN ('publication','cleanup')),target_id TEXT NOT NULL,at TEXT NOT NULL,record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,recovery_id));
@@ -117,24 +121,53 @@ function protectedIds(database,scope){
   for(const row of database.prepare('SELECT artifact_id AS id FROM artifact_memory_links WHERE scope=?').all(scope))ids.add(row.id);
   return [...ids].sort();
 }
-function findRefs(value,nodeId,found,depth=0){
+function canonicalHash(value){
+  return createHash('sha256').update(JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?
+    Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0)):item)).digest('hex');
+}
+function legacyShapes(value){
+  const found=new Map(),pending=[value];
+  while(pending.length){
+    const item=pending.pop();
+    if(!item||typeof item!=='object')continue;
+    if(Array.isArray(item)){for(const value of item)pending.push(value);continue;}
+    if(item.kind==='loops-artifact'){found.set(canonicalHash(item),item);continue;}
+    for(const value of Object.values(item))pending.push(value);
+  }
+  return found;
+}
+function legacyOrigin(database,scope,sourceKind,source,ref){
+  const sourceRecord=JSON.stringify(source),refHash=canonicalHash(ref),originId=canonicalHash({scope,sourceKind,source,refHash});
+  database.prepare('INSERT OR IGNORE INTO artifact_legacy_origins(origin_id,scope,ref_hash,ref_record,source_kind,source_record) VALUES (?,?,?,?,?,?)').run(originId,scope,refHash,JSON.stringify(ref),sourceKind,sourceRecord);
+  return originId;
+}
+function runOpaque(database,runId,scope){
+  const all=new Set(),input=new Set();
+  for(const row of database.prepare('SELECT origins.scope,origins.ref_hash,refs.input_allowed FROM artifact_legacy_run_refs AS refs JOIN artifact_legacy_origins AS origins ON origins.origin_id=refs.origin_id WHERE refs.run_id=?').all(runId)){
+    if(row.scope!==scope)throw corrupt('legacy run owner scope');
+    all.add(row.ref_hash);if(row.input_allowed===1)input.add(row.ref_hash);
+  }
+  return {all,input};
+}
+function findRefs(value,nodeId,found,depth=0,opaque=new Set()){
   if(depth>100)throw conflict('Artifact reference nesting exceeds the limit.');
-  if(Array.isArray(value)){for(const item of value)findRefs(item,nodeId,found,depth+1);return;}
+  if(Array.isArray(value)){for(const item of value)findRefs(item,nodeId,found,depth+1,opaque);return;}
   if(!value||typeof value!=='object')return;
   if(value.kind==='loops-artifact'){
+    if(opaque.has(canonicalHash(value)))return;
     if(!validReference(value))throw conflict('Malformed artifact reference in a saved value.');
     const key=`${nodeId}\0${value.id}`,prior=found.get(key);
     if(prior&&!same(prior.reference,value))throw conflict('Conflicting artifact reference identities.');
     found.set(key,{nodeId,reference:value});return;
   }
-  for(const child of Object.values(value))findRefs(child,nodeId,found,depth+1);
+  for(const child of Object.values(value))findRefs(child,nodeId,found,depth+1,opaque);
 }
-function checkpointRefs(run){
+function checkpointRefs(run,opaque={all:new Set(),input:new Set()}){
   const found=new Map();
-  findRefs(run.input,'input',found);
-  findRefs(run.context,'context',found);
-  for(const [nodeId,value] of Object.entries(run.outputs??{}))findRefs(value,nodeId,found);
-  findRefs(run.result,'result',found);
+  findRefs(run.input,'input',found,0,opaque.input);
+  findRefs(run.context,'context',found,0,opaque.all);
+  for(const [nodeId,value] of Object.entries(run.outputs??{}))findRefs(value,nodeId,found,0,opaque.all);
+  findRefs(run.result,'result',found,0,opaque.all);
   return [...found.values()];
 }
 function memoryRefs(record){
@@ -148,8 +181,66 @@ function memoryRefs(record){
 export function markLegacyMemoryOpaque(database){
   for(const row of database.prepare('SELECT scope,loop_id,key,record FROM memory_records WHERE deleted=0').iterate()){
     const record=JSON.parse(row.record);
-    database.prepare('INSERT INTO artifact_memory_opaque(scope,loop_id,memory_key,version,value_sha256) VALUES (?,?,?,?,?)').run(row.scope,row.loop_id,row.key,record.version,record.valueSha256);
+    const refs=legacyShapes(record.value);
+    if(refs.size===0)continue;
+    database.prepare('INSERT INTO artifact_memory_opaque(scope,loop_id,memory_key,version,value_sha256,record) VALUES (?,?,?,?,?,?)').run(row.scope,row.loop_id,row.key,record.version,record.valueSha256,row.record);
+    for(const ref of refs.values())legacyOrigin(database,row.scope,'v4-memory',
+      {scope:row.scope,loopId:row.loop_id,key:row.key,version:record.version,valueSha256:record.valueSha256},ref);
   }
+}
+export function markLegacyRunsOpaque(database){
+  for(const row of database.prepare('SELECT id,owner_key,record FROM runs').iterate()){
+    const run=JSON.parse(row.record),scope=checkOwner(run.owner);
+    if(row.owner_key!==JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]))throw corrupt('legacy run owner');
+    const source={runId:row.id,ownerScope:scope,recordHash:canonicalHash(run)};
+    const input=new Set(legacyShapes(run.input).keys());
+    const all=new Map([...legacyShapes(run.input),...legacyShapes(run.context),...Object.values(run.outputs??{}).flatMap(value=>[...legacyShapes(value)]),...legacyShapes(run.result)]);
+    for(const [hash,ref] of all){
+      const originId=legacyOrigin(database,scope,'v4-run',source,ref);
+      database.prepare("INSERT INTO artifact_legacy_run_refs(run_id,origin_id,input_allowed,proof_kind,proof_source) VALUES (?,?,?,'v4-run',?)").run(row.id,originId,Number(input.has(hash)),row.id);
+    }
+  }
+}
+function committedMemoryRecords(run,node){
+  if(node.kind!=='memory'||!['consume','search'].includes(node.memory?.operation)||!Object.hasOwn(run.outputs??{},node.id))return [];
+  const output=run.outputs[node.id];
+  const committed=run.trace?.some(entry=>{
+    if(entry.nodeId!==node.id||entry.kind!=='memory'||entry.state!=='completed'||typeof entry.output!=='string')return false;
+    try{return canonicalHash(JSON.parse(entry.output))===canonicalHash(output);}catch{return false;}
+  });
+  if(!committed)return [];
+  return node.memory.operation==='consume'?[output]:Array.isArray(output?.items)?output.items:[];
+}
+function proveRunOpaque(database,run,scope,newRun){
+  // A fresh admission cannot turn its caller-supplied input into opaque data
+  // merely by carrying a later Memory output with the same shape.
+  if(newRun&&run.parentRunId){
+    const parent=database.prepare('SELECT owner_key,record FROM runs WHERE id=?').get(run.parentRunId);
+    if(parent){
+      const prior=JSON.parse(parent.record),owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
+      if(parent.owner_key!==owner||prior.definition.id!==run.definition.id||prior.definition.revision!==run.definition.revision||canonicalHash(prior.input)!==canonicalHash(run.input))throw conflict('Legacy retry ancestry changed.');
+      const carried=new Set([...legacyShapes(run.input).keys(),...legacyShapes(run.context).keys(),
+        ...Object.values(run.outputs??{}).flatMap(value=>[...legacyShapes(value).keys()]),...legacyShapes(run.result).keys()]);
+      for(const proof of database.prepare('SELECT refs.origin_id,refs.input_allowed,origins.ref_hash FROM artifact_legacy_run_refs AS refs JOIN artifact_legacy_origins AS origins ON origins.origin_id=refs.origin_id WHERE refs.run_id=?').all(run.parentRunId)){
+        if(!carried.has(proof.ref_hash))continue;
+        database.prepare("INSERT INTO artifact_legacy_run_refs(run_id,origin_id,input_allowed,proof_kind,proof_source) VALUES (?,?,?,'retry',?) ON CONFLICT(run_id,origin_id) DO UPDATE SET input_allowed=max(input_allowed,excluded.input_allowed)").run(run.id,proof.origin_id,proof.input_allowed,run.parentRunId);
+      }
+    }
+  }
+  const before=runOpaque(database,run.id,scope),inputFound=new Map();
+  findRefs(run.input,'input',inputFound,0,before.input);
+  for(const node of run.definition.nodes??[]){
+    for(const record of committedMemoryRecords(run,node)){
+      if(!record||typeof record!=='object'||record.scope!==scope||record.loopId!==run.definition.id||typeof record.key!=='string'||!Number.isSafeInteger(record.version))continue;
+      const source=database.prepare('SELECT record,value_sha256 FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=? AND version=?').get(scope,run.definition.id,record.key,record.version);
+      if(!source||canonicalHash(JSON.parse(source.record))!==canonicalHash(record)||source.value_sha256!==record.valueSha256)continue;
+      const identity=JSON.stringify({scope,loopId:run.definition.id,key:record.key,version:record.version,valueSha256:record.valueSha256});
+      for(const origin of database.prepare("SELECT origin_id FROM artifact_legacy_origins WHERE scope=? AND source_kind='v4-memory' AND source_record=?").all(scope,identity)){
+        database.prepare("INSERT OR IGNORE INTO artifact_legacy_run_refs(run_id,origin_id,input_allowed,proof_kind,proof_source) VALUES (?,?,0,'memory',?)").run(run.id,origin.origin_id,node.id);
+      }
+    }
+  }
+  return runOpaque(database,run.id,scope);
 }
 
 export function artifactStore(database){
@@ -321,8 +412,8 @@ export function artifactStore(database){
         return {token,recoveryId,outcome,retiredIds,remainingIds};
       });
     },
-    reconcileRun:(run)=>{
-      const scope=checkOwner(run.owner),desired=checkpointRefs(run),old=database.prepare('SELECT node_id,artifact_id FROM artifact_links WHERE scope=? AND run_id=? AND active=1').all(scope,run.id);
+    reconcileRun:(run,{newRun=false}={})=>{
+      const scope=checkOwner(run.owner),opaque=proveRunOpaque(database,run,scope,newRun),desired=checkpointRefs(run,opaque),old=database.prepare('SELECT node_id,artifact_id FROM artifact_links WHERE scope=? AND run_id=? AND active=1').all(scope,run.id);
       const wanted=new Set(desired.map(item=>`${item.nodeId}\0${item.reference.id}`));
       for(const link of old)if(!wanted.has(`${link.node_id}\0${link.artifact_id}`))database.prepare('UPDATE artifact_links SET active=0 WHERE scope=? AND run_id=? AND node_id=? AND artifact_id=?').run(scope,run.id,link.node_id,link.artifact_id);
       for(const {nodeId,reference} of desired){
@@ -357,11 +448,13 @@ export function artifactStore(database){
         database.prepare('INSERT INTO artifact_memory_links(scope,loop_id,memory_key,artifact_id) VALUES (?,?,?,?)').run(scope,loopId,key,ref.id);
         database.prepare('UPDATE artifact_items SET ever_linked=1 WHERE id=?').run(ref.id);
       }
-      database.prepare('DELETE FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=?').run(scope,loopId,key);
       const links=metadataUsage(database,scope).links;
       if(links.n>limits.links||links.b>limits.linkBytes)throw quota('artifact link history and live memory links');
     },
-    retireRun:(runId)=>database.prepare('UPDATE artifact_links SET active=0 WHERE run_id=?').run(runId),
+    retireRun:(runId)=>{
+      database.prepare('UPDATE artifact_links SET active=0 WHERE run_id=?').run(runId);
+      database.prepare('DELETE FROM artifact_legacy_run_refs WHERE run_id=?').run(runId);
+    },
   };
 }
 
@@ -371,7 +464,9 @@ export function validateArtifactStore(database){
     artifact_items:[['id','TEXT',0,1],['scope','TEXT',1,0],['operation_id','TEXT',1,0],['status','TEXT',1,0],['ever_linked','INTEGER',1,0],['released_at','TEXT',0,0],['record','TEXT',1,0]],
     artifact_links:[['scope','TEXT',1,1],['run_id','TEXT',1,2],['node_id','TEXT',1,3],['artifact_id','TEXT',1,4],['active','INTEGER',1,0]],
     artifact_memory_links:[['scope','TEXT',1,1],['loop_id','TEXT',1,2],['memory_key','TEXT',1,3],['artifact_id','TEXT',1,4]],
-    artifact_memory_opaque:[['scope','TEXT',1,1],['loop_id','TEXT',1,2],['memory_key','TEXT',1,3],['version','INTEGER',1,0],['value_sha256','TEXT',1,0]],
+    artifact_memory_opaque:[['scope','TEXT',1,1],['loop_id','TEXT',1,2],['memory_key','TEXT',1,3],['version','INTEGER',1,0],['value_sha256','TEXT',1,0],['record','TEXT',1,0]],
+    artifact_legacy_origins:[['origin_id','TEXT',0,1],['scope','TEXT',1,0],['ref_hash','TEXT',1,0],['ref_record','TEXT',1,0],['source_kind','TEXT',1,0],['source_record','TEXT',1,0]],
+    artifact_legacy_run_refs:[['run_id','TEXT',1,1],['origin_id','TEXT',1,2],['input_allowed','INTEGER',1,0],['proof_kind','TEXT',1,0],['proof_source','TEXT',1,0]],
     artifact_gc:[['scope','TEXT',0,1],['token','TEXT',1,0],['started_at','TEXT',1,0],['plan','TEXT',1,0]],
     artifact_gc_receipts:[['scope','TEXT',1,1],['token','TEXT',1,2],['record','TEXT',1,0]],
     artifact_recovery_receipts:[['scope','TEXT',1,1],['recovery_id','TEXT',1,2],['target_type','TEXT',1,0],['target_id','TEXT',1,0],['at','TEXT',1,0],['record','TEXT',1,0]],
@@ -385,12 +480,12 @@ export function validateArtifactStore(database){
     artifact_items:[[0,0,'artifact_operations','scope','scope','RESTRICT'],[0,1,'artifact_operations','operation_id','operation_id','RESTRICT']],
     artifact_links:[[0,0,'artifact_items','artifact_id','id','RESTRICT']],
     artifact_memory_links:[[0,0,'artifact_items','artifact_id','id','RESTRICT'],[1,0,'memory_records','scope','scope','RESTRICT'],[1,1,'memory_records','loop_id','loop_id','RESTRICT'],[1,2,'memory_records','memory_key','key','RESTRICT']],
-    artifact_memory_opaque:[[0,0,'memory_records','scope','scope','RESTRICT'],[0,1,'memory_records','loop_id','loop_id','RESTRICT'],[0,2,'memory_records','memory_key','key','RESTRICT']],
+    artifact_legacy_run_refs:[[0,0,'artifact_legacy_origins','origin_id','origin_id','RESTRICT'],[1,0,'runs','run_id','id','RESTRICT']],
   })){
     const actual=database.prepare(`PRAGMA foreign_key_list(${table})`).all().map(row=>[row.id,row.seq,row.table,row.from,row.to,row.on_delete]);
     if(!same(actual,expected))throw corrupt(`foreign key ${table}`);
   }
-  for(const [name,table,columns] of [['artifact_items_operation','artifact_items',['scope','operation_id']],['artifact_links_item','artifact_links',['artifact_id','active']],['artifact_memory_links_item','artifact_memory_links',['artifact_id']]]){
+  for(const [name,table,columns] of [['artifact_items_operation','artifact_items',['scope','operation_id']],['artifact_links_item','artifact_links',['artifact_id','active']],['artifact_memory_links_item','artifact_memory_links',['artifact_id']],['artifact_legacy_origins_source','artifact_legacy_origins',['scope','source_kind','source_record']],['artifact_legacy_run_refs_origin','artifact_legacy_run_refs',['origin_id']]]){
     const index=database.prepare('SELECT type,tbl_name FROM sqlite_schema WHERE name=?').get(name);
     const info=database.prepare(`PRAGMA index_info(${name})`).all().map(row=>row.name);
     if(index?.type!=='index'||index.tbl_name!==table||!same(info,columns))throw corrupt(`index ${name}`);
@@ -410,16 +505,15 @@ export function validateArtifactStore(database){
   for(const link of database.prepare('SELECT scope,run_id,node_id,artifact_id,active FROM artifact_links').iterate()){
     const item=database.prepare('SELECT scope,status,record FROM artifact_items WHERE id=?').get(link.artifact_id);
     const run=database.prepare('SELECT record FROM runs WHERE id=?').get(link.run_id);
-    if(!item||item.scope!==link.scope||!uuid.test(link.artifact_id)||typeof link.run_id!=='string'||!link.run_id||typeof link.node_id!=='string'||!link.node_id||![0,1].includes(link.active)||link.active===1&&item.status!=='published'||link.active===1&&!run||link.active===1&&!checkpointRefs(JSON.parse(run.record)).some(found=>found.nodeId===link.node_id&&found.reference.id===link.artifact_id&&same(found.reference,JSON.parse(item.record))))throw corrupt('run link');
+    if(!item||item.scope!==link.scope||!uuid.test(link.artifact_id)||typeof link.run_id!=='string'||!link.run_id||typeof link.node_id!=='string'||!link.node_id||![0,1].includes(link.active)||link.active===1&&item.status!=='published'||link.active===1&&!run||link.active===1&&!checkpointRefs(JSON.parse(run.record),runOpaque(database,link.run_id,link.scope)).some(found=>found.nodeId===link.node_id&&found.reference.id===link.artifact_id&&same(found.reference,JSON.parse(item.record))))throw corrupt('run link');
   }
-  for(const row of database.prepare('SELECT scope,loop_id,memory_key,version,value_sha256 FROM artifact_memory_opaque').iterate()){
-    const saved=database.prepare('SELECT version,deleted,record FROM memory_records WHERE scope=? AND loop_id=? AND key=?').get(row.scope,row.loop_id,row.memory_key);
-    if(!saved||saved.deleted!==0||saved.version!==row.version||!digest.test(row.value_sha256)||JSON.parse(saved.record).valueSha256!==row.value_sha256||
-      database.prepare('SELECT 1 FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=? LIMIT 1').get(row.scope,row.loop_id,row.memory_key))throw corrupt('legacy opaque memory identity');
+  for(const row of database.prepare('SELECT scope,loop_id,memory_key,version,value_sha256,record FROM artifact_memory_opaque').iterate()){
+    const original=JSON.parse(row.record);
+    if(!digest.test(row.scope)||!digest.test(row.value_sha256)||original.scope!==row.scope||original.loopId!==row.loop_id||original.key!==row.memory_key||original.version!==row.version||original.valueSha256!==row.value_sha256||original.value===undefined||canonicalHash(original.value)!==row.value_sha256||original.deleted!==false)throw corrupt('legacy opaque memory identity');
   }
   for(const row of database.prepare('SELECT scope,loop_id,key,deleted,record FROM memory_records').iterate()){
-    const opaque=database.prepare('SELECT 1 FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=?').get(row.scope,row.loop_id,row.key);
-    if(opaque)continue;
+    const opaque=database.prepare('SELECT record FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=?').get(row.scope,row.loop_id,row.key);
+    if(opaque&&same(JSON.parse(opaque.record),JSON.parse(row.record)))continue;
     const expected=memoryRefs(JSON.parse(row.record));
     const links=database.prepare('SELECT artifact_id FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=? ORDER BY artifact_id').all(row.scope,row.loop_id,row.key).map(item=>item.artifact_id);
     if(!same(links,[...new Set(expected.map(ref=>ref.id))].sort())||row.deleted===1&&links.length)throw corrupt('memory reference links');
@@ -427,6 +521,36 @@ export function validateArtifactStore(database){
       const item=database.prepare('SELECT scope,status,record,ever_linked FROM artifact_items WHERE id=?').get(ref.id);
       if(ref.ownerScope!==row.scope||!item||item.scope!==row.scope||item.status!=='published'||item.ever_linked!==1||!same(JSON.parse(item.record),ref))throw corrupt('memory reference custody');
     }
+  }
+  for(const origin of database.prepare('SELECT origin_id,scope,ref_hash,ref_record,source_kind,source_record FROM artifact_legacy_origins').iterate()){
+    const ref=JSON.parse(origin.ref_record),source=JSON.parse(origin.source_record);
+    if(!digest.test(origin.origin_id)||!digest.test(origin.scope)||canonicalHash(ref)!==origin.ref_hash||ref?.kind!=='loops-artifact'||
+      canonicalHash({scope:origin.scope,sourceKind:origin.source_kind,source,refHash:origin.ref_hash})!==origin.origin_id)throw corrupt('legacy opaque origin identity');
+    if(origin.source_kind==='v4-memory'){
+      if(!exact(source,['scope','loopId','key','version','valueSha256'])||source.scope!==origin.scope||!Number.isSafeInteger(source.version)||!digest.test(source.valueSha256))throw corrupt('legacy memory origin');
+      const saved=database.prepare('SELECT record FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=?').get(source.scope,source.loopId,source.key);
+      if(!saved){throw corrupt('legacy memory origin receipt');}
+      const record=JSON.parse(saved.record);
+      if(record.version!==source.version||record.valueSha256!==source.valueSha256||!legacyShapes(record.value).has(origin.ref_hash))throw corrupt('legacy memory origin value');
+    }else if(origin.source_kind==='v4-run'){
+      if(!exact(source,['runId','ownerScope','recordHash'])||source.ownerScope!==origin.scope||typeof source.runId!=='string'||!source.runId||!digest.test(source.recordHash))throw corrupt('legacy run origin');
+    }else throw corrupt('legacy origin kind');
+  }
+  for(const proof of database.prepare('SELECT refs.run_id,refs.input_allowed,refs.proof_kind,refs.proof_source,origins.scope,origins.ref_hash,origins.source_kind,origins.source_record FROM artifact_legacy_run_refs AS refs JOIN artifact_legacy_origins AS origins ON origins.origin_id=refs.origin_id').iterate()){
+    const row=database.prepare('SELECT owner_key,record FROM runs WHERE id=?').get(proof.run_id);
+    if(!row||![0,1].includes(proof.input_allowed))throw corrupt('legacy run proof');
+    const run=JSON.parse(row.record);
+    if(proof.scope!==scopeFor(run.owner)||proof.input_allowed===1&&!legacyShapes(run.input).has(proof.ref_hash))throw corrupt('legacy run proof');
+    if(proof.proof_kind==='v4-run'){
+      if(proof.source_kind!=='v4-run'||proof.proof_source!==proof.run_id||JSON.parse(proof.source_record).runId!==proof.run_id)throw corrupt('legacy run migration proof');
+    }else if(proof.proof_kind==='memory'){
+      if(proof.source_kind!=='v4-memory'||proof.input_allowed!==0)throw corrupt('legacy Memory run proof');
+      const node=run.definition.nodes.find(item=>item.id===proof.proof_source),source=JSON.parse(proof.source_record);
+      const original=database.prepare('SELECT record FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=? AND version=?').get(source.scope,source.loopId,source.key,source.version);
+      if(!node||!original||!committedMemoryRecords(run,node).some(record=>canonicalHash(record)===canonicalHash(JSON.parse(original.record))))throw corrupt('legacy Memory authored proof');
+    }else if(proof.proof_kind==='retry'){
+      if(proof.proof_source!==run.parentRunId||run.requestFingerprintVersion!==2)throw corrupt('legacy retry proof');
+    }else throw corrupt('legacy run proof kind');
   }
   for(const lease of database.prepare('SELECT scope,token,started_at,plan FROM artifact_gc').iterate())if(!digest.test(lease.scope)||!uuid.test(lease.token)||!iso(lease.started_at)||!validPlan(JSON.parse(lease.plan),lease.scope))throw corrupt('cleanup lease');
   for(const receipt of database.prepare('SELECT scope,token,record FROM artifact_gc_receipts').iterate()){
@@ -450,7 +574,7 @@ export function validateArtifactStore(database){
     }
   }
   for(const {scope} of database.prepare(`SELECT scope FROM artifact_operations UNION SELECT scope FROM artifact_gc_receipts
-    UNION SELECT scope FROM artifact_recovery_receipts UNION SELECT scope FROM artifact_links UNION SELECT scope FROM artifact_memory_links`).iterate()){
+    UNION SELECT scope FROM artifact_recovery_receipts UNION SELECT scope FROM artifact_links UNION SELECT scope FROM artifact_memory_links UNION SELECT scope FROM artifact_legacy_origins`).iterate()){
     const u=metadataUsage(database,scope);
     if(u.operations.n>limits.operations||u.operations.b>limits.operationBytes||u.items.n>limits.items||u.items.b>limits.itemBytes||u.live>limits.live||
       u.links.n>limits.links||u.links.b>limits.linkBytes||u.audit.n>limits.receipts||u.audit.b>limits.receiptBytes)throw corrupt('metadata quota');

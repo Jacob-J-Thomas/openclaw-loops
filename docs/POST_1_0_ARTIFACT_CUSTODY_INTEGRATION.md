@@ -86,12 +86,37 @@ the link index before opening a writable store.
 
 Schema 4 had no artifact custody authority. During its backed-up migration to
 the still-unreleased v5 schema, existing Memory values are preserved as
-opaque legacy data, with a marker bound to each row's version and value hash.
+opaque legacy data, with an immutable provenance receipt bound to each row's
+version, value hash, and original JSON.
 Even artifact-shaped JSON in those values receives no custody link or grant.
-A later v5 Memory update removes the marker only in the same transaction as
-new reference validation and link replacement. Tampering with a marker or
-its row blocks cold writable admission. This preserves old data without
-allowing a lookalike value to claim published artifact bytes.
+A later v5 Memory update must validate new references and replace live links
+in the same transaction. It does not erase the old receipt: authorized
+Memory-consume output and its exact copied descendants may need that proof
+after the key changes. The current row becomes strict once its version or
+value changes. Tampering with a receipt or current link blocks cold writable
+admission. This preserves old data without allowing a lookalike value to
+claim published artifact bytes.
+
+Schema-4 Run checkpoints receive separate immutable origin receipts for
+artifact-shaped ordinary JSON. New Run admission requires strict custody for
+all input references. A run may carry a canonical-JSON-identical legacy
+subtree through authored Memory consume/search outputs, return results and
+context; the SQL worker verifies the exact owner, loop, Memory row version,
+value hash and original receipt before recording that run's opaque origin.
+Explicit retry admissions inherit only the same verified origin IDs from
+their parent when the exact canonical subtree is still resident in the new
+retry state. Inheritance occurs at admission, not at later checkpoints, and
+the origin persists independently when historical runs are retired. Changed
+IDs, owners or digests lose the exemption. This provenance
+never constitutes an artifact publication or permission to read file bytes.
+Current Engine retention keeps a retry parent while its child remains, then
+permits the child and parent to retire in order. The retained origin receipt
+does not rely on either run row remaining. That behavior is covered by the
+local retry/retention regression; a child-after-parent-retirement run is not
+an available public retention transition today.
+The current proof collector covers the v5 root node vocabulary on this
+candidate; #234/#254 nested frame output paths require a coordinated extension
+when those products are integrated.
 
 The older uncoordinated `put`, `import`, `previewCleanup` and `applyCleanup`
 remain preparatory core primitives for focused tests; the installed engine
