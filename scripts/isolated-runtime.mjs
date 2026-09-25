@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import {spawn,spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,readlinkSync,realpathSync,renameSync,rmSync,statSync,writeFileSync} from 'node:fs';
+import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,readlinkSync,realpathSync,renameSync,rmdirSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {createConnection} from 'node:net';
 import {constants,platform} from 'node:os';
 import {setImmediate,setInterval,clearInterval,setTimeout,clearTimeout} from 'node:timers';
-import {dirname,isAbsolute,join,resolve,sep} from 'node:path';
+import {dirname,isAbsolute,join,relative,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const supported=new Set(['v24.16.0','v26.1.0']);
@@ -14,6 +14,7 @@ const canonical=path=>realpathSync(resolve(path));
 const privateDir=path=>mkdirSync(path,{recursive:true,mode:0o700});
 const inside=(path,parent)=>path.startsWith(parent+sep);
 const live=pid=>{try{process.kill(pid,0);return true;}catch{return false;}};
+const groupAlive=pid=>{try{process.kill(-pid,0);return true;}catch(error){if(error.code==='ESRCH')return false;throw error;}};
 const existsEntry=path=>{try{lstatSync(path);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
 export function ollamaPort(source=process.env){
   const raw=source.LOOPS_OLLAMA_PORT??'11439';
@@ -121,8 +122,32 @@ function checkInherited(source,expected){
 function validateModelSelection(selection,prefix){
   if(selection===undefined)return;
   const model=typeof selection==='string'?{primary:selection,fallbacks:[]}:selection;
-  assert(typeof model?.primary==='string'&&model.primary.startsWith(prefix),'Default model must use this profile\'s approved provider.');
-  assert(Array.isArray(model.fallbacks??[])&&(model.fallbacks??[]).every(value=>typeof value==='string'&&value.startsWith(prefix)),'Model fallbacks must use this profile\'s approved provider.');
+  assert(model&&typeof model==='object'&&!Array.isArray(model),'Model selection must be a provider/model reference.');
+  const approved=value=>typeof value==='string'&&value.startsWith(prefix)&&value.length>prefix.length;
+  assert(model.primary===undefined||approved(model.primary),'Model must use this profile\'s approved provider.');
+  assert(Array.isArray(model.fallbacks??[])&&(model.fallbacks??[]).every(approved),'Model fallbacks must use this profile\'s approved provider.');
+}
+function confinedPath(value,parent,project,label){
+  if(value===undefined)return;
+  assert(typeof value==='string'&&value.length>0,label+' must be a path.');
+  const target=resolve(project,value);
+  assert(target===parent||inside(target,parent),label+' escapes this profile.');
+  let ancestor=target;
+  while(!existsEntry(ancestor))ancestor=dirname(ancestor);
+  const effective=resolve(canonical(ancestor),relative(ancestor,target));
+  assert(effective===parent||inside(effective,parent),label+' redirects outside this profile.');
+}
+function validateAgentModels(agent,prefix){
+  validateModelSelection(agent.model,prefix);
+  for(const [key,entry] of Object.entries(agent.models??{})){
+    assert(key.startsWith(prefix)&&key.length>prefix.length,'Configured model route uses an unapproved provider.');
+    assert(entry?.agentRuntime===undefined&&entry?.pickerRuntimes===undefined,'Model route runtime overrides are not admitted.');
+  }
+  for(const key of agent.modelPolicy?.allow??[])assert(typeof key==='string'&&key.startsWith(prefix)&&key.length>prefix.length,'Agent model policy uses an unapproved provider.');
+  for(const key of ['utilityModel','imageModel','voiceModel','pdfModel'])validateModelSelection(agent[key],prefix);
+  for(const model of Object.values(agent.mediaModels??{}))validateModelSelection(model,prefix);
+  validateModelSelection(agent.subagents?.model,prefix);
+  assert(agent.runtime===undefined,'Explicit agent runtime overrides are not admitted in disposable profiles.');
 }
 export function validateProfileConfig(config,name,project,profile,selectedOllamaPort=11439){
   const provider=name==='ollama'?'ollama':'openai',prefix=provider+'/';
@@ -138,12 +163,22 @@ export function validateProfileConfig(config,name,project,profile,selectedOllama
     assert.deepEqual(selected.agentRuntime,{id:'codex'},'Codex runtime must not carry an external path or provider override.');
   }
   assert(config.agents?.defaults?.model,'Default model selection is required.');
-  validateModelSelection(config.agents?.defaults?.model,prefix);
-  for(const key of Object.keys(config.agents?.defaults?.models??{}))assert(key.startsWith(prefix),'Configured model routes must use this profile\'s approved provider.');
-  for(const agent of config.agents?.list??[]){
-    validateModelSelection(agent.model,prefix);
-    if(agent.workspace)assert.equal(resolve(project,agent.workspace),join(profile,'workspace'),'Agent workspace escapes this profile.');
+  assert(typeof (typeof config.agents.defaults.model==='string'?config.agents.defaults.model:config.agents.defaults.model.primary)==='string','Default model needs an explicit primary provider/model.');
+  const workspace=join(profile,'workspace'),state=join(profile,'state');
+  const defaults=config.agents.defaults;
+  validateAgentModels(defaults,prefix);
+  confinedPath(defaults.workspace,workspace,project,'Default workspace');
+  confinedPath(defaults.cwd,workspace,project,'Default cwd');
+  confinedPath(defaults.repoRoot,workspace,project,'Default repoRoot');
+  assert(config.agents?.list===undefined,'Obsolete agent list is not an admitted host roster.');
+  for(const [id,agent] of Object.entries(config.agents?.entries??{})){
+    assert(/^[a-z0-9_][a-z0-9_-]{0,63}$/i.test(id),'Invalid agent id.');
+    validateAgentModels(agent,prefix);
+    confinedPath(agent.workspace,workspace,project,'Agent workspace');
+    confinedPath(agent.cwd,workspace,project,'Agent cwd');
+    confinedPath(agent.agentDir,state,project,'Agent directory');
   }
+  assert(config.session?.store===undefined,'Explicit session-store overrides are not admitted in disposable profiles.');
   assert.equal(config.discovery?.mdns?.mode,'off','Development discovery must remain disabled.');
   assert(!config.gateway?.tailscale||config.gateway.tailscale.mode==='off','Gateway tailnet exposure is not admitted.');
   assert(!config.gateway?.remote,'Remote Gateway configuration is not admitted.');
@@ -244,45 +279,70 @@ export function globalInferenceLease(anchor='/tmp'){
   assert(details.uid===process.getuid()&&(details.mode&0o777)===0o700,'Global inference lease directory must be owned and private.');
   return join(directory,'worker.lease.json');
 }
+function withLeaseGate(file,action){
+  const gate=file+'.gate';
+  containedDir(dirname(file));
+  let acquired=false;
+  for(let attempt=0;attempt<100;attempt++){
+    try{mkdirSync(gate,{mode:0o700});acquired=true;break;}
+    catch(error){
+      if(error.code!=='EEXIST')throw error;
+      const entry=lstatSync(gate);
+      assert(entry.isDirectory()&&!entry.isSymbolicLink()&&canonical(gate)===gate&&
+        entry.uid===process.getuid()&&(entry.mode&0o777)===0o700,'Lease acquisition gate must be a real private owned directory.');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);
+    }
+  }
+  assert(acquired,'Lease acquisition gate is held; inspect it before retrying.');
+  try{return action();}
+  finally{rmdirSync(gate);}
+}
 export function acquireLease(file,kind,owner=null,receiptDir=null,port=null){
   containedDir(dirname(file));
   const receipt={kind,owner,port,parentPid:process.pid,childPid:null,phase:'starting',id:randomUUID(),startedAt:new Date().toISOString()};
-  for(let attempt=0;attempt<2;attempt++){
-    try{
-      writeFileSync(file,JSON.stringify(receipt)+'\n',{flag:'wx',mode:0o600});
+  return withLeaseGate(file,()=>{
+    if(existsEntry(file)){
+      assert(!lstatSync(file).isSymbolicLink(),kind+' lease path is a symlink.');
+      let current;
+      try{current=JSON.parse(readFileSync(file,'utf8'));}catch(error){throw Error(kind+' lease is unreadable; inspect it before retrying.',{cause:error});}
+      if(!Number.isInteger(current.parentPid)||live(current.parentPid)||current.childPid&&live(current.childPid)||current.childPid&&groupAlive(current.childPid))throw Error(kind+' is owned by another live process.');
+      rmSync(file);
+    }
+    writeFileSync(file,JSON.stringify(receipt)+'\n',{flag:'wx',mode:0o600});
       const update=fields=>{
-        const current=JSON.parse(readFileSync(file,'utf8'));
-        assert.equal(current.id,receipt.id,'Owned lease changed during service startup.');
-        Object.assign(receipt,fields);
-        const staged=file+'.'+randomUUID()+'.tmp';
-        writeFileSync(staged,JSON.stringify(receipt)+'\n',{flag:'wx',mode:0o600});
-        renameSync(staged,file);
+        withLeaseGate(file,()=>{
+          assert(!lstatSync(file).isSymbolicLink(),'Owned lease path must not redirect through a symlink.');
+          const current=JSON.parse(readFileSync(file,'utf8'));
+          assert.equal(current.id,receipt.id,'Owned lease changed during service startup.');
+          Object.assign(receipt,fields);
+          const staged=file+'.'+randomUUID()+'.tmp';
+          try{writeFileSync(staged,JSON.stringify(receipt)+'\n',{flag:'wx',mode:0o600});renameSync(staged,file);}
+          finally{if(existsEntry(staged))rmSync(staged);}
+        });
       };
       return {
         markChild(pid){assert(Number.isInteger(pid)&&pid>0,'Owned child did not start.');update({childPid:pid});},
         markReady(){assert(receipt.childPid&&live(receipt.childPid),'Owned child exited before readiness.');update({phase:'ready',readyAt:new Date().toISOString()});},
         release(outcome={}){
           let removed=false;
-          try{if(JSON.parse(readFileSync(file,'utf8')).id===receipt.id){rmSync(file);removed=true;}}catch{/* retain foreign or already missing lease */}
+          let releaseFailure=null;
+          try{withLeaseGate(file,()=>{
+            if(existsEntry(file)){
+              assert(!lstatSync(file).isSymbolicLink(),'Owned lease path must not redirect through a symlink.');
+              if(JSON.parse(readFileSync(file,'utf8')).id===receipt.id&&outcome.groupSettled!==false){rmSync(file);removed=true;}
+            }
+          });}catch{releaseFailure='lease-release-failed';}
           if(receiptDir){
             containedDir(receiptDir);
-            const saved={...receipt,endedAt:new Date().toISOString(),exitCode:outcome.code??null,signal:outcome.signal??null,leaseRemoved:removed,childAlive:receipt.childPid?live(receipt.childPid):false};
+            const saved={...receipt,endedAt:new Date().toISOString(),exitCode:outcome.code??null,signal:outcome.signal??null,
+              wrapperExitCode:removed?outcome.wrapperExitCode??null:1,supervisionFailure:outcome.supervisionFailure??releaseFailure??(!removed?'lease-retained':null),
+              groupSettled:outcome.groupSettled??null,leaseRemoved:removed,childAlive:receipt.childPid?live(receipt.childPid):false};
             writeFileSync(join(receiptDir,'cleanup-'+receipt.id+'.json'),JSON.stringify(saved,null,2)+'\n',{flag:'wx',mode:0o600});
           }
           return removed;
         },
       };
-    }catch(error){
-      if(error.code!=='EEXIST')throw error;
-      if(lstatSync(file).isSymbolicLink())throw Error(kind+' lease path is a symlink.',{cause:error});
-      let current;
-      try{current=JSON.parse(readFileSync(file,'utf8'));}catch(parseError){throw Error(kind+' lease is unreadable; inspect it before retrying.',{cause:parseError});}
-      if(!Number.isInteger(current.parentPid)||live(current.parentPid)||current.childPid&&live(current.childPid))throw Error(kind+' is owned by another live process.',{cause:error});
-      if(JSON.parse(readFileSync(file,'utf8')).id!==current.id)continue;
-      rmSync(file);
-    }
-  }
-  throw Error('Unable to acquire '+kind+' lease.');
+  });
 }
 export function activeLease(file,kind,owner,port=null){
   try{
@@ -294,7 +354,7 @@ export function activeLease(file,kind,owner,port=null){
   }catch{return false;}
 }
 export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=null,options={}){
-  let child,ownedLease,readinessTimer,guardTimer,stopTimer,result,pendingSignal=null;
+  let child,ownedLease,readinessTimer,guardTimer,stopTimer,result,pendingSignal=null,supervisionFailure=null,ending=false,readyReached=readyPort===null,groupSettled=true;
   const signalExitCode=signal=>{
     const number=constants.signals[signal];
     assert(Number.isInteger(number),'Unknown child termination signal: '+signal);
@@ -306,10 +366,20 @@ export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=n
   };
   const forward=signal=>{
     pendingSignal??=signal;
-    if(child?.exitCode===null&&child.signalCode===null){
+    if(child?.pid&&(child.exitCode===null&&child.signalCode===null||groupAlive(child.pid))){
       signalOwned(signal);
-      if(!stopTimer)stopTimer=setTimeout(()=>{if(child?.exitCode===null&&child.signalCode===null)signalOwned('SIGKILL');},5000);
+      if(!stopTimer)stopTimer=setTimeout(()=>{if(child?.pid&&groupAlive(child.pid))signalOwned('SIGKILL');},5000);
     }
+  };
+  const settled=async()=>{
+    if(!child?.pid||!groupAlive(child.pid))return true;
+    signalOwned('SIGTERM');
+    for(let attempt=0;attempt<80&&groupAlive(child.pid);attempt++)await new Promise(done=>setTimeout(done,25));
+    if(groupAlive(child.pid)){
+      signalOwned('SIGKILL');
+      for(let attempt=0;attempt<80&&groupAlive(child.pid);attempt++)await new Promise(done=>setTimeout(done,25));
+    }
+    return !groupAlive(child.pid);
   };
   const onSigint=()=>forward('SIGINT'),onSigterm=()=>forward('SIGTERM');
   process.on('SIGINT',onSigint);process.on('SIGTERM',onSigterm);
@@ -323,46 +393,55 @@ export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=n
       return;
     }
     child=spawn(binary,args,{stdio:'inherit',env,detached:true});
+    if(child.pid)groupSettled=false;
     if(pendingSignal)forward(pendingSignal);
     if(ownedLease&&child.pid)ownedLease.markChild(child.pid);
     if(ownedLease&&readyPort!==null){
       let checking=false;
       readinessTimer=setInterval(async()=>{
-        if(checking||!child||!live(child.pid))return;
+        if(ending||checking||!child||!live(child.pid))return;
         checking=true;
         try{
           if(await portOccupied(readyPort)){
             if(!ownedLoopbackListener(child.pid,readyPort))throw Error('Selected port is not listening in the owned child process.');
-            ownedLease.markReady();clearInterval(readinessTimer);
+            ownedLease.markReady();readyReached=true;clearInterval(readinessTimer);
           }
         }
-        catch(error){console.error('Owned service readiness failed: '+error.message);forward('SIGTERM');}
+        catch(error){supervisionFailure??='readiness-failed';console.error('Owned service readiness failed: '+error.message);forward('SIGTERM');}
         finally{checking=false;}
       },100);
     }
     if(guard)guardTimer=setInterval(async()=>{
-      try{if(!await guard())forward('SIGTERM');}
-      catch{forward('SIGTERM');}
+      if(ending)return;
+      try{if(!await guard()){supervisionFailure??='authority-guard-failed';forward('SIGTERM');}}
+      catch{supervisionFailure??='authority-guard-error';forward('SIGTERM');}
     },500);
     result=await new Promise((done,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>done({code,signal}));});
-    process.exitCode=result.signal?signalExitCode(result.signal):result.code??1;
+    ending=true;
+    clearInterval(readinessTimer);clearInterval(guardTimer);clearTimeout(stopTimer);
+    if(!readyReached)supervisionFailure??='readiness-not-achieved';
+    groupSettled=await settled();
+    if(!groupSettled)supervisionFailure??='process-group-unsettled';
+    result.groupSettled=groupSettled;
+    process.exitCode=supervisionFailure?1:result.signal?signalExitCode(result.signal):result.code??1;
   }catch(error){
-    if(child?.pid&&child.exitCode===null&&child.signalCode===null){
-      signalOwned('SIGTERM');
-      await new Promise(done=>{
-        if(child.exitCode!==null||child.signalCode!==null){done();return;}
-        const timeout=setTimeout(()=>{signalOwned('SIGKILL');done();},2000);
-        child.once('exit',()=>{clearTimeout(timeout);done();});
-      });
+    supervisionFailure??='supervision-error';
+    ending=true;
+    clearInterval(readinessTimer);clearInterval(guardTimer);
+    if(child?.pid){
+      try{groupSettled=await settled();}
+      catch{supervisionFailure='process-group-unverified';}
+      if(!groupSettled&&supervisionFailure==='supervision-error')supervisionFailure='process-group-unsettled';
+      result??={code:child.exitCode,signal:child.signalCode,groupSettled};
     }
     throw error;
   }finally{
     clearInterval(readinessTimer);clearInterval(guardTimer);clearTimeout(stopTimer);
     process.off('SIGINT',onSigint);process.off('SIGTERM',onSigterm);
-    if(child?.pid&&child.exitCode===null&&child.signalCode===null)signalOwned('SIGTERM');
     if(ownedLease){
-      const removed=ownedLease.release(result??{});
-      console.error(removed?'Owned child exited; lease released and cleanup receipt saved.':'Owned child exited; lease mismatch recorded in cleanup receipt.');
+      const removed=ownedLease.release({...result,groupSettled,supervisionFailure,wrapperExitCode:process.exitCode??null});
+      if(!removed)process.exitCode=1;
+      console.error(removed?'Owned process group settled; lease released and cleanup receipt saved.':'Owned process group or lease ownership is uncertain; lease retained and cleanup receipt saved.');
     }
   }
 }

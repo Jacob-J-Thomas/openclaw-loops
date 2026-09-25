@@ -1,6 +1,6 @@
 import {afterEach,describe,it,expect} from 'vitest';
 import {createHash} from 'node:crypto';
-import {existsSync,mkdtempSync,mkdirSync,readFileSync,realpathSync,readdirSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
+import {copyFileSync,existsSync,mkdtempSync,mkdirSync,readFileSync,realpathSync,readdirSync,rmdirSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {spawn,spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
@@ -174,7 +174,9 @@ describe('isolated runtime admission',()=>{
   });
   it('releases its Gateway lease after the owned child exits',async()=>{
     const f=await fixture('codex-test'),lease=join(f.profile,'gateway.lease.json');
-    await runOpenClaw(f.root,['gateway','run'],{LOOPS_PROFILE:'codex-test',LOOPS_TEST_OUTPUT:f.output});
+    const before=process.exitCode;
+    try{await runOpenClaw(f.root,['gateway','run'],{LOOPS_PROFILE:'codex-test',LOOPS_TEST_OUTPUT:f.output});}
+    finally{expect(process.exitCode).toBe(1);process.exitCode=before;}
     expect(JSON.parse(readFileSync(f.output)).args).toEqual(['gateway','run']);
     expect(()=>readFileSync(lease)).toThrow();
     const receipts=readdirSync(join(f.profile,'receipts'));
@@ -182,6 +184,7 @@ describe('isolated runtime admission',()=>{
     const cleanup=JSON.parse(readFileSync(join(f.profile,'receipts',receipts[0])));
     expect(cleanup.leaseRemoved).toBe(true);expect(cleanup.childAlive).toBe(false);
     expect(cleanup.childPid).toBeGreaterThan(0);expect(cleanup.exitCode).toBe(0);
+    expect(cleanup.wrapperExitCode).toBe(1);expect(cleanup.supervisionFailure).toBe('readiness-not-achieved');
     expect(cleanup.endedAt).toBeTruthy();
   });
   it('allows only one live lease and removes only its own receipt',async()=>{
@@ -377,4 +380,142 @@ describe('isolated runtime admission',()=>{
     symlinkSync(foreign,join(f.root,'openclaw-loops-inference-'+process.getuid()));
     expect(()=>globalInferenceLease(f.root)).toThrow(/symlink/);
   });
+});
+
+describe('round-two isolation boundaries',()=>{
+  it('validates canonical agent entries and effective paths and model routes',async()=>{
+    const f=await fixture(),file=join(f.profile,'openclaw.json'),original=JSON.parse(readFileSync(file));
+    const foreign=realpathSync(mkdtempSync(join(tmpdir(),'loops-foreign-agent-')));roots.push(foreign);
+    const valid=structuredClone(original);
+    valid.agents.entries={main:{workspace:join(f.profile,'workspace','main'),cwd:join(f.profile,'workspace','main'),agentDir:join(f.profile,'state','agents','main','agent'),model:{primary:'ollama/test:latest',fallbacks:['ollama/backup:latest']}}};
+    writeFileSync(file,JSON.stringify(valid));
+    expect(()=>profileEnvironment(f.root)).not.toThrow();
+    for(const edit of [
+      config=>{config.agents.entries.main.workspace=join(foreign,'workspace');},
+      config=>{config.agents.entries.main.cwd=join(foreign,'cwd');},
+      config=>{config.agents.entries.main.agentDir=join(foreign,'auth');},
+      config=>{config.agents.entries.main.model='openai/unapproved';},
+      config=>{config.agents.entries.main.model.fallbacks=['openai/unapproved'];},
+      config=>{config.agents.defaults.cwd=join(foreign,'cwd');},
+      config=>{config.agents.defaults.modelPolicy={allow:['openai/unapproved']};},
+    ]){
+      const config=structuredClone(valid);edit(config);writeFileSync(file,JSON.stringify(config));
+      await expect(runOpenClaw(f.root,['config','validate'])).rejects.toThrow();
+      expect(existsSync(f.output)).toBe(false);
+    }
+    symlinkSync(foreign,join(f.profile,'workspace','redirect'));
+    const redirected=structuredClone(valid);
+    redirected.agents.entries.main.workspace=join(f.profile,'workspace','redirect','nested');
+    writeFileSync(file,JSON.stringify(redirected));
+    expect(()=>profileEnvironment(f.root)).toThrow(/redirects outside/);
+    expect(existsSync(join(foreign,'nested'))).toBe(false);
+  });
+  it('rejects explicit session-store paths without touching foreign locations',async()=>{
+    const f=await fixture(),file=join(f.profile,'openclaw.json'),original=JSON.parse(readFileSync(file));
+    const foreign=realpathSync(mkdtempSync(join(tmpdir(),'loops-foreign-store-')));roots.push(foreign);
+    symlinkSync(foreign,join(f.profile,'state-link'));
+    for(const store of [join(foreign,'sessions.json'),'../foreign/sessions.json','{agentId}/sessions.json',join(f.profile,'state-link','sessions.json'),join(f.profile,'state','sessions.json')]){
+      const config=structuredClone(original);config.session={store};writeFileSync(file,JSON.stringify(config));
+      await expect(runOpenClaw(f.root,['config','validate'])).rejects.toThrow(/session-store/);
+      expect(existsSync(f.output)).toBe(false);
+      expect(existsSync(join(foreign,'sessions.json'))).toBe(false);
+    }
+    writeFileSync(file,JSON.stringify(original));expect(()=>profileEnvironment(f.root)).not.toThrow();
+  });
+  it('strips Node preloads before each shell wrapper starts any Node interpreter',async()=>{
+    const f=await fixture(),scripts=join(f.root,'scripts'),preload=join(f.root,'preload.mjs'),marker=join(f.root,'preload-ran');
+    mkdirSync(scripts);mkdirSync(join(f.root,'.dev-profile','codex-test'),{recursive:true});
+    writeFileSync(join(f.root,'.dev-profile','codex-test','openclaw.json'),'{}');
+    writeFileSync(preload,'import {writeFileSync} from "node:fs"; writeFileSync('+JSON.stringify(marker)+',"ran");');
+    for(const name of ['dev','ollama','codex']){
+      copyFileSync(resolve('scripts',name+'.sh'),join(scripts,name+'.sh'));
+      for(const command of name==='codex'?['setup','copy-secret','review-unadmitted-command']:['review-unadmitted-command']){
+        const result=spawnSync('bash',['scripts/'+name+'.sh',command],{cwd:f.root,env:{...process.env,LOOPS_NODE_BIN:process.execPath,NODE_OPTIONS:'--import='+preload,NODE_PATH:join(f.root,'injected')},encoding:'utf8'});
+        expect(result.status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+      }
+    }
+  });
+  it('preserves readiness and guard failures when the child handles TERM and exits zero',async()=>{
+    const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
+    const childFile=join(f.root,'term-zero.mjs'),runner=join(f.root,'supervisor.mjs'),port=await freePort();
+    writeFileSync(childFile,"process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000);");
+    const foreign=createServer();await new Promise(done=>foreign.listen(port,'127.0.0.1',done));
+    try{
+      for(const [mode,expected] of [['readiness','readiness-failed'],['guard-false','authority-guard-failed'],['guard-throw','authority-guard-error'],['success',null]]){
+        const lease=join(f.root,mode+'.lease.json'),receipts=join(f.root,mode+'-receipts');
+        const guard=mode==='guard-false'?'()=>false':mode==='guard-throw'?'()=>{throw Error("fixture");}':'null';
+        const ready=mode==='readiness'?String(port):'null';
+        const binary=mode==='success'?join(f.root,'success.mjs'):childFile;
+        if(mode==='success')writeFileSync(binary,'process.exit(0);');
+        writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,['+JSON.stringify(binary)+'],process.env,()=>acquireLease('+JSON.stringify(lease)+',"gateway",null,'+JSON.stringify(receipts)+'),'+ready+','+guard+');');
+        const finished=spawnSync(process.execPath,[runner],{encoding:'utf8',timeout:7000});
+        expect(finished.status).toBe(expected?1:0);
+        expect(existsSync(lease)).toBe(false);
+        const saved=JSON.parse(readFileSync(join(receipts,readdirSync(receipts)[0])));
+        expect(saved.exitCode).toBe(0);expect(saved.signal).toBe(null);
+        expect(saved.wrapperExitCode).toBe(expected?1:0);
+        expect(saved.supervisionFailure).toBe(expected);
+        expect(saved.groupSettled).toBe(true);expect(saved.leaseRemoved).toBe(true);
+      }
+    }finally{await new Promise(done=>foreign.close(done));}
+  },30000);
+  it('settles an owned descendant before releasing capacity while preserving an unrelated process',async()=>{
+    const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
+    const grandchild=join(f.root,'grandchild.mjs'),leader=join(f.root,'leader.mjs'),runner=join(f.root,'runner.mjs');
+    const pidFile=join(f.root,'descendant.pid'),lease=join(f.root,'group.lease.json'),receipts=join(f.root,'group-receipts');
+    writeFileSync(grandchild,'import {writeFileSync} from "node:fs"; writeFileSync('+JSON.stringify(pidFile)+',String(process.pid)); setInterval(()=>{},1000); setTimeout(()=>process.exit(0),10000);');
+    writeFileSync(leader,'import {spawn} from "node:child_process"; import {existsSync} from "node:fs"; spawn(process.execPath,['+JSON.stringify(grandchild)+'],{stdio:"ignore"}); const timer=setInterval(()=>{if(existsSync('+JSON.stringify(pidFile)+')){clearInterval(timer);process.exit(0);}},10);');
+    writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,['+JSON.stringify(leader)+'],process.env,()=>acquireLease('+JSON.stringify(lease)+',"inference-worker",null,'+JSON.stringify(receipts)+'));');
+    const unrelated=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
+    try{
+      const finished=spawnSync(process.execPath,[runner],{encoding:'utf8',timeout:7000});
+      expect(finished.status).toBe(0);expect(existsSync(pidFile)).toBe(true);
+      const descendantPid=Number(readFileSync(pidFile));
+      expect(()=>process.kill(descendantPid,0)).toThrow();
+      expect(()=>process.kill(unrelated.pid,0)).not.toThrow();
+      expect(existsSync(lease)).toBe(false);
+      const saved=JSON.parse(readFileSync(join(receipts,readdirSync(receipts)[0])));
+      expect(saved.groupSettled).toBe(true);expect(saved.leaseRemoved).toBe(true);
+      const next=acquireLease(lease,'inference-worker');next.release();
+    }finally{unrelated.kill('SIGTERM');}
+  },12000);
+  it('retains the lease when process-group settlement cannot be verified',async()=>{
+    const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
+    const child=join(f.root,'short.mjs'),runner=join(f.root,'uncertain.mjs'),file=join(f.root,'uncertain.lease.json'),receipts=join(f.root,'uncertain-receipts');
+    writeFileSync(child,'process.exit(0);');
+    writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; const kill=process.kill; process.kill=(pid,signal)=>{if(pid<0){const error=Error("unverified");error.code="EPERM";throw error;}return kill(pid,signal);}; try{await runOwned(process.execPath,['+JSON.stringify(child)+'],process.env,()=>acquireLease('+JSON.stringify(file)+',"inference-worker",null,'+JSON.stringify(receipts)+'));}catch{process.exitCode=1;}');
+    const finished=spawnSync(process.execPath,[runner],{encoding:'utf8',timeout:7000});
+    expect(finished.status).toBe(1);expect(existsSync(file)).toBe(true);
+    const saved=JSON.parse(readFileSync(join(receipts,readdirSync(receipts)[0])));
+    expect(saved.exitCode).toBe(0);expect(saved.groupSettled).toBe(false);
+    expect(saved.leaseRemoved).toBe(false);expect(saved.wrapperExitCode).toBe(1);
+    expect(saved.supervisionFailure).toBe('process-group-unverified');
+    const recovered=acquireLease(file,'inference-worker');recovered.release();
+  });
+  it('serializes two stale-lease recoverers and preserves the one live winner',async()=>{
+    const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
+    const file=join(f.root,'contended.lease.json'),go=join(f.root,'go'),stop=join(f.root,'stop'),runner=join(f.root,'contender.mjs');
+    writeFileSync(file,JSON.stringify({id:'stale',parentPid:99999999,childPid:null}));mkdirSync(file+'.gate',{mode:0o700});
+    writeFileSync(runner,'import {existsSync,writeFileSync} from "node:fs"; import {setTimeout} from "node:timers/promises"; import {acquireLease} from '+JSON.stringify(helper)+'; const [file,go,stop,out]=process.argv.slice(2); while(!existsSync(go))await setTimeout(5); writeFileSync(out+".ready","ready"); try{const lease=acquireLease(file,"inference-worker");writeFileSync(out,"won:"+process.pid);while(!existsSync(stop))await setTimeout(10);lease.release();}catch(error){writeFileSync(out,"lost:"+error.message);}');
+    const outputs=[join(f.root,'one'),join(f.root,'two')];
+    const contenders=outputs.map(out=>spawn(process.execPath,[runner,file,go,stop,out],{stdio:'ignore'}));
+    try{
+      writeFileSync(go,'go');
+      for(let attempt=0;attempt<150&&!outputs.every(out=>existsSync(out+'.ready'));attempt++)await new Promise(done=>setTimeout(done,5));
+      expect(outputs.every(out=>existsSync(out+'.ready'))).toBe(true);
+      expect(JSON.parse(readFileSync(file)).id).toBe('stale');
+      rmdirSync(file+'.gate');
+      for(let attempt=0;attempt<200&&!outputs.every(existsSync);attempt++)await new Promise(done=>setTimeout(done,10));
+      expect(outputs.every(existsSync)).toBe(true);
+      const results=outputs.map(out=>readFileSync(out,'utf8'));
+      expect(results.filter(value=>value.startsWith('won:'))).toHaveLength(1);
+      expect(results.filter(value=>value.startsWith('lost:'))).toHaveLength(1);
+      const owner=Number(results.find(value=>value.startsWith('won:')).slice(4));
+      expect(JSON.parse(readFileSync(file)).parentPid).toBe(owner);
+      writeFileSync(stop,'stop');
+      await Promise.all(contenders.map(child=>child.exitCode!==null?Promise.resolve():new Promise(done=>child.once('exit',done))));
+      expect(existsSync(file)).toBe(false);
+    }finally{writeFileSync(stop,'stop');if(existsSync(file+'.gate'))rmdirSync(file+'.gate');for(const child of contenders)if(child.exitCode===null)child.kill('SIGKILL');}
+  },10000);
 });

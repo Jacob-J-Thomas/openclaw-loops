@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+unset NODE_OPTIONS NODE_PATH
 export LOOPS_PROFILE=codex-test
 node_bin="${LOOPS_NODE_BIN:-${npm_node_execpath:-}}"
 if [[ -z "$node_bin" ]]; then
