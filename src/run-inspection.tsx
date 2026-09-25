@@ -56,6 +56,7 @@ export function inspectionOutput(run:Run,nodeId:string):OutputState{
   }
   if(hasOutput)return recorded;
   if(evidence&&Object.hasOwn(evidence,'output'))return {label:'Recorded trace output',value:evidence.output!};
+  if(evidence?.rejectedResponse){const rejected=evidence.rejectedResponse;return {label:'Rejected model response · never checkpointed',value:`${rejected.preview}${rejected.truncated?'…':''}\n${rejected.bytes} bytes · SHA-256 ${rejected.sha256}`};}
   if(evidence)return {label:`${evidence.state} without output`};
   return {label:'Node was not started'};
 }

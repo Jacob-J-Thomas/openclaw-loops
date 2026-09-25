@@ -4,6 +4,24 @@ Ordinary new definitions use schemaVersion 2; existing v1/v2 definitions and run
 
 Inference supports optional `model`, `agentId`, `reasoning` and `advanced`. Advanced keys: `temperature`, `topP`, `topK`, `minP`, `typicalP`, `frequencyPenalty`, `presencePenalty`, `repetitionPenalty`, `seed`, `stop`, `maxTokens`. Omit to inherit; zero is a value. `loops_capabilities` and `loops_validate` report actual SDK support.
 
+## Recursive data schemas (v3)
+
+Version 3 input fields may add `schema` to a `type: "json"` field, and any non-Input node may add `outputSchema`. An Inference node with `outputSchema` must use JSON output mode: the schema checks the parsed generated `value`, while other node schemas check their complete output. The supported recursive language is deliberately data-only: `object` with `properties`, `required`, and boolean `additionalProperties`; `array` with `items`; scalar `string`, `number`, `integer`, `boolean`, and `null`; `enum`; scalar and collection limits; and `json` for an explicit unrestricted JSON value. For example:
+
+```json
+{"type":"object","properties":{"profile":{"type":"object","properties":{"name":{"type":"string","minLength":1},"scores":{"type":"array","items":{"type":"integer","minimum":0}}},"required":["name","scores"],"additionalProperties":false}},"required":["profile"],"additionalProperties":false}
+```
+
+An importable disabled definition is available in [recursive-data-schema-v3.example.json](../examples/recursive-data-schema-v3.example.json).
+
+Definitions reject schemas over 128 KiB, deeper than 32 levels, or with more than 512 nodes before they reach AJV. Property names cannot use prototype-sensitive keys; patterns must be short anchored expressions with at most one bounded quantifier and no groups or alternation. Input validation happens before run admission. Output validation happens before the node output is traced, checkpointed, or committed to shared context, so an invalid output leaves no committed output for that node. Diagnostics identify the failing JSON Pointer, including escaped property names such as `/a~1b`. Structurally duplicate enum values and type-inapplicable schema keywords fail authoring validation.
+
+JSON Inference normally uses the fresh isolated agent runtime, asks for one JSON value, and validates the parsed response locally. A v3 Inference node may explicitly set `"structuredGeneration":"native"` when it has `"output":"json"` and an `outputSchema`. This selects OpenClaw's public direct completion route and sends a provider-native `json_schema` response format derived from the saved data schema. The selected transport may ignore that hint; Loops still rejects malformed or schema-invalid output before any accepted output, context update, or downstream binding. A failed inference retains only an owner-visible, 1,024-byte Unicode-safe preview, exact byte length and SHA-256 of the rejected text in its trace and inspector, labeled separately from accepted output. Omission of `structuredGeneration` keeps the isolated route, and omission of generation settings still inherits the host default.
+
+Direct completion remains subject to the current host actor, model policy, and account selection. A saved account pin is passed through the host's `model@profile` route; a conflicting model profile fails before dispatch. Cancellation and timeouts use the run's `AbortSignal`; completion settlement does not prove that a remote provider physically stopped. The host's requested/transmitted settings receipt records the format request, not provider enforcement.
+
+The editor provides nested object/array controls, including keyboard-operable **Add nested schema** and **Add property** buttons. Existing flat v1/v2/v3 input fields remain unchanged when they do not declare `schema`; a pinned run retains its saved definition. Recursive schemas are plain definition content: they do not infer files, tools, executable behavior, credentials, or any new grant.
+
 `loops_draft` preserves publication. `loops_publish` enables an immutable revision. `loops_restore` creates a new draft. Legacy `enabled:false` retains its disabling meaning. `loops_test` executes without publishing. Versions/history/inspect/output operations expose complete evidence. Archive/delete preserve recoverable history.
 
 ## Current binding and predicate behavior

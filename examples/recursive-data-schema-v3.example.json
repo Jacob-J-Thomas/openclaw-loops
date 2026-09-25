@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 3,
+  "id": "recursive-data",
+  "slug": "recursive-data",
+  "name": "Recursive data example",
+  "description": "A bounded object and array input that preserves typed JSON.",
+  "revision": 0,
+  "inputSchema": [
+    {
+      "name": "data",
+      "label": "Profile data",
+      "type": "json",
+      "required": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string", "minLength": 1},
+              "scores": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 1}
+            },
+            "required": ["name", "scores"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["profile"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "nodes": [
+    {"id": "input", "kind": "input", "label": "Typed profile"},
+    {"id": "return", "kind": "return", "label": "Return profile", "value": "{{input.data}}", "outputSchema": {"type": "object", "properties": {"profile": {"type": "json"}}, "required": ["profile"], "additionalProperties": false}}
+  ],
+  "edges": [{"id": "next", "source": "input", "target": "return", "port": "next"}],
+  "layout": {"input": {"x": 0, "y": 100}, "return": {"x": 280, "y": 100}},
+  "capabilities": [],
+  "limits": {"maxExecutions": 10, "maxOutputBytes": 16384}
+}

@@ -4,10 +4,29 @@ import {contract} from './contract.js';
 import {LoopErrorSchema} from './errors.js';
 import {UploadChunkSchema} from './upload-input.js';
 import {compactToolInput} from './tool-schema.js';
+import {DataSchemaWireDefinitions,DataSchemaWireRef} from './data-schema.js';
 
 const strict = {additionalProperties: false} as const;
 const digest = Type.String({pattern: '^[a-f0-9]{64}$'});
 const offset = Type.Integer({minimum: 0});
+type JsonSchema=TSchema&{properties?:Record<string,JsonSchema>;items?:JsonSchema|JsonSchema[];anyOf?:JsonSchema[];oneOf?:JsonSchema[];allOf?:JsonSchema[];$defs?:Record<string,JsonSchema>};
+const schemaObject=(value:unknown):value is JsonSchema=>!!value&&typeof value==='object'&&!Array.isArray(value);
+export function withRecursiveDataSchemaWire(input:TSchema):TSchema{
+  const result=structuredClone(input) as JsonSchema;
+  const visit=(schema:JsonSchema)=>{
+    const properties=schema.properties;
+    const inputItems=properties?.inputSchema?.items;
+    if(schemaObject(inputItems)&&inputItems.properties?.schema!==undefined)inputItems.properties.schema=structuredClone(DataSchemaWireRef) as JsonSchema;
+    if(properties?.outputSchema!==undefined)properties.outputSchema=structuredClone(DataSchemaWireRef) as JsonSchema;
+    for(const child of Object.values(properties??{}))if(schemaObject(child))visit(child);
+    if(Array.isArray(schema.items)){for(const child of schema.items)if(schemaObject(child))visit(child);}
+    else if(schemaObject(schema.items))visit(schema.items);
+    for(const child of [...schema.anyOf??[],...schema.oneOf??[],...schema.allOf??[]])if(schemaObject(child))visit(child);
+  };
+  visit(result);
+  result.$defs={...result.$defs,...structuredClone(DataSchemaWireDefinitions)};
+  return result;
+}
 export const UploadReferenceSchema = Type.Object({$loopsUpload: digest}, strict);
 export type UploadReference = Static<typeof UploadReferenceSchema>;
 export const DocumentReferenceSchema = Type.Object({
@@ -27,7 +46,7 @@ type WireOperations = {[K in keyof typeof contract.operations]: Omit<typeof cont
 const operations = Object.fromEntries(Object.entries(contract.operations).map(([name, operation]) => {
   const input = structuredClone(operation.input) as TSchema & {properties: Record<string, TSchema>};
   for (const field of uploadFields[name as keyof typeof uploadFields] ?? []) input.properties[field] = Type.Union([input.properties[field], UploadReferenceSchema]);
-  return [name, {...operation, input:compactToolInput(input), output: Type.Union([operation.output, DocumentReferenceSchema,OperationFailureSchema]),
+  return [name, {...operation, input:compactToolInput(withRecursiveDataSchemaWire(input)), output: Type.Union([operation.output, DocumentReferenceSchema,OperationFailureSchema]),
     description: operation.description + ' A loops-error result means the operation failed; report its error and recovery, never claim success. Large results return an immutable document reference; use loops_document to read it. ' +
       'When a document reference includes readerId, supply it on each page and release only that reader with loops_document_release after verifying all pages. ' +
       ((uploadFields[name as keyof typeof uploadFields]?.length ?? 0) ? 'Large input fields accept {$loopsUpload: reference} from loops_upload; the original operation validates and authorizes the uploaded value.' : '')}];

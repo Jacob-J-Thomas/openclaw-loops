@@ -51,6 +51,17 @@ async function blockWriter(file:string,duration=350){
 const references=(service:EngineService)=>(service as unknown as {actors:Map<string,unknown>}).actors.size;
 
 describe('asynchronous committed-state service (real SQLite, synthetic host)',()=>{
+  it('forwards v3 native structured generation through the real worker boundary',async()=>{
+    const schema={type:'object' as const,properties:{ok:{type:'boolean' as const}},required:['ok'],additionalProperties:false};
+    const definition=structuredClone(examples[0]);definition.schemaVersion=3;
+    const inference=definition.nodes.find(node=>node.kind==='inference');if(!inference||inference.kind!=='inference')throw Error();
+    inference.output='json';inference.outputSchema=schema;inference.structuredGeneration='native';
+    const complete=vi.fn<HostCapabilities['complete']>(async()=>({text:'{"ok":true}'}));
+    const {service}=setup(undefined,{complete});await service.ready;
+    const run=await service.invoke('test',actor(),definition,{text:'worker structured request'},'native-worker-route');
+    expect(run.state).toBe('completed');expect(complete.mock.calls[0]?.[5]).toEqual({nodeId:inference.id,schema});
+    expect(run.outputs[inference.id]).toMatchObject({value:{ok:true}});
+  });
   it.each([1,2,3])('bounds a mixed FIFO queue at configured capacity %i through cancellation and settlement races',async capacity=>{
     const root=mkdtempSync(join(tmpdir(),'loops-mixed-queue-'));dirs.push(root);
     type Call={prompt:string;signal:AbortSignal;finish:(reject?:boolean)=>void;settled:boolean};

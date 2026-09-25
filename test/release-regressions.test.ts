@@ -126,6 +126,18 @@ describe('real bridge parameter forwarding (fake host completion)',()=>{
     expect((bridge.complete.mock.lastCall as unknown[])[0]).toMatchObject({execution:{mode:'isolated-agent-runtime'}});
     expect(((bridge.complete.mock.lastCall as unknown as [{execution:object}])[0]).execution).not.toHaveProperty('timeoutMs');
   });
+  it('uses the public direct route only for an explicit structured schema and pins the exact account',async()=>{
+    const bridge=bridgeSetup(),schema={type:'object' as const,properties:{name:{type:'string' as const}},required:['name'],additionalProperties:false};
+    const pinned={...actor,authProfileId:'account-one'};
+    const response=await bridge.host.complete(pinned,'Prompt',new AbortController().signal,10000,{model:'fake/chosen',advanced:{maxTokens:128}},{nodeId:'summary',schema});
+    const request=(bridge.complete.mock.lastCall as unknown as [Record<string,unknown>])[0];
+    expect(request).not.toHaveProperty('execution');expect(request).toMatchObject({model:'fake/chosen@account-one',maxTokens:128,responseFormat:{type:'json_schema',json_schema:{name:'loops_summary',strict:true,schema:{type:'object',properties:{name:{type:'string'}},required:['name'],additionalProperties:false}}}});
+    expect(response).toMatchObject({settings:{requested:{structuredGeneration:'native'},transmittedToHost:{responseFormat:'json_schema',maxTokens:128},applied:'unknown'}});
+    await expect(bridge.host.complete(pinned,'Prompt',new AbortController().signal,10000,{model:'fake/chosen@other'},{nodeId:'summary',schema})).rejects.toMatchObject({code:'LOOPS_AUTH_PROFILE_CONFLICT'});
+    expect(bridge.complete).toHaveBeenCalledTimes(1);
+    await bridge.host.complete(pinned,'Prompt',new AbortController().signal,10000,{model:'fake/chosen@account-one'},{nodeId:'summary',schema});
+    expect((bridge.complete.mock.lastCall as unknown as [{model:string}])[0].model).toBe('fake/chosen@account-one');
+  });
   it('blocks unsupported explicit controls before dispatch, not models with those controls unset',async()=>{
     const bridge=bridgeSetup();await expect(bridge.host.complete(actor,'Prompt',new AbortController().signal,10000,{advanced:{frequencyPenalty:0}})).rejects.toThrow(/public isolated completion/);
     expect(bridge.complete).not.toHaveBeenCalled();await bridge.host.complete(actor,'Prompt',new AbortController().signal,10000);expect(bridge.complete).toHaveBeenCalledOnce();
