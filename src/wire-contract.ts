@@ -9,8 +9,45 @@ import {DataSchemaWireDefinitions,DataSchemaWireRef} from './data-schema.js';
 const strict = {additionalProperties: false} as const;
 const digest = Type.String({pattern: '^[a-f0-9]{64}$'});
 const offset = Type.Integer({minimum: 0});
-type JsonSchema=TSchema&{properties?:Record<string,JsonSchema>;items?:JsonSchema|JsonSchema[];anyOf?:JsonSchema[];oneOf?:JsonSchema[];allOf?:JsonSchema[];$defs?:Record<string,JsonSchema>};
+type JsonSchema=TSchema&{type?:string;required?:string[];additionalProperties?:boolean;unevaluatedProperties?:boolean;const?:string|number;properties?:Record<string,JsonSchema>;items?:JsonSchema|JsonSchema[];anyOf?:JsonSchema[];oneOf?:JsonSchema[];allOf?:JsonSchema[];$defs?:Record<string,JsonSchema>};
 const schemaObject=(value:unknown):value is JsonSchema=>!!value&&typeof value==='object'&&!Array.isArray(value);
+const canonical=(value:unknown):string=>Array.isArray(value)?`[${value.map(canonical).join(',')}]`:schemaObject(value)?`{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonical((value as Record<string,unknown>)[key])}`).join(',')}}`:JSON.stringify(value);
+const exactKeys=(value:JsonSchema,keys:readonly string[])=>Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+
+// Re-express a closed, discriminated union without changing its allowed values.
+// An unexpected generated shape keeps the canonical input intact; the explicit
+// registration-budget test then fails if that input is too large for the host.
+function factorClosedUnion(union:JsonSchema,discriminator:string,expected:readonly (string|number)[]):JsonSchema{
+  if(!exactKeys(union,['anyOf'])||union.anyOf?.length!==expected.length)return union;
+  const variants=union.anyOf;
+  if(!variants.every(variant=>schemaObject(variant)&&exactKeys(variant,['type','required','properties','additionalProperties'])&&variant.type==='object'&&schemaObject(variant.properties)&&Array.isArray(variant.required)&&variant.additionalProperties===false&&new Set(variant.required).size===variant.required.length&&variant.required.every((key:unknown)=>typeof key==='string'&&Object.hasOwn(variant.properties!,key))&&variant.required.includes(discriminator)))return union;
+  if(!variants.every((variant,index)=>variant.properties![discriminator]?.const===expected[index]))return union;
+  const first=variants[0]!,common=Object.keys(first.properties!).filter(key=>variants.every(variant=>Object.hasOwn(variant.properties!,key)&&canonical(variant.properties![key])===canonical(first.properties![key])&&variant.required!.includes(key)===first.required!.includes(key)));
+  if(common.length===0)return union;
+  const properties=Object.fromEntries(common.map(key=>[key,structuredClone(first.properties![key])]));
+  const required=common.filter(key=>first.required!.includes(key));
+  const residual=variants.map(variant=>{
+    const properties={...variant.properties};for(const key of common)delete properties[key];
+    const required=variant.required!.filter(key=>!common.includes(key));
+    return {properties,...required.length?{required}:{}};
+  });
+  return {type:'object',properties,...required.length?{required}:{},anyOf:residual,unevaluatedProperties:false} as JsonSchema;
+}
+
+/** Project only known closed wire unions after root-local refs and compaction. */
+export function factorStrictToolInput<T extends TSchema>(input:T):T{
+  const result=structuredClone(input) as JsonSchema;
+  const definition=result.properties?.definition?.anyOf?.[0];
+  if(definition)result.properties!.definition!.anyOf![0]=factorClosedUnion(definition,'schemaVersion',[1,2,3]);
+  const data=result.$defs?.loops_data_schema;
+  if(data)result.$defs!.loops_data_schema=factorClosedUnion(data,'type',['object','array','string','number','integer','boolean','null','json']);
+  const context=result.$defs?.loops_context_node;
+  if(context?.type==='object'&&context.unevaluatedProperties===false&&context.allOf?.length===1&&schemaObject(context.allOf[0])&&exactKeys(context.allOf[0],['anyOf'])&&Array.isArray(context.allOf[0].anyOf)&&context.allOf[0].anyOf!.every(variant=>schemaObject(variant)&&variant.type==='object')){
+    context.anyOf=context.allOf[0]!.anyOf!.map(variant=>{const copy=structuredClone(variant);delete copy.type;return copy;});
+    delete context.allOf;
+  }
+  return result as T;
+}
 export function withRecursiveDataSchemaWire(input:TSchema):TSchema{
   const result=structuredClone(input) as JsonSchema;
   const visit=(schema:JsonSchema)=>{
@@ -46,7 +83,7 @@ type WireOperations = {[K in keyof typeof contract.operations]: Omit<typeof cont
 const operations = Object.fromEntries(Object.entries(contract.operations).map(([name, operation]) => {
   const input = structuredClone(operation.input) as TSchema & {properties: Record<string, TSchema>};
   for (const field of uploadFields[name as keyof typeof uploadFields] ?? []) input.properties[field] = Type.Union([input.properties[field], UploadReferenceSchema]);
-  return [name, {...operation, input:compactToolInput(withRecursiveDataSchemaWire(input)), output: Type.Union([operation.output, DocumentReferenceSchema,OperationFailureSchema]),
+  return [name, {...operation, input:factorStrictToolInput(compactToolInput(withRecursiveDataSchemaWire(input))), output: Type.Union([operation.output, DocumentReferenceSchema,OperationFailureSchema]),
     description: operation.description + ' A loops-error result means the operation failed; report its error and recovery, never claim success. Large results return an immutable document reference; use loops_document to read it. ' +
       'When a document reference includes readerId, supply it on each page and release only that reader with loops_document_release after verifying all pages. ' +
       ((uploadFields[name as keyof typeof uploadFields]?.length ?? 0) ? 'Large input fields accept {$loopsUpload: reference} from loops_upload; the original operation validates and authorizes the uploaded value.' : '')}];
