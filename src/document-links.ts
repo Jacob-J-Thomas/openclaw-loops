@@ -26,7 +26,7 @@ export function documentLinks(operation: string, input: Record<string, unknown>,
     const saved = record(value.record) ? value.record : value;
     if (record(saved.definition)) add('loops', saved.definition.id); else links.unknown = true;
   } else if (operation === 'retention') rows(value.candidates, 'runs');
-  else if (!['validate', 'capabilities', 'maintenance', 'transport_release', 'help'].includes(operation)) links.unknown = true;
+  else if (!['artifact', 'validate', 'capabilities', 'maintenance', 'transport_release', 'help'].includes(operation)) links.unknown = true;
 
   const pending = [result], seen = new Set<object>();
   while (pending.length) {

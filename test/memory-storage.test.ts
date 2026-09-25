@@ -112,15 +112,15 @@ describe('plugin-owned SQLite memory repository',()=>{
     const definition={...structuredClone(examples[0]),revision:1};
     storage.write({version:1,loops:{[definition.id]:{definition,enabledRevision:1,grants:[]}},runs:{}});
     await storage.close();
-    const legacy=new DatabaseSync(file);legacy.exec('DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; PRAGMA user_version=3;');
+    const legacy=new DatabaseSync(file);legacy.exec('DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; PRAGMA user_version=3;');
     const loops=legacy.prepare('SELECT * FROM loops').all(),revisions=legacy.prepare('SELECT * FROM revisions').all(),runs=legacy.prepare('SELECT * FROM runs').all();legacy.close();
     const upgraded=new SqliteStorage(file);cleanups.push(()=>upgraded.close());
-    const backups=readdirSync(directory).filter(name=>name.startsWith('loops.sqlite.before-schema-4-')&&name.endsWith('.bak'));
+    const backups=readdirSync(directory).filter(name=>name.startsWith('loops.sqlite.before-schema-5-')&&name.endsWith('.bak'));
     expect(backups).toHaveLength(1);const backup=new DatabaseSync(join(directory,backups[0]),{readOnly:true});
     try{expect(backup.prepare('PRAGMA user_version').get()).toEqual({user_version:3});expect(backup.prepare('PRAGMA quick_check').get()).toEqual({quick_check:'ok'});expect(backup.prepare('SELECT * FROM loops').all()).toEqual(loops);expect(backup.prepare('SELECT * FROM revisions').all()).toEqual(revisions);expect(backup.prepare('SELECT * FROM runs').all()).toEqual(runs);}
     finally{backup.close();}
     const current=new DatabaseSync(file,{readOnly:true});
-    try{expect(current.prepare('PRAGMA user_version').get()).toEqual({user_version:4});expect(current.prepare('SELECT * FROM loops').all()).toEqual(loops);expect(current.prepare('SELECT * FROM revisions').all()).toEqual(revisions);expect(current.prepare('SELECT * FROM runs').all()).toEqual(runs);}
+    try{expect(current.prepare('PRAGMA user_version').get()).toEqual({user_version:5});expect(current.prepare('SELECT * FROM loops').all()).toEqual(loops);expect(current.prepare('SELECT * FROM revisions').all()).toEqual(revisions);expect(current.prepare('SELECT * FROM runs').all()).toEqual(runs);}
     finally{current.close();}
     expect(new MemoryCore(upgraded,validator).write(invocation(),'research.new',{text:'new'},'mutation_new',stamp).version).toBe(1);
     await upgraded.close();
@@ -164,11 +164,11 @@ describe('plugin-owned SQLite memory repository',()=>{
 
   it('refuses unexpected memory tables under a v3 header before taking a migration backup',async()=>{
     const {directory,file,storage}=setup();await storage.close();
-    const stale=new DatabaseSync(file);stale.exec('DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; CREATE TABLE memory_records(id TEXT); PRAGMA user_version=3; PRAGMA journal_mode=DELETE;');stale.close();
+    const stale=new DatabaseSync(file);stale.exec('DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; CREATE TABLE memory_records(id TEXT); PRAGMA user_version=3; PRAGMA journal_mode=DELETE;');stale.close();
     const before=readFileSync(file);
     expect(()=>new SqliteStorage(file)).toThrow(/Unexpected memory tables/);
     await vi.waitFor(()=>expect(existsSync(file+'.lock')).toBe(false));
     expect(readFileSync(file)).toEqual(before);
-    expect(readdirSync(directory).filter(name=>name.includes('.before-schema-4-'))).toEqual([]);
+    expect(readdirSync(directory).filter(name=>name.includes('.before-schema-5-'))).toEqual([]);
   });
 });

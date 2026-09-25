@@ -39,7 +39,7 @@ export function withActiveTimeout(definition:Definition,timeoutMs:number|undefin
 // These nodes carry v3-only evidence and context contracts. Palette additions
 // keep the editable draft on a schema version that can represent the new node.
 export function schemaVersionForAddedNode(version:Definition['schemaVersion'],kind:GraphNode['kind']):Definition['schemaVersion']{
-  return kind==='evaluate'||kind==='gate'||kind==='context-lifecycle'||kind==='memory'?3:version;
+  return kind==='evaluate'||kind==='gate'||kind==='context-lifecycle'||kind==='memory'||kind==='artifact'?3:version;
 }
 
 export function autoLayout(definition:Definition):Definition{
@@ -96,6 +96,7 @@ export function insertBinding(node:GraphNode,binding:string):GraphNode{
     if(node.memory.operation==='write'||node.memory.operation==='update')return {...node,memory:{...node.memory,value:replaceOrAppend(node.memory.value)}};
     return {...node,memory:{...node.memory,key:replaceOrAppend(node.memory.key)}};
   }
+  if(node.kind==='artifact')return node.artifact.operation==='capture'?{...node,artifact:{...node.artifact,value:binding}}:{...node,artifact:{...node.artifact,bundle:binding}};
   if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
   if(node.kind==='return')return {...node,value:binding};
   if(node.kind==='condition')return 'condition'in node?{...node,condition:{...node.condition,value:binding}}:{...node,predicate:{...node.predicate,left:binding}};

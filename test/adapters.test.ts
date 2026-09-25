@@ -634,6 +634,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await invoke('browse',{search:content.slug,limit:1})).toMatchObject({total:1,nextCursor:null,items:[{id}]});
     expect(await invoke('list')).toEqual(expect.arrayContaining([expect.objectContaining({id})]));
     expect(await invoke('capabilities')).toMatchObject({model:'fake/test-only',parameters:expect.any(Array),concurrency:1});
+    expect(await invoke('artifact',{action:'list'})).toMatchObject({kind:'loops-artifact-result',action:'list',result:{items:[],nextCursor:null}});
     expect(await invoke('validate',{definition:created.record.definition})).toEqual({valid:true,issues:[]});
     const saved=await invoke('save',{definition:{...created.record.definition,name:'Full save'},expectedRevision:1,enabled:true}) as {record:LoopRecord};
     expect(saved.record).toMatchObject({enabledRevision:2,definition:{revision:2,name:'Full save'}});
@@ -1228,7 +1229,20 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=await setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=await setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_memory','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(39);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_artifact','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_memory','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(40);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('captures exact bytes through the UI action, pages them through the tool, and releases them through the command',async()=>{
+    const s=await setup(),bytes=Buffer.from([0,255,1,0,128,42,0]),operationId='adapter-artifact-1';
+    const captured=await s.action('artifact',{action:'capture',operationId,data:{dataBase64:bytes.toString('base64'),mediaType:'application/octet-stream'}});
+    const reference=(captured as {result:{result:{id:string;sha256:string;bytes:number}}}).result.result;
+    expect(reference).toMatchObject({bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
+    const page=await toolJson(s,'artifact',{action:'page',artifactId:reference.id,offset:0,limit:3}) as {result:{dataBase64:string;nextOffset:number}};
+    expect(Buffer.from(page.result.dataBase64,'base64')).toEqual(bytes.subarray(0,3));expect(page.result.nextOffset).toBe(3);
+    expect(await commandJson(s,'artifact',{action:'metadata',artifactId:reference.id})).toMatchObject({result:{reference,status:'published'}});
+    expect(await commandJson(s,'artifact',{action:'release-unused',artifactId:reference.id,operationId})).toMatchObject({result:{status:'released'}});
+    const plan=await toolJson(s,'artifact',{action:'cleanup-preview',policy:{olderThanDays:0}}) as {result:{planId:string;candidates:Array<{id:string}>}};
+    expect(plan.result.candidates.map(item=>item.id)).toContain(reference.id);
+    expect(await toolJson(s,'artifact',{action:'cleanup-apply',policy:{olderThanDays:0},planId:plan.result.planId})).toMatchObject({result:{removed:1}});
+  });
   it('reads an authored SQLite memory value through UI, command and tool adapters',async()=>{
     const s=await setup();
     const {id:_id,revision:_revision,...content}=structuredClone(examples[0]);

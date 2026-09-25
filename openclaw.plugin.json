@@ -56,11 +56,12 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/d958f93e59f60a765877269afb1189cf126e619060d9d94209ed20c45aef43ca/index.js"
+    "entry": "dist/control-ui/307907fc4b88c4b7deaa8283902686db43fd4b7f76f1107b20c71653feddfc67/index.js"
   },
   "contracts": {
     "tools": [
       "loops_archive",
+      "loops_artifact",
       "loops_browse",
       "loops_cancel",
       "loops_capabilities",

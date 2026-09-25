@@ -39,6 +39,7 @@ export const OperationFailureSchema=Type.Object({kind:Type.Literal('loops-error'
 export const DocumentPageSchema=Type.Object({documentId:digest,sha256:digest,text:Type.String(),offset,nextOffset:Type.Union([offset,Type.Null()]),totalCharacters:offset},strict);
 
 export const uploadFields: Partial<Record<keyof typeof contract.operations, readonly string[]>> = {
+  artifact: ['data'],
   create: ['definition'], edit: ['changes'], save: ['definition'], draft: ['definition'],
   validate: ['definition'], test: ['definition', 'input'], run: ['input', 'text'],
 };

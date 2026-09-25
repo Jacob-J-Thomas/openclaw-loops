@@ -21,6 +21,7 @@ beforeAll(async()=>{
   await build({entryPoints:['src/engine-service.ts'],outfile:join(buildDir,'src/engine-service.mjs'),bundle:true,platform:'node',format:'esm'});
   await build({entryPoints:['src/engine-service-worker.ts'],outfile:join(buildDir,'dist/engine-service-worker.js'),bundle:true,platform:'node',format:'esm'});
   copyFileSync('src/storage-worker.mjs',join(buildDir,'dist/storage-worker.mjs'));
+  copyFileSync('src/artifact-storage-worker.mjs',join(buildDir,'dist/artifact-storage-worker.mjs'));
   Service=(await import(/* @vite-ignore */ pathToFileURL(join(buildDir,'src/engine-service.mjs')).href)).EngineService;
 },30_000);
 afterAll(()=>rmSync(buildDir,{recursive:true,force:true}));

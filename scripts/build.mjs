@@ -14,3 +14,4 @@ await build({entryPoints:['src/index.ts'], outfile:'dist/index.js', bundle:true,
 await build({entryPoints:['src/engine-service-worker.ts'], outfile:'dist/engine-service-worker.js', bundle:true, platform:'node', target:'node24', format:'esm', external:['openclaw/*']});
 await build({entryPoints:['src/evaluation-worker.ts'], outfile:'dist/evaluation-worker.js', bundle:true, platform:'node', target:'node24', format:'esm'});
 copyFileSync('src/storage-worker.mjs','dist/storage-worker.mjs');
+copyFileSync('src/artifact-storage-worker.mjs','dist/artifact-storage-worker.mjs');

@@ -48,7 +48,7 @@ let engine:Engine|undefined,storage:SqliteStorage|undefined,closing=false;
 try{
   const {file,legacyFile,...options}=workerData as ServiceOptions;
   storage=new SqliteStorage(file,legacyFile);
-  engine=new Engine(storage,host,{...options,documentDirectory:join(dirname(file),'documents'),onChange:()=>send({type:'changed'}),retainActor:actor=>send({type:'retain',actorId:(actor as WorkerActor)[actorIdentity]}),releaseActor:actor=>send({type:'release',actorId:(actor as WorkerActor)[actorIdentity]})});
+  engine=new Engine(storage,host,{...options,documentDirectory:join(dirname(file),'documents'),artifactDirectory:join(dirname(file),'artifacts'),onChange:()=>send({type:'changed'}),retainActor:actor=>send({type:'retain',actorId:(actor as WorkerActor)[actorIdentity]}),releaseActor:actor=>send({type:'release',actorId:(actor as WorkerActor)[actorIdentity]})});
   send({type:'ready',reply:{ok:true,value:undefined}});
 }catch(error){
   try{await storage?.close();}catch{/* Preserve the startup error; parent termination still joins the worker tree. */}
