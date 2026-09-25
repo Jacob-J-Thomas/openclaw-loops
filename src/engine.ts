@@ -590,12 +590,13 @@ export class Engine{
   private memoryNode(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'memory'}>,ctx:BindingContext,signal:AbortSignal,mutationId:string):Json{
     const config=node.memory,key=bind(config.key,ctx);
     const effect=['write','update','forget','retention-apply','reset-apply'].includes(config.operation);
+    const invocation=this.memoryInvocation(actor,r,node.id,signal,effect);
     if(effect)this.assertMemoryWriteGrant(actor,r);
     if(typeof key!=='string')throw requestError('Memory key must resolve to text.','LOOPS_MEMORY_KEY');
     const value=config.value===undefined?undefined:bind(config.value,ctx);
     const version=config.expectedVersion===undefined?undefined:bind(config.expectedVersion,ctx);
     const plan=config.plan===undefined?undefined:bind(config.plan,ctx);
-    return this.memoryCall(this.memoryCore(r),this.memoryInvocation(actor,r,node.id,signal,effect),config.operation,key,mutationId,value,version,plan,config.limit);
+    return this.memoryCall(this.memoryCore(r),invocation,config.operation,key,mutationId,value,version,plan,config.limit);
   }
   private memoryCall(core:MemoryCore,inv:MemoryInvocation,operation:MemoryNodeOperation,key:string,mutationId:string,value?:Json,version?:Json,plan?:Json,limit?:number):Json{
     switch(operation){

@@ -25,7 +25,7 @@ const engines=scope[runtimeKey]??=new Map<string,EngineService>();
 // events, and register the same declared tools below through the public v2
 // factory so every native write has a required live-invocation assertion.
 const actionContract={...wireContract,operations:Object.fromEntries(Object.entries(wireContract.operations).map(([name,operation])=>{
-  const {tool: _tool,...action}=operation;return [name,action];
+  const action={...operation} as Record<string,unknown>;delete action.tool;return [name,action];
 }))} as typeof wireContract;
 const plugin=defineFeaturePlugin({contract:actionContract,name:'Loops',description:'Inspectable, bounded loops shared by native UI and chat.',setup(api,events){
   const config=parsePluginConfig(api.pluginConfig),budgets=resolveBudgets(config.budgets);
@@ -119,7 +119,7 @@ const plugin=defineFeaturePlugin({contract:actionContract,name:'Loops',descripti
       const links=documentLinks(name,payload,result);
       for(const use of uses)await service().invoke('documentFinishUse',actor,use.documentId,use.readerId,links);
       finished=true;
-      const tool='tool' in operation?operation.tool.name:undefined;
+      const tool='tool' in operation&&operation.tool?operation.tool.name:undefined;
       const value=context.source==='tool'&&tool&&name==='output'&&Value.Check(outputs.output,result)?toolPage(result,tool):result;
       const output=await service().invoke('documentWrap',actor,value,links);
       return context.source==='tool'&&tool&&!fitsToolReply(output,tool)?service().invoke('documentSnapshot',actor,output,documentLinks(name,payload,output)):output;
@@ -137,10 +137,10 @@ const plugin=defineFeaturePlugin({contract:actionContract,name:'Loops',descripti
     document_release:(p,c)=>safely('document_release',c,actor=>service().invoke('documentRelease',actor,p.documentId,p.readerId)),
     upload:(p,c)=>safely('upload',c,actor=>service().invoke('documentUpload',actor,p)),
   };
-  for(const [name,operation] of Object.entries(wireContract.operations))if(operation.tool){
+  for(const [name,operation] of Object.entries(wireContract.operations))if('tool' in operation&&operation.tool){
     const tool=operation.tool;
     api.registerTool({contextVersion:2,create(toolContext){return {
-      name:tool.name,label:tool.label??tool.name,description:operation.description,parameters:operation.input,outputSchema:operation.output,
+      name:tool.name,label:'label' in tool&&typeof tool.label==='string'?tool.label:tool.name,description:operation.description,parameters:operation.input,outputSchema:operation.output,
       execute:async(toolCallId,input,signal,onUpdate)=>{
         toolContext.assertInvocationCurrent();signal?.throwIfAborted();
         if(!Value.Check(operation.input,input))throw requestError('Tool input does not match its Loops schema.');
@@ -150,7 +150,7 @@ const plugin=defineFeaturePlugin({contract:actionContract,name:'Loops',descripti
         if(!Value.Check(operation.output,result))throw new Error('Tool output does not match its Loops schema.');
         return {content:[{type:'text' as const,text:JSON.stringify(result,null,2)}],details:result};
       },
-    };}},{name:tool.name,...tool.optional?{optional:true}:{}});
+    };}},{name:tool.name,...'optional' in tool&&tool.optional?{optional:true}:{}});
   }
   return wireHandlers;
 }});

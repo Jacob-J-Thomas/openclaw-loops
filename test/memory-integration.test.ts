@@ -46,6 +46,7 @@ describe('saved opt-in memory graph integration',()=>{
     const waitingHost:HostCapabilities={...host,complete:async()=>{entered();await gate;return {text:'continued'};}};
     const engine=new Engine(store,waitingHost,{replyTimeoutMs:5});
     const write=definition('write');write.capabilities=['llm'];
+    const policy=write.memoryPolicy;if(policy?.enabled)policy.nodes.remember.readPrefixes=['notes'];
     write.nodes.splice(1,0,{id:'think',kind:'inference',label:'Think',prompt:'Continue.',output:'text'});
     write.edges=[{id:'a',source:'input',target:'think',port:'next'},{id:'b',source:'think',target:'remember',port:'next'},{id:'c',source:'remember',target:'return',port:'next'}];
     expect(engine.save(actor,write,0,true).issues).toEqual([]);

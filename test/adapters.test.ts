@@ -90,13 +90,13 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     }});
     expect(s.registered.length).toBeGreaterThan(0);
     expect(s.registered.every(tool=>typeof tool==='object'&&'contextVersion' in tool&&tool.contextVersion===2)).toBe(true);
-    const definition={schemaVersion:3 as const,id:'memory-native-authority',slug:'memory-native-authority',name:'Memory native authority',description:'',revision:0,
+    const definition={schemaVersion:3 as const,slug:'memory-native-authority',name:'Memory native authority',description:'',
       inputSchema:[],capabilities:['llm'] as const,limits:{maxExecutions:4,maxOutputBytes:4096},layout:{},
       nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'think',kind:'inference' as const,label:'Think',prompt:'Produce a value.',output:'text' as const},
         {id:'remember',kind:'memory' as const,label:'Remember',memory:{operation:'write' as const,key:'notes.fact',value:'{{nodes.think.text}}'}},
         {id:'return',kind:'return' as const,label:'Return',value:'done'}],
       edges:[{id:'a',source:'input',target:'think',port:'next' as const},{id:'b',source:'think',target:'remember',port:'next' as const},{id:'c',source:'remember',target:'return',port:'next' as const}],
-      memoryPolicy:{version:1 as const,enabled:true,nodes:{remember:{readPrefixes:[],writeScopes:[{prefix:'notes',schemaId:'fact',schemaVersion:1,retentionDays:30}],forgetPrefixes:[]}}},
+      memoryPolicy:{version:1 as const,enabled:true,nodes:{remember:{readPrefixes:['notes'],writeScopes:[{prefix:'notes',schemaId:'fact',schemaVersion:1,retentionDays:30}],forgetPrefixes:[]}}},
       memorySchemas:[{id:'fact',version:1,schema:{type:'string' as const}}]};
     expect(await s.action('create',{definition,enabled:true})).toMatchObject({ok:true});
     const tool=s.tools.find(item=>item.name==='loops_run')!;
