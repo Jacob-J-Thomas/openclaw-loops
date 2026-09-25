@@ -7,6 +7,7 @@ const operations=new Set(['archive-validation','installer','installed-file-valid
 const outcomes=new Set(['completed','failed','timed-out','not-started']);
 const processStates=new Set(['alive','exited','signaled','unavailable']);
 const timingPhases=new Set(['socket-open','challenge','connect-plan-ready','request-sent','hello','failed','fallback']);
+const clientMilestonePhases=['worker-entry','sdk-imported','client-started'];
 const descriptions={
   'storage-full':'Lifecycle storage capacity was exhausted.',
   'permission-denied':'Lifecycle access was denied by the operating system.',
@@ -25,6 +26,34 @@ const clean=(value,pattern)=>typeof value==='string'&&pattern.test(value)?value:
 const elapsed=value=>Number.isSafeInteger(value)&&value>=0&&value<=86_400_000?value:0;
 const ordinal=value=>Number.isSafeInteger(value)&&value>=0&&value<=128?value:0;
 const timing=value=>({phase:timingPhases.has(own(value,'phase'))?own(value,'phase'):'unknown',generation:ordinal(own(value,'generation')),durationMs:elapsed(own(value,'durationMs')),phaseDurationMs:elapsed(own(value,'phaseDurationMs')),hasChallenge:own(value,'hasChallenge')===true,usedFallback:own(value,'usedFallback')===true});
+const validElapsed=value=>Number.isSafeInteger(value)&&value>=0&&value<=86_400_000;
+const clientMilestone=(value,expected,previous)=>{
+  const phase=own(value,'phase'),sequence=own(value,'sequence');
+  const workerElapsedMs=own(value,'workerElapsedMs'),receivedElapsedMs=own(value,'receivedElapsedMs');
+  if(phase!==clientMilestonePhases[expected]||sequence!==expected||!validElapsed(workerElapsedMs)||!validElapsed(receivedElapsedMs))return;
+  if(previous&&(workerElapsedMs<previous.workerElapsedMs||receivedElapsedMs<previous.receivedElapsedMs))return;
+  return {phase,sequence,workerElapsedMs,receivedElapsedMs};
+};
+const clientMilestones=value=>{
+  if(!Array.isArray(value))return [];
+  const result=[];
+  for(let index=0;index<clientMilestonePhases.length;index++){
+    const item=own(value,String(index));
+    if(item===undefined)break;
+    const safe=clientMilestone(item,index,result.at(-1));
+    if(!safe)break;
+    result.push(safe);
+  }
+  return result;
+};
+// Parent-received time is measured from spawn; worker elapsed time is measured
+// from actual module entry. They have different origins and are never merged.
+export function appendLifecycleClientMilestone(existing,message,receivedElapsedMs){
+  const entries=clientMilestones(existing);
+  if(own(message,'type')!=='startup-milestone'||entries.length===clientMilestonePhases.length)return entries;
+  const next=clientMilestone({phase:own(message,'phase'),sequence:own(message,'sequence'),workerElapsedMs:own(message,'workerElapsedMs'),receivedElapsedMs},entries.length,entries.at(-1));
+  return next?[...entries,next]:entries;
+}
 const processState=value=>processStates.has(value)?value:'unavailable';
 export function lifecycleChildProcessState(child){
   try{
@@ -71,7 +100,7 @@ export function sanitizeLifecycleClientStartup(value){
   if(!value||typeof value!=='object')return;
   const entries=own(value,'timings'),timings=[];
   if(Array.isArray(entries))for(const entry of entries.slice(0,8))timings.push(timing(entry));
-  return {restartOrdinal:ordinal(own(value,'restartOrdinal')),budgetMs:elapsed(own(value,'budgetMs')),listening:own(value,'listening')===true,gatewayProcessState:processState(own(value,'gatewayProcessState')),clientProcessState:processState(own(value,'clientProcessState')),elapsedMs:elapsed(own(value,'elapsedMs')),timings};
+  return {restartOrdinal:ordinal(own(value,'restartOrdinal')),budgetMs:elapsed(own(value,'budgetMs')),listening:own(value,'listening')===true,gatewayProcessState:processState(own(value,'gatewayProcessState')),clientProcessState:processState(own(value,'clientProcessState')),elapsedMs:elapsed(own(value,'elapsedMs')),milestones:clientMilestones(own(value,'milestones')),timings};
 }
 
 // The verifier uses this recorder around the actual awaited operations. A
