@@ -8,7 +8,7 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {Engine,type Actor,type HostCapabilities} from '../src/engine.js';
 import {SqliteStorage} from '../src/storage.js';
-import {validateGraph,type Definition} from '../src/graph.js';
+import {parseDefinition,validateGraph,type Definition} from '../src/graph.js';
 import {ContextLifecycleEditor} from '../src/context-lifecycle-editor.js';
 import {initialContext} from '../src/context.js';
 import {lifecycleMutation,validateLifecycle} from '../src/context-lifecycle.js';
@@ -37,6 +37,49 @@ describe('context lifecycle',()=>{
     expect(markup).toContain('Lifecycle write target');expect(markup).toContain('Selected paths');expect(markup).toContain('Authored summary instructions');expect(markup).toContain('Reasoning');expect(markup).toContain('Advanced settings');
     const invalid=primary();if(invalid.nodes[2].kind!=='context-lifecycle')throw Error();invalid.nodes[2].lifecycle.source={kind:'initial'};
     expect(validateGraph(invalid).map(issue=>issue.message).join(' ')).toMatch(/cannot replace/);
+  });
+  it('rejects malformed retained source IDs before dispatch while leaving unknown valid digests to custody lookup',async()=>{
+    for(const sourceId of ['short','A'.repeat(64),'g'.repeat(64),'a'.repeat(65),'a'.repeat(64)+'\n']){
+      const definition=single({operation:'retrieve',target:'/copy',paths:['/input/data'],source:{kind:'retained',sourceId}});
+      if(definition.nodes[1].kind!=='context-lifecycle')throw Error();
+      const lifecycle=definition.nodes[1].lifecycle;
+      expect(()=>validateLifecycle(lifecycle)).toThrow(/64 lowercase hexadecimal/);
+      expect(validateGraph(definition).length).toBeGreaterThan(0);
+      expect(()=>parseDefinition(definition)).toThrow();
+    }
+    const {directory,value}=storage(),definition=single({operation:'retrieve',target:'/copy',paths:['/input/data'],source:{kind:'retained',sourceId:'a'.repeat(64)}});
+    expect(validateGraph(definition)).toEqual([]);
+    expect(()=>parseDefinition(definition)).not.toThrow();
+    const run=await new Engine(value,host(),{documentDirectory:join(directory,'documents')}).test(actor,definition,{data:{},secret:'s'},'unknown-valid-lifecycle-source');
+    expect(run).toMatchObject({state:'failed'});
+    expect(run.error).toMatch(/not found|unavailable/i);
+  });
+  it('pins the selected lifecycle agent default across a parked restart rather than using the caller model',async()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-lifecycle-pin-'));cleanups.push(()=>rmSync(directory,{recursive:true,force:true}));
+    const file=join(directory,'loops.sqlite');let selectedDefault='worker/admitted';
+    const seen:Array<{model?:string;agentId?:string}>=[];
+    const capabilities:NonNullable<HostCapabilities['capabilities']>=(_actor,settings={})=>({model:settings.model??(settings.agentId==='worker'?selectedDefault:'caller/default'),configured:'unknown',authorized:'unknown',available:'unknown',parameters:[],notes:[]});
+    const complete:HostCapabilities['complete']=async(_actor,_prompt,_signal,_timeout,settings)=>{seen.push({model:settings?.model,agentId:settings?.agentId});return {text:'pinned summary'};};
+    const definition=base([
+      {id:'input',kind:'input',label:'Input'},
+      {id:'wait',kind:'wait',label:'Wait',message:'Pause'},
+      {id:'summary',kind:'context-lifecycle',label:'Summary',lifecycle:{operation:'summarize',target:'/summary',paths:['/input/data'],instructions:'Summarize only this selection.',agentId:'worker'}},
+      {id:'return',kind:'return',label:'Return',value:'done'},
+    ],[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'summary',port:'next'},{id:'c',source:'summary',target:'return',port:'next'}]);
+    const caller={...actor,model:'caller/admitted'};
+    const first=new Engine(new SqliteStorage(file),{check:()=>{},modelInfo:async()=>({}),capabilities,complete},{documentDirectory:join(directory,'documents')});
+    const parked=await first.test(caller,definition,{data:{fact:1},secret:'s'},'pin-lifecycle-agent');
+    expect(parked).toMatchObject({state:'waiting',executionSettings:{model:'caller/admitted',agentModels:{worker:'worker/admitted'}}});
+    await first.close();selectedDefault='worker/changed';
+    const reopened=new Engine(new SqliteStorage(file),{check:()=>{},modelInfo:async()=>({}),capabilities,complete},{documentDirectory:join(directory,'documents')});
+    cleanups.push(()=>reopened.close());
+    expect(await reopened.resume(actor,parked.id)).toMatchObject({state:'completed'});
+    expect(seen).toEqual([{model:'worker/admitted',agentId:'worker'}]);
+    const explicit=structuredClone(definition);if(explicit.nodes[2].kind!=='context-lifecycle')throw Error();explicit.nodes[2].lifecycle.model='worker/explicit';
+    const explicitParked=await reopened.test(caller,explicit,{data:{fact:2},secret:'s'},'explicit-lifecycle-model');
+    expect(explicitParked.executionSettings?.agentModels?.worker).toBeUndefined();
+    expect(await reopened.resume(actor,explicitParked.id)).toMatchObject({state:'completed'});
+    expect(seen.at(-1)).toEqual({model:'worker/explicit',agentId:'worker'});
   });
   it('retains exact pre-loss snapshots, sends only the selected projection, and compacts after a completion',async()=>{
     const {directory,value}=storage(),complete=vi.fn(async()=>({text:'short retained summary'})),engine=new Engine(value,host(complete),{documentDirectory:join(directory,'documents')}),definition=primary();

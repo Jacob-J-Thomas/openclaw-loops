@@ -21,8 +21,13 @@ abort handling, budget validation, or the transactional run checkpoint fails,
 the context mutation is not published. A document written before such a failure
 may remain as recoverable orphan evidence.
 
-Run inspection exposes every retained source. Source IDs are explicit inputs to
-later retrieve or reset nodes and are scoped by DocumentStore ownership, so a
-different conversation cannot read them. `/input` is immutable; invalid JSON
-Pointers, prototype-sensitive keys, unavailable sources, overlapping compact
-targets, and output/context budget overflow fail closed.
+Run inspection exposes every retained source. Source IDs are exact 64-character
+lowercase hexadecimal document digests supplied explicitly to later retrieve
+or reset nodes and scoped by DocumentStore ownership, so a
+different conversation cannot read them. An invalid digest remains visible in
+the local editor until repaired, but fails schema validation: it cannot be
+saved as a server revision, published, or sent to draft Test. Choosing Authored value after a
+retained source, or switching a summary to Inject with no source, stores an
+explicit JSON null rather than only displaying one. `/input` is immutable;
+invalid JSON Pointers, prototype-sensitive keys, unavailable sources,
+overlapping compact targets, and output/context budget overflow fail closed.
