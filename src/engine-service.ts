@@ -78,8 +78,8 @@ export class EngineService{
       if(request.method==='capabilities'){reply({ok:true,value:this.host.capabilities?.(actor,request.args[0] as InferenceSettings)});return;}
       const controller=new AbortController();this.hostCalls.set(request.id,controller);this.retain(request.actorId);
       const signal=actor.signal?AbortSignal.any([controller.signal,actor.signal]):controller.signal;
-      const [prompt,timeoutMs,settings]=request.args as HostCompletionArgs;
-      void Promise.resolve().then(()=>{actor.check();signal.throwIfAborted();return request.method==='complete'?this.host.complete(actor,prompt,signal,timeoutMs,settings):this.host.modelInfo(actor);})
+      const [prompt,timeoutMs,settings,structured]=request.args as HostCompletionArgs;
+      void Promise.resolve().then(()=>{actor.check();signal.throwIfAborted();return request.method==='complete'?this.host.complete(actor,prompt,signal,timeoutMs,settings,structured):this.host.modelInfo(actor);})
         .then(value=>reply({ok:true,value})).catch(failed).catch(()=>{/* A terminated worker cannot receive a late host result. */})
         .finally(()=>{this.hostCalls.delete(request.id);this.release(request.actorId);});
     }catch(error){failed(error);}
