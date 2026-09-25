@@ -41,9 +41,9 @@ export class DataSchemaDrafts{
   set(key:string,source:string){this.sources.set(this.identity(key),source);return this;}
   delete(key:string){const id=this.paths.get(key);return id===undefined?false:this.sources.delete(id);}
   clear(){this.sources.clear();this.paths.clear();this.inputIds=[];this.nextId=0;}
-  snapshot():SchemaDraftLocationSnapshot{return {paths:new Map(this.paths),inputIds:[...this.inputIds]};}
+  snapshot(definition?:Definition):SchemaDraftLocationSnapshot{if(definition)this.reconcile(definition);return {paths:new Map(this.paths),inputIds:[...this.inputIds]};}
   restore(snapshot:SchemaDraftLocationSnapshot){this.paths=new Map(snapshot.paths);this.inputIds=[...snapshot.inputIds];}
-  reconcile(definition:Definition){this.ensureInputs(definition.inputSchema.length);const active=activeScopeKeys(definition,this);for(const key of this.paths.keys())if(!active.has(key))this.paths.delete(key);}
+  reconcile(definition:Definition){this.ensureInputs(definition.inputSchema.length);const active=activeScopeKeys(definition,this);for(const key of this.paths.keys())if(!active.has(key))this.paths.delete(key);for(const key of active)this.identity(key);}
   move(from:string[],to:string[]){
     const moves:[string,string,string][]=[];
     for(const [key,id] of this.paths){

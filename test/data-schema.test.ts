@@ -18,6 +18,30 @@ function definition():Definition{
   return value;
 }
 describe('bounded recursive data schemas',()=>{
+  it('hydrates unvisited input, nested output, and Repeat-body paths before an immutable history snapshot',()=>{
+    const base=definition(),summary=base.nodes.find(node=>node.kind==='inference');if(!summary||summary.kind!=='inference')throw Error();
+    summary.outputSchema={type:'array',items:{type:'object',properties:{status:{type:'string'}},additionalProperties:false}};
+    const drafts=new DataSchemaDrafts(),input=[...inputSchemaScope(base.id,drafts.inputFieldId(0)),'properties','profile','properties','scores','items'],output=[...outputSchemaScope(base.id,summary.id),'items','properties','status'];
+    const before=drafts.snapshot(base);expect(before.paths.has(JSON.stringify(input))).toBe(true);expect(before.paths.has(JSON.stringify(output))).toBe(true);
+    drafts.set(JSON.stringify(output),'[');drafts.restore(before);expect(drafts.get(JSON.stringify(output))).toBe('[');expect(hasActiveDataSchemaDrafts(base,drafts)).toBe(true);
+    const repeat=structuredClone(examples[1]);repeat.schemaVersion=3;const body=repeat.nodes.find(node=>node.kind==='repeat');if(!body||body.kind!=='repeat')throw Error();
+    const bodyInference=body.body[0] as typeof body.body[0]&{outputSchema?:DataSchema};bodyInference.outputSchema={type:'array',items:{type:'object',properties:{status:{type:'string'}},additionalProperties:false}};
+    const repeatDrafts=new DataSchemaDrafts(),repeatScope=[...outputSchemaScope(repeat.id,body.body[0].id),'items','properties','status'];
+    const repeatBefore=repeatDrafts.snapshot(repeat);expect(repeatBefore.paths.has(JSON.stringify(repeatScope))).toBe(true);
+    repeatDrafts.set(JSON.stringify(repeatScope),'[repeat');repeatDrafts.restore(repeatBefore);expect(repeatDrafts.get(JSON.stringify(repeatScope))).toBe('[repeat');expect(hasActiveDataSchemaDrafts(repeat,repeatDrafts)).toBe(true);
+  });
+  it('keeps a captured history mapping when its updater runs after a path move',()=>{
+    const base=definition(),summary=base.nodes.find(node=>node.kind==='inference');if(!summary||summary.kind!=='inference')throw Error();
+    summary.outputSchema={type:'object',properties:{status:{type:'string'}},additionalProperties:false};
+    const drafts=new DataSchemaDrafts(),scope=outputSchemaScope(base.id,summary.id),oldPath=[...scope,'properties','status'],newPath=[...scope,'properties','state'];
+    const before=drafts.snapshot(base),deferred=(history:ReturnType<DataSchemaDrafts['snapshot']>[])=>[...history,before];
+    drafts.move(oldPath,newPath);drafts.set(JSON.stringify(newPath),'[');
+    const moved=drafts.snapshot(),captured=deferred([])[0]!;
+    expect(captured.paths.get(JSON.stringify(oldPath))).toBe(moved.paths.get(JSON.stringify(newPath)));
+    expect(captured.paths.has(JSON.stringify(newPath))).toBe(false);
+    drafts.restore(captured);expect(drafts.get(JSON.stringify(oldPath))).toBe('[');
+    expect(hasActiveDataSchemaDrafts(base,drafts)).toBe(true);
+  });
   it('keeps invalid source attached to stable input identities through duplicate names and removal',()=>{
     const base=definition();base.inputSchema.push({name:'second',label:'Second',type:'json',required:false,schema:{type:'object',properties:{},additionalProperties:false}});
     const drafts=new DataSchemaDrafts(),first=[...inputSchemaScope(base.id,drafts.inputFieldId(0)),'properties','profile','properties','scores','items'],second=inputSchemaScope(base.id,drafts.inputFieldId(1));
