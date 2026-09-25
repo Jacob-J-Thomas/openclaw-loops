@@ -496,6 +496,76 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
       assert.deepEqual(savedMemory.memoryPolicy.nodes[savedMemory.nodes.find(node=>node.kind==='memory').id].forgetPrefixes,['notes']);
       receipt.checks.push('synthetic browser: v3 opt-in Memory write policy, versioned schema and reset preview survive save and refresh');await memoryPage.close();
     }
+    {
+      // F1: the mounted editor must reject every way a Summary write can
+      // replace its own selected live values, while keeping the draft editable.
+      const overlapPage=await browser.newPage();overlapPage.setDefaultTimeout(10_000);
+      overlapPage.on('pageerror',error=>receipt.errors.push(error.message));
+      let expectedReload=false;
+      overlapPage.on('dialog',dialog=>{if(expectedReload&&dialog.type()==='beforeunload')void dialog.accept();else{receipt.errors.push(`Unexpected overlap dialog: ${dialog.type()}`);void dialog.dismiss();}});
+      const fixture={schemaVersion:3,id:'lifecycle-overlap-mounted',slug:'lifecycle-overlap-mounted',name:'Lifecycle overlap mounted',description:'Disposable F1 authoring regression.',revision:0,
+        inputSchema:[{name:'data',label:'Data',type:'json',required:true}],capabilities:[],limits:{maxExecutions:4,maxOutputBytes:16384},
+        nodes:[{id:'input',kind:'input',label:'Input'},{id:'step',kind:'context-lifecycle',label:'Lifecycle',lifecycle:{operation:'inject',target:'/summary',paths:['/working'],value:{literalJson:'null'}}},{id:'return',kind:'return',label:'Return',value:'{{nodes.step.contextVersion}}'}],
+        edges:[{id:'input-step',source:'input',target:'step',port:'next'},{id:'step-return',source:'step',target:'return',port:'next'}],layout:{}};
+      const fixturePath=join(importDirectory,'lifecycle-overlap.json');await writeFile(fixturePath,JSON.stringify(fixture));
+      await overlapPage.goto(url);await waitFor(overlapPage,'select[aria-label="Load an example"]');
+      const chooser=overlapPage.waitForEvent('filechooser');await overlapPage.getByRole('button',{name:'Import',exact:true}).click();await (await chooser).setFiles(fixturePath);
+      await overlapPage.locator('.lp-canvas-heading h2').getByText(fixture.name,{exact:true}).waitFor();
+      await overlapPage.getByLabel('Select node to edit',{exact:true}).selectOption('step');
+      const lifecycle=overlapPage.locator('section[aria-label="Context lifecycle settings"]');
+      await lifecycle.getByRole('combobox',{name:'Operation',exact:true}).selectOption('summarize');
+      await lifecycle.locator('.lp-value-editor textarea').first().fill('Summarize only the selected facts.');
+      const target=overlapPage.getByLabel('Lifecycle write target',{exact:true}),paths=overlapPage.getByLabel('Lifecycle selected paths',{exact:true});
+      let conflict;
+      for(const scenario of [
+        {name:'equal',target:'/working',paths:'/working'},
+        {name:'ancestor',target:'/working',paths:'/working/fact'},
+        {name:'descendant',target:'/working/fact',paths:'/working'},
+      ]){
+        await target.fill(scenario.target);await paths.fill(scenario.paths);
+        assert.equal(await target.inputValue(),scenario.target);assert.equal(await paths.inputValue(),scenario.paths);
+        const exportedPromise=overlapPage.waitForEvent('download');await overlapPage.getByRole('button',{name:'Export',exact:true}).click();
+        const exported=JSON.parse(await readFile(await (await exportedPromise).path(),'utf8'));
+        const authored=exported.nodes.find(node=>node.id==='step').lifecycle;
+        assert.equal(authored.operation,'summarize');assert.equal(authored.target,scenario.target);assert.deepEqual(authored.paths,[scenario.paths]);
+        const issue=overlapPage.locator('.lp-issues button').filter({hasText:/Summarize.*target.*selected path/i});
+        await issue.waitFor();const message=await issue.innerText();
+        assert.match(message,/disjoint target/i);if(conflict)assert.equal(message,conflict);else conflict=message;
+        assert.equal(await overlapPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+        assert.equal(await overlapPage.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),true);
+        receipt.checks.push(`synthetic browser: Summary ${scenario.name} target overlap explains the conflict and blocks Test/Publish`);
+      }
+      await target.fill('/working');await paths.fill('/working');
+      await overlapPage.waitForFunction(name=>{
+        for(let index=0;index<globalThis.localStorage.length;index++){
+          const key=globalThis.localStorage.key(index);if(!key?.startsWith('loops-editor:v2:'))continue;
+          try{const draft=JSON.parse(globalThis.localStorage.getItem(key));if(draft.definition?.name===name&&draft.definition.nodes?.find(node=>node.id==='step')?.lifecycle?.target==='/working')return true;}catch{ /* Skip unrelated malformed local drafts. */ }
+        }
+        return false;
+      },fixture.name);
+      expectedReload=true;await overlapPage.reload();expectedReload=false;await waitFor(overlapPage,'select[aria-label="Load an example"]');
+      const drafts=overlapPage.locator('.lp-local-drafts');await drafts.locator('summary').waitFor();
+      if(!await drafts.evaluate(element=>element.open))await drafts.locator('summary').click();
+      await drafts.getByRole('button',{name:/^Recover Lifecycle overlap mounted draft/}).first().click();
+      await overlapPage.getByLabel('Select node to edit',{exact:true}).selectOption('step');
+      assert.equal(await overlapPage.getByLabel('Lifecycle write target',{exact:true}).inputValue(),'/working');
+      assert.equal(await overlapPage.getByLabel('Lifecycle selected paths',{exact:true}).inputValue(),'/working');
+      await overlapPage.locator('.lp-issues button').filter({hasText:conflict}).waitFor();
+      assert.equal(await overlapPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+      await overlapPage.getByLabel('Lifecycle write target',{exact:true}).fill('/summary');
+      await overlapPage.locator('.lp-issues button').filter({hasText:conflict}).waitFor({state:'detached'});
+      assert.equal(await overlapPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),false);
+      assert.equal(await overlapPage.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),false);
+      await overlapPage.getByRole('button',{name:'Save draft',exact:true}).click();
+      await overlapPage.getByText('Revision 1 saved as a draft').waitFor();
+      const saved=await overlapPage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(saved.nodes.find(node=>node.id==='step').lifecycle.operation,'summarize');
+      assert.equal(saved.nodes.find(node=>node.id==='step').lifecycle.target,'/summary');
+      assert.deepEqual(saved.nodes.find(node=>node.id==='step').lifecycle.paths,['/working']);
+      assert.equal((await overlapPage.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>call.id==='test').length)),0);
+      receipt.checks.push('synthetic browser: invalid Summary overlap survives local recovery and disjoint repair restores valid authoring');
+      await overlapPage.close();
+    }
     receipt.definitions=state.records.map(([id,item])=>({id,revision:item.definition.revision,enabledRevision:item.enabledRevision,publishedRevision:item.publishedRevision,advanced:advanced(item.definition)}));
     receipt.operations=state.calls.filter(call=>call.mode||call.id).map(call=>call.mode??call.id); receipt.passed=true;
   } catch(error){receipt.failure=error.message;if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');throw error;} finally { await browser?.close(); if(importDirectory)await rm(importDirectory,{recursive:true,force:true}); await new Promise(resolve=>server.close(resolve)); }

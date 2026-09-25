@@ -76,7 +76,7 @@ try{
   const maintenanceActor={...actor,sessionId:'synthetic-maintenance'},links={runs:[],loops:[],documents:[],unknown:false};
   const firstDocument=reopenedDocuments.snapshot(maintenanceActor,{text:'A'.repeat(1024*1024)},links,false);
   const secondDocument=reopenedDocuments.snapshot(maintenanceActor,{text:'B'.repeat(1024*1024)},links,false);
-  const maintenancePolicy={keepLatest:0},referenceInventory={runs:new Set(),loops:new Set()};
+  const maintenancePolicy={keepLatest:0},referenceInventory={runs:new Set(),loops:new Set(),documents:new Set()};
   const maintenancePreview=reopenedDocuments.maintenance(maintenanceActor,maintenancePolicy,referenceInventory);
   assert.deepEqual(new Set(maintenancePreview.candidates.map(file=>file.id)),new Set([firstDocument.documentId,secondDocument.documentId]));
   const beforeCleanup=statfsSync(directory);
