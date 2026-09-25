@@ -35,7 +35,7 @@ if(process.argv[2]==='finish'){
     agents:{defaults:{workspace:`${root}/workspace`,model:{primary:model,fallbacks:[]},heartbeat:{every:'0m'}}},
     models:{providers:{openai:{agentRuntime:{id:'codex'}}}},
     tools:{alsoAllow:agentTools},
-    plugins:{entries:{codex:{enabled:false,config:{sessionCatalog:{enabled:false}}}}},
+    plugins:{entries:{codex:{enabled:true,config:{sessionCatalog:{enabled:false}}}}},
   };
   createProfile(configPath,config);
   console.log(`Created Codex test profile at http://127.0.0.1:19691 using ${model}.`);

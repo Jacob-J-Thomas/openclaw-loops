@@ -432,6 +432,7 @@ describe('final review bounded profile admission',()=>{
     const fresh=spawnSync(process.execPath,[init],{cwd:f.root,encoding:'utf8'});
     expect(fresh.status).toBe(0);
     const config=JSON.parse(readFileSync(file));
+    expect(config.plugins.entries.codex.enabled).toBe(true);
     expect(config.plugins.entries.codex.config).toEqual({sessionCatalog:{enabled:false}});
     expect(config.browser).toEqual({enabled:false});
     expect(()=>profileEnvironment(f.root,'codex-test')).not.toThrow();
