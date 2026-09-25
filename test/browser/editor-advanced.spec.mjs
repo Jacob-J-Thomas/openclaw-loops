@@ -392,6 +392,40 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
     await page.getByRole('button',{name:'Remove selected node'}).click();
     await fillLoopName('QA unmount original'); await page.waitForFunction(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('QA unmount original'))return true;return false;}); await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft()); await page.getByRole('button',{name:'Save draft'}).click(); await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1); await page.evaluate(()=>globalThis.__editorRegression.unmount()); await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft()); await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===0&&globalThis.__editorRegression.calls.some(call=>call.mode==='draft'&&call.definition.name==='QA unmount original')); assert.equal(await page.evaluate(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('QA unmount original'))return true;return false;}),true); receipt.checks.push('late save after unmount preserves the recoverable snapshot');
     await verifyEvaluationDraftRaces(browser,url,receipt.checks);
+    {
+      const lifecyclePage=await browser.newPage();await lifecyclePage.goto(url);await waitFor(lifecyclePage,'select[aria-label="Load an example"]');
+      await lifecyclePage.selectOption('select[aria-label="Load an example"]','summarize-text');
+      await lifecyclePage.selectOption('select[aria-label="Node family"]','context-lifecycle');await lifecyclePage.getByRole('button',{name:'+ Add node'}).click();
+      await lifecyclePage.getByLabel('Lifecycle write target').fill('/working');
+      await lifecyclePage.getByLabel('Lifecycle selected paths').fill('/input/text');
+      const lifecycleControls=lifecyclePage.locator('section[aria-label="Context lifecycle settings"]');
+      await lifecycleControls.locator('.lp-value-editor select').first().selectOption('json');
+      await lifecycleControls.locator('.lp-value-editor textarea').first().fill('0');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 1 saved as a draft').waitFor();
+      let savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedLifecycle.schemaVersion,3);assert.deepEqual(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle,{operation:'inject',target:'/working',paths:['/input/text'],value:{literalJson:'0'}});
+      await lifecyclePage.evaluate(()=>globalThis.__editorRegression.refresh());await lifecyclePage.getByLabel('Lifecycle write target').waitFor();assert.equal(await lifecyclePage.getByLabel('Lifecycle write target').inputValue(),'/working');
+      await lifecycleControls.locator('select').first().selectOption('compact');await lifecyclePage.getByLabel('Lifecycle selected paths').fill('/working');
+      await lifecycleControls.locator('.lp-value-editor textarea').first().fill('Keep selected facts.');await lifecycleControls.locator('textarea').last().fill('Reduce selected working data.');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 2 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.operation,'compact');
+      assert.equal(Object.hasOwn(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle,'value'),false);
+      await lifecycleControls.locator('select').first().selectOption('retrieve');await lifecyclePage.getByLabel('Lifecycle source',{exact:true}).selectOption('retained');
+      await lifecyclePage.getByLabel('Retained source ID',{exact:true}).fill('a'.repeat(64));await lifecycleControls.locator('select').nth(2).selectOption('document');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 3 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.deepEqual(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.source,{kind:'retained',sourceId:'a'.repeat(64),format:'document'});
+      await lifecycleControls.locator('select').first().selectOption('reset');await lifecyclePage.getByLabel('Lifecycle source',{exact:true}).selectOption('initial');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 4 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.deepEqual(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.source,{kind:'initial'});
+      await lifecycleControls.locator('select').first().selectOption('summarize');await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 5 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.operation,'summarize');
+      assert.equal(Object.hasOwn(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle,'source'),false);
+      receipt.checks.push('synthetic browser: all five lifecycle operations author and save without stale source or value');await lifecyclePage.close();
+    }
     receipt.definitions=state.records.map(([id,item])=>({id,revision:item.definition.revision,enabledRevision:item.enabledRevision,publishedRevision:item.publishedRevision,advanced:advanced(item.definition)}));
     receipt.operations=state.calls.filter(call=>call.mode||call.id).map(call=>call.mode??call.id); receipt.passed=true;
   } catch(error){receipt.failure=error.message;if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');throw error;} finally { await browser?.close(); if(importDirectory)await rm(importDirectory,{recursive:true,force:true}); await new Promise(resolve=>server.close(resolve)); }

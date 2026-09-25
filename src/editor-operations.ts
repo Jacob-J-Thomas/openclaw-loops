@@ -36,10 +36,10 @@ export function withActiveTimeout(definition:Definition,timeoutMs:number|undefin
   return {...definition,schemaVersion:definition.schemaVersion===1?2:definition.schemaVersion,limits};
 }
 
-// Evaluate, Evidence gate, and Switch carry v3-only contracts. Palette additions
-// must upgrade the editable draft before it can be saved or published.
+// These nodes carry v3-only contracts. Palette additions must upgrade the
+// editable draft before it can be saved or published.
 export function schemaVersionForAddedNode(version:Definition['schemaVersion'],kind:GraphNode['kind']):Definition['schemaVersion']{
-  return kind==='evaluate'||kind==='gate'||kind==='switch'?3:version;
+  return kind==='evaluate'||kind==='gate'||kind==='switch'||kind==='context-lifecycle'?3:version;
 }
 
 export function autoLayout(definition:Definition):Definition{
@@ -85,6 +85,11 @@ export function insertBinding(node:GraphNode,binding:string):GraphNode{
   const replaceOrAppend=(value:unknown)=>typeof value==='string'?value+binding:binding;
   if(node.kind==='inference')return {...node,prompt:replaceOrAppend(node.prompt)};
   if(node.kind==='evaluate')return {...node,value:replaceOrAppend(node.value)};
+  if(node.kind==='context-lifecycle'){
+    if(node.lifecycle.operation==='summarize'||node.lifecycle.operation==='compact')return {...node,lifecycle:{...node.lifecycle,instructions:replaceOrAppend(node.lifecycle.instructions)}};
+    if(node.lifecycle.operation==='inject'&&!node.lifecycle.source)return {...node,lifecycle:{...node.lifecycle,value:replaceOrAppend(node.lifecycle.value)}};
+    return node;
+  }
   if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
   if(node.kind==='return')return {...node,value:binding};
   if(node.kind==='condition')return 'condition'in node?{...node,condition:{...node.condition,value:binding}}:{...node,predicate:{...node.predicate,left:binding}};

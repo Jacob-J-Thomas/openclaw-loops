@@ -75,6 +75,9 @@ describe('explicit JSON node values',()=>{
     if(node.kind==='repeat'){node.body[0].prompt=literal('No inputs');node.body[1].predicate={left:'{{repeat.index}}',op:'greater-than',right:literal(5)};}
     if(node.kind==='evaluate'){node.value=literal(0);d.schemaVersion=3;}
     if(node.kind==='wait')node.message=literal(null);if(node.kind==='review')node.proposal=literal(false);if(node.kind==='return')node.value=literal(0);
+    // Lifecycle nodes are deliberately v3-only; the port registry remains
+    // exhaustive without pretending a v2 graph can author context behavior.
+    if(node.kind==='context-lifecycle')d.schemaVersion=3;
     d.nodes=kind==='input'?[node,d.nodes[1]]:nodeContract(kind).terminal?[d.nodes[0],node]:[d.nodes[0],node,d.nodes[1]];
     d.edges=[...kind==='input'?[]:[{id:'entry',source:'input',target:'node',port:'next' as const}],...ports(node).map(port=>({id:`node-${port}`,source:'node',target:'result',port}))];d.capabilities=requiredCapabilities(d.nodes);
     if(node.kind==='gate'){

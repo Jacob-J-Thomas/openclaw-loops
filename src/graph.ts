@@ -5,6 +5,7 @@ import {defaultBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {identifierSchema as key,NodeSchema,ContextNodeSchema,LegacyNodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 import {switchPorts,validateSwitch,validateTypedCondition} from './branching.js';
 import {assertMutableContextPath,bindingTokens,contextBindingSegments,contextPatchLiteral,contextPathForBinding,pathSegments,type ContextNodeConfig} from './context.js';
+import {validateLifecycle} from './context-lifecycle.js';
 import {isJson,literalValue,type NodeValue} from './node-values.js';
 import {evaluatorConfigurationIssue} from './evaluation-authoring.js';
 import {dataSchemaIssues,validateDataValue} from './data-schema.js';
@@ -72,6 +73,7 @@ export function validateGraph(d:Definition):Issue[] {
     if(node.outputSchema!==undefined)for(const diagnostic of dataSchemaIssues(node.outputSchema))error(`Output schema ${diagnostic.instancePath||'/'}: ${diagnostic.message}`,node.id);
     if(node.kind==='inference'&&node.outputSchema!==undefined&&node.output!=='json')error('Inference output schemas require JSON output mode.',node.id);
     if(node.kind==='inference'&&node.structuredGeneration==='native'&&(node.output!=='json'||node.outputSchema===undefined))error('Native structured generation requires JSON output and a valid output schema.',node.id);
+    if(node.kind==='context-lifecycle'){try{validateLifecycle(node.lifecycle);}catch(cause){error(cause instanceof Error?cause.message:'Invalid lifecycle configuration.',node.id);}if(['summarize','compact'].includes(node.lifecycle.operation)&&!d.capabilities.includes('llm'))error('Declare the llm capability for lifecycle completion.',node.id);}
     const context=node.context;
     if(!context)continue;
     try{

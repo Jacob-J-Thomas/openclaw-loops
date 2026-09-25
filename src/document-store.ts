@@ -8,6 +8,7 @@ import type {DocumentReference, UploadReference} from './wire-contract.js';
 import {LoopError, requestError, storageError} from './errors.js';
 import {uploadChunkCharacters, uploadEncodedLength, type UploadChunkInput} from './upload-input.js';
 import {documentLinks} from './document-links.js';
+import type {Json} from './node-values.js';
 import {DocumentLinksSchema, MaintenancePolicySchema, TransportReleaseSchema, emptyDocumentLinks, maintenancePreviewPlanId, mergeDocumentLinks, validLifetime, validUploadLifetime,
   type DocumentLifetime, type DocumentLinks, type UploadLifetime, type MaintenancePolicy, type MaintenanceResult, type MaintenanceFile, type ReferenceInventory, type TransportRelease} from './document-maintenance.js';
 
@@ -172,6 +173,11 @@ export class DocumentStore {
   resolve(actor: Actor, reference: UploadReference): unknown {
     const text = this.document(actor, reference.$loopsUpload).text;
     try { return JSON.parse(text); }
+    catch (error) { throw corrupt(error); }
+  }
+  contextValue(actor: Actor, documentId: string): Json {
+    const text=this.document(actor,documentId).text;
+    try { return JSON.parse(text) as Json; }
     catch (error) { throw corrupt(error); }
   }
   upload(actor: Actor, input: UploadChunkInput) {
