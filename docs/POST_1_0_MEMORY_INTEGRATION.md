@@ -31,7 +31,15 @@ keeps its inspectable running handle after ten seconds while a separate host
 session work admission stays awaited through plugin-observable settlement;
 later plugin-owned memory effects use the exact admitted run grant and current
 Loops/session checks. That grant is authority for this plugin's own memory only. The
-released session-action context cannot recheck the original operator's host
+bridge snapshots the trusted session `lifecycleRevision` when it constructs an
+actor and compares it again before work admission, after the host admission
+await, and at joined effect checks. A reset that keeps the session ID but
+changes its lifecycle blocks a stale actor from dispatching effects; a newly
+current invocation can still act. Historical read ownership remains the
+agent, session key and session ID tuple. If a legacy session entry omits the
+optional revision on both reads, this plugin cannot infer a reset from it;
+the public host work admission and its other current-invocation checks still
+apply. The released session-action context cannot recheck the original operator's host
 profile permission after the action returns, so the plugin does not claim
 later effects are still authorized by that person or by a durable host grant.
 Gateway-scoped commands are admitted by the host's registered write scope and

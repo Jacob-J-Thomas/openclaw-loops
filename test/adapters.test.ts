@@ -33,8 +33,8 @@ const directories:string[]=[];
 const shutdowns:Array<()=>Promise<void>>=[];
 afterEach(async()=>{for(const shutdown of shutdowns.splice(0))await shutdown();for(const dir of directories.splice(0))rmSync(dir,{recursive:true,force:true});});
 type AdapterActor={agentId:string;sessionKey:string;sessionId:string};
-type SessionEntry={sessionId:string;thinkingLevel?:string;authProfileOverride?:string};
-async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin;maxConcurrentRuns?:number;onComplete?:OpenClawPluginApi['runtime']['llm']['complete'];defaultModel?:{provider:string;model:string};actor?:AdapterActor;additionalActors?:readonly AdapterActor[];sessionEntry?:({agentId,sessionKey}:{agentId:string;sessionKey:string},sessions:Map<string,SessionEntry>)=>SessionEntry|undefined}){
+type SessionEntry={sessionId:string;lifecycleRevision?:string;thinkingLevel?:string;authProfileOverride?:string};
+async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<OpenClawPluginToolContext>;plugin?:typeof sourcePlugin;maxConcurrentRuns?:number;onComplete?:OpenClawPluginApi['runtime']['llm']['complete'];beforeWorkAdmission?:()=>Promise<void>;defaultModel?:{provider:string;model:string};actor?:AdapterActor;additionalActors?:readonly AdapterActor[];sessionEntry?:({agentId,sessionKey}:{agentId:string;sessionKey:string},sessions:Map<string,SessionEntry>)=>SessionEntry|undefined}){
   const root=options?.root??mkdtempSync(join(tmpdir(),'loops-adapters-'));if(!options?.root)directories.push(root);
   const commands=new Map<string,OpenClawPluginCommandDefinition>(),actions=new Map<string,PluginSessionActionRegistration>(),registered:ToolRegistration[]=[];const services:OpenClawPluginService[]=[];
   const selected=options?.actor??{agentId:'main',sessionKey:'agent:main:adapter-test',sessionId:'adapter-session'};
@@ -43,7 +43,7 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   // The real published feature SDK registers these adapters. Only host capabilities are faked.
   const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async request=>options?.onComplete?options.onComplete(request):({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
   const config={plugins:{entries:{'loops-poc':{enabled:true}}}},defaultModel=options?.defaultModel??{provider:'fake',model:'test-only'};
-  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{resolveStorePath:()=>join(root,'sessions.json'),getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>options?.sessionEntry?options.sessionEntry({agentId,sessionKey},sessions):sessions.get(`${agentId}:${sessionKey}`),runWithWorkAdmission:async(_params:unknown,run:(signal:AbortSignal)=>Promise<unknown>)=>run(new AbortController().signal)}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>defaultModel}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
+  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{resolveStorePath:()=>join(root,'sessions.json'),getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>options?.sessionEntry?options.sessionEntry({agentId,sessionKey},sessions):sessions.get(`${agentId}:${sessionKey}`),runWithWorkAdmission:async(_params:unknown,run:(signal:AbortSignal)=>Promise<unknown>)=>{await options?.beforeWorkAdmission?.();return run(new AbortController().signal);}}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>defaultModel}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
   (options?.plugin??plugin).register(api);
   if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
   const toolContext:OpenClawPluginToolContext<2>={agentId,sessionKey:key,sessionId,requesterSenderId:'host-sender',assertInvocationCurrent:()=>{},...options?.toolContext};
@@ -203,6 +203,25 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     let lookup=true;const unexpected=await setup({sessionEntry:({agentId,sessionKey},sessions)=>{if(!lookup)throw Error('private session lookup failure');return sessions.get(`${agentId}:${sessionKey}`);}});lookup=false;
     await expect(unexpected.action('library',{})).rejects.toThrow('private session lookup failure');
   },15_000);
+  it('blocks a reset-in-place during native admission before registered UI effect dispatch',async()=>{
+    let entered!:()=>void,release!:()=>void;
+    const reached=new Promise<void>(resolve=>{entered=resolve});
+    const gate=new Promise<void>(resolve=>{release=resolve});
+    const s=await setup({beforeWorkAdmission:async()=>{entered();await gate;}});
+    const entry=s.sessions.get(`${s.agentId}:${s.key}`)!;
+    entry.lifecycleRevision='before-reset';
+    const definition=structuredClone(examples[0]);
+    const before=await s.action('history',{});
+    const pending=s.action('test',{definition,input:{text:'must not execute'},requestId:'same-id-old-lifecycle'});
+    await reached;
+    entry.lifecycleRevision='after-reset';
+    release();
+    await expect(pending).resolves.toMatchObject({ok:true,result:{kind:'loops-error',operation:'test',error:{code:'LOOPS_SESSION_CHANGED'}}});
+    expect(s.complete).not.toHaveBeenCalled();
+    expect(await s.action('history',{})).toEqual(before);
+    await expect(s.action('test',{definition,input:{text:'current actor'},requestId:'same-id-new-lifecycle'})).resolves.toMatchObject({ok:true,result:{state:'completed'}});
+    expect(s.complete).toHaveBeenCalledTimes(1);
+  });
   it('preflights explicit incompatible inference settings through the registered UI adapter without dispatching them',async()=>{
     const s=await setup(),inherited=structuredClone(examples[0]);
     expect(await s.action('test',{definition:inherited,input:{text:'Inherited settings'},requestId:'capability-inherit'})).toMatchObject({ok:true,result:{state:'completed'}});

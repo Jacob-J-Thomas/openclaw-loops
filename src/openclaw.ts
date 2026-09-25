@@ -14,6 +14,9 @@ export function createBridge(api:OpenClawPluginApi){
   const current=()=>api.runtime.config.current() as typeof api.config;
   const configuredModel=(agentId:string)=>{const model=api.runtime.modelConfig.resolveDefaultModelForAgent({cfg:current(),agentId});return `${model.provider}/${model.model}`;};
   const sessionStore=(agentId:string)=>api.runtime.agent.session.resolveStorePath(current().session?.store,{agentId});
+  // Work admissions need the host's session lifecycle, not just its stable ID.
+  // Keep this internal: historical reads remain owned by agent/key/session ID.
+  const workLifecycle=new WeakMap<Actor,string|undefined>();
   const checkActor=(agentId:string,sessionKey:string,sessionId:string,storePath:string,assertCurrent?:()=>void)=>{
     const cfg=current();if(cfg.plugins?.enabled===false||cfg.plugins?.entries?.['loops-poc']?.enabled===false)throw requestError('Loops plugin is disabled.','LOOPS_DISABLED');
     if(sessionStore(agentId)!==storePath)throw requestError('Conversation store changed.','LOOPS_SESSION_CHANGED');
@@ -42,13 +45,21 @@ export function createBridge(api:OpenClawPluginApi){
     const assertCurrent=context.source==='tool'?context.tool.assertInvocationCurrent:context.source==='command'?context.command.assertOwnerCurrent:undefined;
     const a:Actor={agentId,sessionKey,sessionId,source:context.source,human,canManage,check:()=>checkActor(agentId,sessionKey,sessionId,storePath,assertCurrent),...requester?{requester}:{},model,
       ...context.source==='tool'&&context.signal?{signal:context.signal}:{}};
-    a.check();return a;
+    a.check();workLifecycle.set(a,entry?.lifecycleRevision);return a;
   }
   async function withCurrentWork<T>(actor:Actor,run:(actor:Actor)=>Promise<T>):Promise<T>{
     const storePath=sessionStore(actor.agentId);
-    actor.check();
+    const checkWork=()=>{
+      actor.signal?.throwIfAborted();
+      actor.check();
+      if(!workLifecycle.has(actor))throw requestError('A current host invocation is required for effect work.','HOST_POLICY_DENIED');
+      const entry=api.runtime.agent.session.getSessionEntry({storePath,agentId:actor.agentId,sessionKey:actor.sessionKey,readConsistency:'latest'});
+      if(!entry||entry.sessionId!==actor.sessionId||entry.lifecycleRevision!==workLifecycle.get(actor))throw requestError('Conversation lifecycle changed before effect work.','LOOPS_SESSION_CHANGED','Start a new invocation in the current conversation before trying again.');
+    };
+    checkWork();
     return api.runtime.agent.session.runWithWorkAdmission({storePath,sessionKey:actor.sessionKey,signal:actor.signal},async signal=>{
-      const joined:Actor={...actor,signal:actor.signal?AbortSignal.any([actor.signal,signal]):signal,check:()=>{signal.throwIfAborted();actor.check();}};
+      const joinedSignal=actor.signal?AbortSignal.any([actor.signal,signal]):signal;
+      const joined:Actor={...actor,signal:joinedSignal,check:()=>{joinedSignal.throwIfAborted();checkWork();}};
       joined.check();return run(joined);
     });
   }
