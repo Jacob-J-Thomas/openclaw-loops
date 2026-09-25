@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {autoLayout,schemaVersionForAddedNode} from '../src/editor-operations.js';
+import {autoLayout,copyDefinition,revisionChanges,schemaVersionForAddedNode,withActiveTimeout} from '../src/editor-operations.js';
 import {parseDefinition,validateGraph,type Definition} from '../src/graph.js';
 
 const branching:Definition={schemaVersion:2,id:'arrange-fixture',slug:'arrange-fixture',name:'Arrange fixture',description:'Preserve authored graph data.',revision:3,inputSchema:[{name:'route',label:'Route',type:'boolean',required:true}],capabilities:['model-info'],nodes:[
@@ -15,6 +15,11 @@ const branching:Definition={schemaVersion:2,id:'arrange-fixture',slug:'arrange-f
   {id:'left-join',source:'left',target:'return',port:'next'},
   {id:'right-join',source:'right',target:'return',port:'next'},
 ],layout:{input:{x:900,y:100},condition:{x:700,y:300},left:{x:500,y:500},right:{x:300,y:700},return:{x:100,y:900}},limits:{maxExecutions:20,maxOutputBytes:8192}};
+const contextual:Definition={schemaVersion:3,id:'context-timeout',slug:'context-timeout',name:'Context timeout',description:'Preserve context and recursive data through timeout edits.',revision:4,
+  inputSchema:[{name:'payload',label:'Payload',type:'json',required:true,schema:{type:'object',properties:{answer:{type:'number'}},required:['answer'],additionalProperties:false}}],capabilities:[],nodes:[
+    {id:'input',kind:'input',label:'Input',context:{version:1,projection:{mode:'omit'},patch:{mode:'replace',target:'/answer',source:{kind:'literal',value:{literalJson:'0'}}}}},
+    {id:'return',kind:'return',label:'Return',value:'{{context.answer}}',outputSchema:{type:'number'},context:{version:1,projection:{mode:'consume',paths:['/answer']},patch:{mode:'omit'}}},
+  ],edges:[{id:'next',source:'input',target:'return',port:'next'}],layout:{input:{x:12,y:34},return:{x:56,y:78}},limits:{maxExecutions:2,maxOutputBytes:1024}};
 
 const withoutLayout=(definition:Definition)=>{const copy=structuredClone(definition);delete (copy as Partial<Definition>).layout;return copy;};
 const finiteLayout=(definition:Definition)=>Object.values(definition.layout).every(position=>Number.isFinite(position.x)&&Number.isFinite(position.y));
@@ -102,5 +107,29 @@ describe('automatic graph layout',()=>{
     const safe={...v2,layout:{input:{x:Number.MAX_SAFE_INTEGER,y:-Number.MAX_SAFE_INTEGER},return:{x:0,y:0}}};
     expect(parseDefinition(safe)).toEqual(safe);
     for(const value of [Number.MAX_SAFE_INTEGER+1,NaN,Infinity,-Infinity])expect(()=>parseDefinition({...safe,layout:{...safe.layout,input:{x:value,y:0}}})).toThrow('Definition does not match schemaVersion 1, 2 or 3.');
+  });
+});
+
+describe('active timeout authoring',()=>{
+  it('promotes v1 and preserves v2/v3 across set, clear, and serialized reload',()=>{
+    for(const [original,version] of [[chain(1,2),2],[branching,2],[contextual,3]] as const){
+      const before=structuredClone(original),set=withActiveTimeout(original,123000),cleared=withActiveTimeout(set,undefined);
+      expect(set.schemaVersion).toBe(version);expect(set.limits.timeoutMs).toBe(123000);expect(parseDefinition(set)).toEqual(set);expect(validateGraph(set)).toEqual([]);
+      expect(cleared.schemaVersion).toBe(version);expect(cleared.limits).not.toHaveProperty('timeoutMs');expect(parseDefinition(cleared)).toEqual(cleared);expect(validateGraph(cleared)).toEqual([]);
+      for(const value of [set,cleared]){
+        const reloaded=parseDefinition(JSON.parse(JSON.stringify(value)));
+        expect(reloaded.schemaVersion).toBe(version);expect(reloaded.nodes).toEqual(before.nodes);expect(reloaded.edges).toEqual(before.edges);
+        expect(reloaded.inputSchema).toEqual(before.inputSchema);expect(reloaded.layout).toEqual(before.layout);
+      }
+      expect(original).toEqual(before);
+    }
+  });
+  it('retains v3 context and recursive schemas through other editor operations',()=>{
+    expect(parseDefinition(contextual)).toEqual(contextual);expect(validateGraph(contextual)).toEqual([]);
+    expect(()=>parseDefinition({...contextual,schemaVersion:2})).toThrow('Definition does not match schemaVersion 1, 2 or 3.');
+    const timed=withActiveTimeout(contextual,123000),arranged=autoLayout(timed),copied=copyDefinition(arranged,'context-timeout-copy',{maxExecutions:4,maxOutputBytes:2048});
+    expect(arranged.schemaVersion).toBe(3);expect(arranged.limits.timeoutMs).toBe(123000);expect(arranged.nodes).toEqual(contextual.nodes);expect(arranged.inputSchema).toEqual(contextual.inputSchema);
+    expect(copied.schemaVersion).toBe(3);expect(copied.limits).toEqual({maxExecutions:4,maxOutputBytes:2048,timeoutMs:123000});expect(copied.nodes).toEqual(contextual.nodes);expect(parseDefinition(copied)).toEqual(copied);
+    expect(revisionChanges(contextual,timed)).toContain('limits changed');expect(revisionChanges(contextual,timed)).not.toContain('schemaVersion changed');
   });
 });
