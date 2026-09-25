@@ -3,8 +3,8 @@ import {spawn,spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,readlinkSync,realpathSync,renameSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {createConnection} from 'node:net';
-import {platform} from 'node:os';
-import {setInterval,clearInterval,setTimeout,clearTimeout} from 'node:timers';
+import {constants,platform} from 'node:os';
+import {setImmediate,setInterval,clearInterval,setTimeout,clearTimeout} from 'node:timers';
 import {dirname,isAbsolute,join,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -293,22 +293,39 @@ export function activeLease(file,kind,owner,port=null){
       (port===null||ownedLoopbackListener(receipt.childPid,port));
   }catch{return false;}
 }
-export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=null){
-  let child,readinessTimer,guardTimer,stopTimer,result;
+export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=null,options={}){
+  let child,ownedLease,readinessTimer,guardTimer,stopTimer,result,pendingSignal=null;
+  const signalExitCode=signal=>{
+    const number=constants.signals[signal];
+    assert(Number.isInteger(number),'Unknown child termination signal: '+signal);
+    return 128+number;
+  };
   const signalOwned=signal=>{
     if(!child?.pid)return;
-    try{process.kill(-child.pid,signal);}catch{if(child.exitCode===null)child.kill(signal);}
+    try{process.kill(-child.pid,signal);}catch{if(child.exitCode===null&&child.signalCode===null)child.kill(signal);}
   };
   const forward=signal=>{
-    if(child?.exitCode===null){
+    pendingSignal??=signal;
+    if(child?.exitCode===null&&child.signalCode===null){
       signalOwned(signal);
-      if(!stopTimer)stopTimer=setTimeout(()=>{if(child?.exitCode===null)signalOwned('SIGKILL');},5000);
+      if(!stopTimer)stopTimer=setTimeout(()=>{if(child?.exitCode===null&&child.signalCode===null)signalOwned('SIGKILL');},5000);
     }
   };
+  const onSigint=()=>forward('SIGINT'),onSigterm=()=>forward('SIGTERM');
+  process.on('SIGINT',onSigint);process.on('SIGTERM',onSigterm);
   try{
+    ownedLease=typeof lease==='function'?lease():lease;
+    await new Promise(done=>setImmediate(done));
+    if(options.beforeSpawn)await options.beforeSpawn();
+    if(pendingSignal){
+      result={code:null,signal:pendingSignal};
+      process.exitCode=signalExitCode(pendingSignal);
+      return;
+    }
     child=spawn(binary,args,{stdio:'inherit',env,detached:true});
-    if(lease&&child.pid)lease.markChild(child.pid);
-    if(lease&&readyPort!==null){
+    if(pendingSignal)forward(pendingSignal);
+    if(ownedLease&&child.pid)ownedLease.markChild(child.pid);
+    if(ownedLease&&readyPort!==null){
       let checking=false;
       readinessTimer=setInterval(async()=>{
         if(checking||!child||!live(child.pid))return;
@@ -316,7 +333,7 @@ export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=n
         try{
           if(await portOccupied(readyPort)){
             if(!ownedLoopbackListener(child.pid,readyPort))throw Error('Selected port is not listening in the owned child process.');
-            lease.markReady();clearInterval(readinessTimer);
+            ownedLease.markReady();clearInterval(readinessTimer);
           }
         }
         catch(error){console.error('Owned service readiness failed: '+error.message);forward('SIGTERM');}
@@ -327,11 +344,10 @@ export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=n
       try{if(!await guard())forward('SIGTERM');}
       catch{forward('SIGTERM');}
     },500);
-    process.on('SIGINT',forward);process.on('SIGTERM',forward);
     result=await new Promise((done,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>done({code,signal}));});
-    process.exitCode=result.signal?128+(result.signal==='SIGINT'?2:15):result.code??1;
+    process.exitCode=result.signal?signalExitCode(result.signal):result.code??1;
   }catch(error){
-    if(child?.pid&&child.exitCode===null){
+    if(child?.pid&&child.exitCode===null&&child.signalCode===null){
       signalOwned('SIGTERM');
       await new Promise(done=>{
         if(child.exitCode!==null||child.signalCode!==null){done();return;}
@@ -342,10 +358,10 @@ export async function runOwned(binary,args,env,lease=null,readyPort=null,guard=n
     throw error;
   }finally{
     clearInterval(readinessTimer);clearInterval(guardTimer);clearTimeout(stopTimer);
-    process.off('SIGINT',forward);process.off('SIGTERM',forward);
-    if(child?.pid)signalOwned('SIGTERM');
-    if(lease){
-      const removed=lease.release(result??{});
+    process.off('SIGINT',onSigint);process.off('SIGTERM',onSigterm);
+    if(child?.pid&&child.exitCode===null&&child.signalCode===null)signalOwned('SIGTERM');
+    if(ownedLease){
+      const removed=ownedLease.release(result??{});
       console.error(removed?'Owned child exited; lease released and cleanup receipt saved.':'Owned child exited; lease mismatch recorded in cleanup receipt.');
     }
   }
@@ -364,7 +380,7 @@ export async function runOpenClaw(root,args,source=process.env){
     assert(!(await portOccupied(profile.port)),'Gateway port is occupied by an existing service.');
     if(name==='ollama')assert(await providerReady(),'Gateway requires its own ready disposable inference worker.');
     return runOwned(process.execPath,[cli,...args],profile.env,
-      acquireLease(lease,'gateway',profile.profile,join(profile.profile,'receipts'),profile.port),profile.port,
+      ()=>acquireLease(lease,'gateway',profile.profile,join(profile.profile,'receipts'),profile.port),profile.port,
       name==='ollama'?providerReady:null);
   }
   if(['gateway-call','agent'].includes(command)){
@@ -394,7 +410,7 @@ export async function runOllama(root,args,source=process.env){
   const port=ollamaPort(source);
   if(serve)assert(!(await portOccupied(port)),'Inference port is occupied by an existing provider daemon.');
   else assert(activeLease(lease,'inference-worker',project,port)&&await portOccupied(port),'Start the owned ready inference worker first.');
-  return runOwned(executable,args,env,serve?acquireLease(lease,'inference-worker',project,join(developmentBase(project),'receipts'),port):null,serve?port:null);
+  return runOwned(executable,args,env,serve?()=>acquireLease(lease,'inference-worker',project,join(developmentBase(project),'receipts'),port):null,serve?port:null);
 }
 if(fileURLToPath(import.meta.url)===resolve(process.argv[1]??'')){
   const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');

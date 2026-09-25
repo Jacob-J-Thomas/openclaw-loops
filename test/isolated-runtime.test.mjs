@@ -275,6 +275,56 @@ describe('isolated runtime admission',()=>{
       expect(receipt.signal).toBe('SIGTERM');expect(receipt.leaseRemoved).toBe(true);
     }finally{if(parent.exitCode===null)parent.kill('SIGKILL');}
   });
+  it('cancels before spawn when SIGTERM arrives during startup',async()=>{
+    const f=await fixture(),lease=join(f.root,'early.lease.json'),armed=join(f.root,'armed'),ack=join(f.root,'ack'),release=join(f.root,'release'),spawned=join(f.root,'spawned');
+    const helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
+    const childFile=join(f.root,'early-child.mjs'),runner=join(f.root,'early-runner.mjs');
+    writeFileSync(childFile,'import {writeFileSync} from \'node:fs\'; writeFileSync('+JSON.stringify(spawned)+',\'spawned\'); setInterval(()=>{},1000);');
+    writeFileSync(runner,'import {existsSync,writeFileSync} from \'node:fs\'; import {setTimeout} from \'node:timers/promises\'; import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; process.on(\'SIGTERM\',()=>writeFileSync('+JSON.stringify(ack)+',\'ack\')); await runOwned(process.execPath,['+JSON.stringify(childFile)+'],process.env,()=>acquireLease('+JSON.stringify(lease)+',\'gateway\',null,'+JSON.stringify(join(f.root,'receipts'))+'),null,null,{beforeSpawn:async()=>{writeFileSync('+JSON.stringify(armed)+',\'armed\');while(!existsSync('+JSON.stringify(release)+'))await setTimeout(10);}});');
+    const parent=spawn(process.execPath,[runner],{stdio:'ignore'});
+    try{
+      for(let attempt=0;attempt<100&&!existsSync(armed);attempt++)await new Promise(done=>setTimeout(done,20));
+      expect(existsSync(armed)).toBe(true);
+      parent.kill('SIGTERM');
+      for(let attempt=0;attempt<100&&!existsSync(ack);attempt++)await new Promise(done=>setTimeout(done,20));
+      expect(existsSync(ack)).toBe(true);writeFileSync(release,'release');
+      const exit=await new Promise((done,reject)=>{const timer=setTimeout(()=>{parent.kill('SIGKILL');reject(Error('Early cancellation did not exit.'));},3000);parent.once('exit',(code,signal)=>{clearTimeout(timer);done({code,signal});});});
+      expect(exit.code).toBe(143);expect(exit.signal).toBe(null);
+      expect(existsSync(spawned)).toBe(false);expect(existsSync(lease)).toBe(false);
+      const receipt=JSON.parse(readFileSync(join(f.root,'receipts',readdirSync(join(f.root,'receipts'))[0])));
+      expect(receipt.childPid).toBe(null);expect(receipt.signal).toBe('SIGTERM');expect(receipt.leaseRemoved).toBe(true);
+    }finally{if(parent.exitCode===null)parent.kill('SIGKILL');}
+  });
+  it('releases a lease when cancellation lands during acquisition',async()=>{
+    const f=await fixture(),lease=join(f.root,'acquiring.lease.json'),spawned=join(f.root,'acquiring-spawned');
+    const helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
+    const childFile=join(f.root,'acquiring-child.mjs'),runner=join(f.root,'acquiring-runner.mjs');
+    writeFileSync(childFile,'import {writeFileSync} from \'node:fs\'; writeFileSync('+JSON.stringify(spawned)+',\'spawned\');');
+    writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,['+JSON.stringify(childFile)+'],process.env,()=>{const owned=acquireLease('+JSON.stringify(lease)+',\'gateway\',null,'+JSON.stringify(join(f.root,'receipts'))+');process.emit(\'SIGTERM\');return owned;});');
+    const result=spawnSync(process.execPath,[runner],{encoding:'utf8',timeout:3000});
+    expect(result.status).toBe(143);expect(existsSync(spawned)).toBe(false);expect(existsSync(lease)).toBe(false);
+    const receipt=JSON.parse(readFileSync(join(f.root,'receipts',readdirSync(join(f.root,'receipts'))[0])));
+    expect(receipt.childPid).toBe(null);expect(receipt.signal).toBe('SIGTERM');expect(receipt.leaseRemoved).toBe(true);
+  });
+  it('reports the actual SIGKILL exit code after a child ignores SIGTERM',async()=>{
+    const f=await fixture(),lease=join(f.root,'kill.lease.json'),pidFile=join(f.root,'kill-child.pid');
+    const helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
+    const childFile=join(f.root,'kill-child.mjs'),runner=join(f.root,'kill-runner.mjs');
+    writeFileSync(childFile,'import {writeFileSync} from \'node:fs\'; process.on(\'SIGTERM\',()=>{}); writeFileSync('+JSON.stringify(pidFile)+',String(process.pid)); setInterval(()=>{},1000);');
+    writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,['+JSON.stringify(childFile)+'],process.env,acquireLease('+JSON.stringify(lease)+',\'gateway\',null,'+JSON.stringify(join(f.root,'receipts'))+'));');
+    const parent=spawn(process.execPath,[runner],{stdio:'ignore'});
+    try{
+      for(let attempt=0;attempt<100&&!existsSync(pidFile);attempt++)await new Promise(done=>setTimeout(done,20));
+      expect(existsSync(pidFile)).toBe(true);
+      const childPid=Number(readFileSync(pidFile,'utf8'));
+      parent.kill('SIGTERM');
+      const exit=await new Promise((done,reject)=>{const timer=setTimeout(()=>{parent.kill('SIGKILL');reject(Error('Forced kill did not exit.'));},9000);parent.once('exit',(code,signal)=>{clearTimeout(timer);done({code,signal});});});
+      expect(exit.code).toBe(137);expect(exit.signal).toBe(null);
+      expect(()=>process.kill(childPid,0)).toThrow();expect(existsSync(lease)).toBe(false);
+      const receipt=JSON.parse(readFileSync(join(f.root,'receipts',readdirSync(join(f.root,'receipts'))[0])));
+      expect(receipt.signal).toBe('SIGKILL');expect(receipt.childAlive).toBe(false);expect(receipt.leaseRemoved).toBe(true);
+    }finally{if(parent.exitCode===null)parent.kill('SIGKILL');}
+  },12000);
   it('sanitizes inherited host and provider variables',()=>{
     expect(cleanEnvironment({PATH:'/usr/bin',LANG:'en_US.UTF-8',TERM:'xterm',OPENCLAW_STATE_DIR:'/private',OLLAMA_HOST:'remote',OPENROUTER_API_KEY:'secret',JEV_API_KEY:'secret',NODE_OPTIONS:'--require /private/preload.js',NODE_PATH:'/private/modules',HTTPS_PROXY:'http://private-proxy',PUPPETEER_CACHE_DIR:'/private'})).toEqual({PATH:'/usr/bin',LANG:'en_US.UTF-8',TERM:'xterm'});
   });
