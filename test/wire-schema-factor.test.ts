@@ -82,8 +82,8 @@ describe('strict public tool wire factoring',()=>{
         expect(Object.hasOwn(defs,ref.slice('#/$defs/'.length)),`${operation} unresolved ${ref}`).toBe(true);
       }
     }
-    expect(count(projected.test).nodes).toBe(1703);
-    expect(count(baseline.test).nodes).toBe(1857);
+    expect(count(projected.test).nodes).toBe(1817);
+    expect(count(baseline.test).nodes).toBe(1971);
   });
 
   it('preserves all required full-definition fields, version discrimination, and unknown-field rejection',()=>{
@@ -182,6 +182,11 @@ describe('strict public tool wire factoring',()=>{
       {id:'switch',kind:'switch',label:'Switch',value:'{{input.text}}',strategy:'unique',cases:[{id:'zero',label:'Zero',value:0},{id:'nil',label:'Null',value:null},{id:'false',label:'False',value:false},{id:'emoji',label:'Emoji',value:'🙂'}],default:true},
       {id:'evaluate',kind:'evaluate',label:'Evaluate',value:'{{input.text}}',evaluator:{kind:'json-schema-2020',version:'2020-12',schema:{type:'string'}}},
       {id:'gate',kind:'gate',label:'Gate',evaluationId:'evaluate'},
+      {id:'inject',kind:'context-lifecycle',label:'Inject',lifecycle:{operation:'inject',target:'/working',paths:['/input/text'],value:{literalJson:'{"zero":0,"none":null}'}}},
+      {id:'retrieve',kind:'context-lifecycle',label:'Retrieve',lifecycle:{operation:'retrieve',target:'/recovered',paths:['/input/text'],source:{kind:'initial'}}},
+      {id:'summarize',kind:'context-lifecycle',label:'Summarize',lifecycle:{operation:'summarize',target:'/summary',paths:['/input/text'],instructions:'Retain the selected text.'}},
+      {id:'compact',kind:'context-lifecycle',label:'Compact',lifecycle:{operation:'compact',target:'/summary',paths:['/working'],instructions:'Retain the selected value.',reason:'Bounded compaction'}},
+      {id:'reset',kind:'context-lifecycle',label:'Reset',lifecycle:{operation:'reset',target:'/restored',paths:['/input/text'],source:{kind:'initial'},reason:'Restore initial input'}},
       {id:'context-return',kind:'return',label:'Return',value:'{{context.answer}}',context:{version:1,projection:{mode:'consume',paths:['/answer']},patch:{mode:'omit'}}},
     ];
     for(const node of extraNodes){
@@ -189,16 +194,37 @@ describe('strict public tool wire factoring',()=>{
       expect(Value.Check(baseline.test,payload('test',valid)),`native ${node.kind}/${node.id}`).toBe(true);
       parity('test',payload('test',valid),true);
       expect(parseDefinition(valid)).toEqual(valid);
+      if(node.kind==='context-lifecycle'){
+        for(const operation of full)parity(operation,payload(operation,valid),true);
+        const created=content(3);created.nodes=valid.nodes;
+        parity('create',payload('create',created),true);
+        parity('edit',payload('edit',{nodes:valid.nodes}),true);
+      }
       const unknown=structuredClone(valid);(unknown.nodes[1] as unknown as Record<string,unknown>).alien=true;
       parity('test',payload('test',unknown),false);
       expect(()=>parseDefinition(unknown)).toThrow();
       const cross=structuredClone(valid);(cross.nodes[1] as unknown as Record<string,unknown>).maxIterations=3;
       if(node.kind!=='repeat')parity('test',payload('test',cross),false);
+      if(node.kind==='context-lifecycle'){
+        for(const operation of full)parity(operation,payload(operation,cross),false);
+        parity('edit',payload('edit',{nodes:cross.nodes}),false);
+      }
     }
     const nested=definition(3);nested.nodes[0]!.context={version:1,projection:{mode:'omit'},patch:{mode:'replace',target:'/answer',source:{kind:'literal',value:{literalJson:'0'}}}};
     parity('test',payload('test',nested),true);
     const wrong=structuredClone(nested);(wrong.nodes[0]!.context!.patch as unknown as Record<string,unknown>).alien=true;
     parity('test',payload('test',wrong),false);
+
+    const protectedSource=definition(3);
+    protectedSource.nodes=[protectedSource.nodes[0]!,{id:'retrieve',kind:'context-lifecycle',label:'Retrieve',lifecycle:{operation:'retrieve',target:'/recovered',paths:['/input/text'],source:{kind:'initial'}}},protectedSource.nodes.at(-1)!];
+    (protectedSource.nodes[1] as Extract<Definition['nodes'][number],{kind:'context-lifecycle'}>).lifecycle.source={kind:'initial',sourceId:'cross-branch'} as never;
+    parity('test',payload('test',protectedSource),false);
+    expect(()=>parseDefinition(protectedSource)).toThrow();
+    const protectedValue=definition(3);
+    protectedValue.nodes=[protectedValue.nodes[0]!,{id:'inject',kind:'context-lifecycle',label:'Inject',lifecycle:{operation:'inject',target:'/working',paths:['/input/text'],value:{literalJson:'0'}}},protectedValue.nodes.at(-1)!];
+    (protectedValue.nodes[1] as Extract<Definition['nodes'][number],{kind:'context-lifecycle'}>).lifecycle.value={literalJson:'0',template:'cross-branch'} as never;
+    parity('test',payload('test',protectedValue),false);
+    expect(()=>parseDefinition(protectedValue)).toThrow();
   });
 
   it('preserves upload references and declines to factor unrecognized generated shapes',()=>{
