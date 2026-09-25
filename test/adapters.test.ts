@@ -1318,3 +1318,23 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
   it('returns a classified plugin-disabled failure after a tool factory was created',async()=>{const s=await setup();s.config.plugins.entries['loops-poc'].enabled=false;await expect(s.tools.find(t=>t.name==='loops_list')!.execute('disabled',{})).resolves.toMatchObject({details:{kind:'loops-error',operation:'list',error:{code:'LOOPS_DISABLED'}}});});
   it('keeps command input bounded and distinguishes explicit retry IDs',async()=>{const s=await setup();expect(parseCommand({...s.commandContext,args:'run summarize-text hello --request-id once'})).toMatchObject({input:{text:'hello'},requestId:'command:once'});expect(()=>parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)},16000)).toThrow(/large/);expect(parseCommand({...s.commandContext,args:'run summarize-text '+'x'.repeat(19000)})).toHaveProperty('input.text');});
 });
+
+describe('registered adapter typed branching',()=>{
+  it('executes an authored v3 Switch through the actual UI action adapter',async()=>{
+    const s=await setup();
+    const definition={schemaVersion:3,id:'adapter-switch',slug:'adapter-switch',name:'Adapter Switch',description:'typed adapter route',revision:0,inputSchema:[{name:'choice',label:'Choice',type:'json' as const,required:false}],capabilities:[] as const,limits:{maxExecutions:8,maxOutputBytes:4096},nodes:[
+      {id:'input',kind:'input' as const,label:'Input'},
+      {id:'switch',kind:'switch' as const,label:'Switch',value:'{{input.choice}}',strategy:'unique' as const,cases:[{id:'zero',label:'Zero',value:0}],default:true as const},
+      {id:'zero-result',kind:'return' as const,label:'Zero result',value:'{{nodes.switch.value}}'},
+      {id:'default-result',kind:'return' as const,label:'Default result',value:'default'},
+    ],edges:[
+      {id:'input-switch',source:'input',target:'switch',port:'next'},
+      {id:'switch-zero',source:'switch',target:'zero-result',port:'zero'},
+      {id:'switch-default',source:'switch',target:'default-result',port:'default'},
+    ],layout:{}};
+    const result=await s.action('test',{definition,input:{choice:0},requestId:'adapter-switch'});
+    expect(result).toMatchObject({ok:true,result:{state:'completed',result:0}});
+    expect(JSON.stringify(result)).toContain('switch');
+    expect(s.complete).not.toHaveBeenCalled();
+  });
+});

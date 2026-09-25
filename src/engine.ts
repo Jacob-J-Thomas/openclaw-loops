@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { bind, compare, display, isJson, parseDefinition, parseDefinitionContent, parseDefinitionPatch, validateGraph, validateInput, type BindingContext, type Capability, type Definition, type GraphNode, type Json } from './graph.js';
+import { bind, compare, display, isJson, parseDefinition, parseDefinitionContent, parseDefinitionPatch, resolveBinding, validateGraph, validateInput, type BindingContext, type Capability, type Definition, type GraphNode, type Json } from './graph.js';
 import { examples } from './examples.js';
 import {nodeContract,childNodes,type NodeExecutionContext} from './node-contracts.js';
 import type {OpenClawPluginApi} from 'openclaw/plugin-sdk/plugin-entry';
@@ -19,7 +19,7 @@ import {validateDataValue,type DataSchema} from './data-schema.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
-export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean}};
+export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:{port:string;caseId?:string;observed:string;truncated?:boolean}};
 export type ExecutionSettings=Pick<Actor,'model'|'reasoning'|'authProfileId'>&{agentModels?:Record<string,string>};
 export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;context?:ContextState;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
@@ -458,7 +458,7 @@ export class Engine{
       };
       const validateOutput=(node:GraphNode,output:Json):Json=>this.validateOutput(node,output,r);
       const execution:NodeExecutionContext={
-        signal,input:r.input,bind:(template,node=n)=>bind(template,contextFor(node)),compare:(predicate,node=n,iteration)=>compare(predicate,contextFor(node,iteration),r.definition.schemaVersion),
+        signal,input:r.input,bind:(template,node=n)=>bind(template,contextFor(node)),resolve:(template,node=n)=>resolveBinding(template,contextFor(node)),compare:(predicate,node=n,iteration)=>compare(predicate,contextFor(node,iteration),r.definition.schemaVersion),
         infer:(node,iteration)=>this.infer(actor,r,node,contextFor(node,iteration),signal),evaluate:async(value:Json,evaluator:Evaluator,nodeId:string)=>{try{return commitEvaluation(await evaluateDeterministically(value,evaluator,{signal,...this.options.evaluationWorkerUrl?{workerUrl:this.options.evaluationWorkerUrl}:{}}),nodeId);}catch(error){throw error instanceof EvaluationFailure?evaluationExecutionError(error.detail.code):error;}},modelInfo:()=>this.host.modelInfo(actor),readOutput:id=>{const output=r.outputs[id];if(n.kind==='gate'&&!isCommittedEvaluation(output,n.evaluationId))throw executionError('Evidence gate requires an intact committed evaluation result from this run.','LOOPS_EVIDENCE_UNAVAILABLE');return output;},
         requireCapability:capability=>this.host.check(actor,capability),checkAuthority:()=>this.allowedRun(actor,r),
         begin:(node,iteration)=>{this.begin(r,node,iteration);return r.trace.length-1;},
@@ -467,6 +467,7 @@ export class Engine{
       const dispatched=nodeContract(n.kind).execute(n,execution);
       const outcome=dispatched instanceof Promise?await dispatched:dispatched;
       const result=outcome.park?outcome.output:validateOutput(n,outcome.output),port=outcome.port??'next';
+      if(outcome.route){const observed=textPage(display(outcome.route.observed),0,512);evidence.route={port:outcome.route.port,...outcome.route.caseId?{caseId:outcome.route.caseId}:{},observed:observed.text,...observed.nextOffset===null?{}:{truncated:true}};}
       if(outcome.park){
         this.finish(r,evidence,outcome.park.value);r.state=outcome.park.state;r.pending=evidence.output;evidence.state=outcome.park.state;
         // v1/v2 runs historically expose the parked node's empty output. v3

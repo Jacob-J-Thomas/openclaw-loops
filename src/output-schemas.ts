@@ -45,7 +45,7 @@ const runData=Type.Object({
   cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),context:Type.Optional(ContextStateSchema),
   grantGeneration:Type.Optional(grantGeneration),
   definition:DefinitionSchema,input:Type.Record(text,Type.Unknown()),state:runState,cursor:text,outputs:Type.Record(text,Type.Unknown()),
-  trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text),rejectedResponse:Type.Optional(Type.Object({preview:text,bytes:integer,sha256:text,truncated:Type.Boolean()},strict))},strict)),
+  trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text),rejectedResponse:Type.Optional(Type.Object({preview:text,bytes:integer,sha256:text,truncated:Type.Boolean()},strict)),route:Type.Optional(Type.Object({port:text,caseId:Type.Optional(text),observed:text,truncated:Type.Optional(Type.Boolean())},strict))},strict)),
   executions:integer,activeMs:Type.Number({minimum:0}),createdAt:text,updatedAt:text,result:Type.Optional(Type.Unknown()),error:Type.Optional(text),
   errorDetail:Type.Optional(error),pending:Type.Optional(text),uncertainty:Type.Optional(text),review:Type.Optional(review),
 },strict);

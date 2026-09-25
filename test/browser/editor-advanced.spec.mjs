@@ -164,6 +164,30 @@ export async function runDataSchemaRenameRegression({receiptPath}={}){
   return receipt;
 }
 
+export async function runSwitchCaseDraftRegression({receiptPath}={}){
+  const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
+  const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
+  const receipt={runner:'mounted-switch-case-draft-playwright',transport:'synthetic fake backend; no provider invoked',checks:[],errors:[]};let browser;
+  try{
+    browser=await chromium.launch({headless:true});const page=await browser.newPage();page.setDefaultTimeout(10_000);page.on('pageerror',error=>receipt.errors.push(error.message));
+    await page.goto(url);await waitFor(page,'select[aria-label="Load an example"]');await page.selectOption('select[aria-label="Load an example"]','summarize-text');
+    await page.selectOption('select[aria-label="Node family"]','switch');await page.getByRole('button',{name:'+ Add node'}).click();
+    const selection=page.locator('select[aria-label="Select node to edit"]'),switchId=await selection.inputValue(),caseValue=page.getByLabel('Case 1 typed value JSON');
+    await page.getByRole('button',{name:'Save draft'}).click();await page.getByText('Revision 1 saved as a draft').waitFor();
+    await caseValue.fill('{');assert.equal(await caseValue.inputValue(),'{');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Save & publish'}).isDisabled(),true);receipt.checks.push('invalid case JSON persists and blocks Save and Publish');
+    await selection.selectOption('summary');await selection.selectOption(switchId);assert.equal(await caseValue.inputValue(),'{');receipt.checks.push('invalid case text survives node selection');
+    await page.getByRole('button',{name:'Discard invalid case text'}).click();await caseValue.fill('0');await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft());await page.getByRole('button',{name:'Save draft'}).click();await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1);
+    await caseValue.fill('{');await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft());await page.getByText('Revision 2 saved; newer draft edits are retained.').waitFor();assert.equal(await caseValue.inputValue(),'{');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);receipt.checks.push('newer invalid case text survives pending save acknowledgment');
+    await page.evaluate(()=>{globalThis.__editorRegression.deferNextLoad();globalThis.__editorRegression.refresh();});await page.waitForFunction(()=>globalThis.__editorRegression.deferredLoadCount()===1);
+    await caseValue.fill('[,');await page.evaluate(()=>globalThis.__editorRegression.resolveNextLoad());await page.waitForFunction(()=>globalThis.__editorRegression.deferredLoadCount()===0);assert.equal(await caseValue.inputValue(),'[,');receipt.checks.push('newer invalid case text survives pending refresh');
+    await page.getByRole('button',{name:'Remove selected node'}).click();assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),false);
+    await page.getByRole('button',{name:'Undo',exact:true}).click();await selection.selectOption(switchId);assert.equal(await caseValue.inputValue(),'[,');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);
+    await page.getByRole('button',{name:'Redo',exact:true}).click();assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),false);receipt.checks.push('orphaned invalid case draft does not block Save; Undo restores it');
+    assert.deepEqual(receipt.errors,[]);receipt.passed=true;
+  }catch(error){receipt.failure=error.message;throw error;}finally{if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');await browser?.close();await new Promise(resolve=>server.close(resolve));}
+  return receipt;
+}
+
 export async function runEditorAdvancedRegression({receiptPath}={}){
   const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
   const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
@@ -243,6 +267,17 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
     const saved=state.calls.filter(call=>['save','draft','restore'].includes(call.mode)); assert.deepEqual(advanced(saved.find(call=>call.mode==='save'&&call.definition.revision===1).definition),{temperature:0,maxTokens:64}); assert.deepEqual(advanced(saved.find(call=>call.mode==='save'&&call.definition.revision===4).definition),{temperature:0,maxTokens:96});
     assert.equal(saved.find(call=>call.mode==='save'&&call.definition.revision===1).definition.schemaVersion,3);assert.deepEqual(saved.find(call=>call.mode==='save'&&call.definition.revision===1).definition.nodes.filter(node=>node.kind==='evaluate'||node.kind==='gate').map(node=>node.kind),['evaluate','gate']);
     assert.deepEqual(advanced(saved.find(call=>call.mode==='restore').definition),{temperature:0,maxTokens:64}); assert.deepEqual(advanced(state.records.find(([,item])=>item.definition.slug.startsWith('imported-editor-'))[1].definition),{temperature:0,maxTokens:96}); assert.equal(state.records[0][1].publishedRevision,4);assert.equal(state.records[0][1].enabledRevision,4);assert.deepEqual(advanced(saved.find(call=>call.definition.revision===2).definition),{maxTokens:64});assert.ok(!Object.hasOwn(saved.find(call=>call.definition.revision===3).definition.nodes.find(node=>node.id==='summary'),'advanced'));assert.deepEqual(state.records[1][1].definition.nodes,state.records[0][1].definition.nodes);assert.deepEqual(state.records[1][1].definition.edges,state.records[0][1].definition.edges);assert.deepEqual(receipt.errors,[]);assert.equal(await page.getByRole('alert').count(),0);
+    await page.selectOption('select[aria-label="Node family"]','condition'); await page.getByRole('button',{name:'+ Add node'}).click();
+    if(await page.getByRole('button',{name:'Use version 2 in this draft',exact:true}).count())await page.getByRole('button',{name:'Use version 2 in this draft',exact:true}).click();
+    if(await page.getByRole('button',{name:'Use version 3 in this draft',exact:true}).count())await page.getByRole('button',{name:'Use version 3 in this draft',exact:true}).click();
+    await page.getByRole('button',{name:'Use typed condition',exact:true}).click(); assert.equal(await page.getByRole('combobox',{name:/Typed comparison/}).inputValue(),'equals'); receipt.checks.push('synthetic browser: v3 equality conversion preserves the legacy operator');
+    await page.getByRole('button',{name:'Remove selected node'}).click(); await page.selectOption('select[aria-label="Node family"]','condition'); await page.getByRole('button',{name:'+ Add node'}).click(); await page.getByRole('combobox',{name:/^Comparison/}).selectOption('contains'); await page.getByText(/no semantics-preserving typed conversion/i).waitFor(); assert.equal(await page.getByRole('button',{name:'Use typed condition',exact:true}).count(),0); receipt.checks.push('synthetic browser: non-equivalent legacy conditions require an explicit rewrite');
+    await page.getByRole('button',{name:'Remove selected node'}).click(); await page.selectOption('select[aria-label="Node family"]','switch'); await page.getByRole('button',{name:'+ Add node'}).click();
+    await page.getByLabel('Case 1 label').fill('First object'); await page.getByLabel('Case 1 typed value JSON').fill('{"outer":{"a":1,"b":[0,{"ready":false}]}}');
+    await page.getByRole('button',{name:'+ Add case'}).click(); await page.getByLabel('Case 2 label').fill('Same object reordered'); await page.getByLabel('Case 2 typed value JSON').fill('{"outer":{"b":[0,{"ready":false}],"a":1}}');
+    await page.locator('.lp-node-error').filter({hasText:/duplicate reachable case values/i}).waitFor(); await page.getByRole('combobox',{name:/Case matching/}).selectOption('ordered'); await page.getByRole('button',{name:'Remove case'}).last().click();
+    await page.getByLabel('Use default route').check(); assert.equal(await page.getByText('Stable port ID').count()>0,true); receipt.checks.push('synthetic browser: v3 Switch detects structural duplicate cases, then supports ordered and remove/default controls');
+    await page.getByRole('button',{name:'Remove selected node'}).click();
     await fillLoopName('QA unmount original'); await page.waitForFunction(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('QA unmount original'))return true;return false;}); await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft()); await page.getByRole('button',{name:'Save draft'}).click(); await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1); await page.evaluate(()=>globalThis.__editorRegression.unmount()); await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft()); await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===0&&globalThis.__editorRegression.calls.some(call=>call.mode==='draft'&&call.definition.name==='QA unmount original')); assert.equal(await page.evaluate(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('QA unmount original'))return true;return false;}),true); receipt.checks.push('late save after unmount preserves the recoverable snapshot');
     await verifyEvaluationDraftRaces(browser,url,receipt.checks);
     receipt.definitions=state.records.map(([id,item])=>({id,revision:item.definition.revision,enabledRevision:item.enabledRevision,publishedRevision:item.publishedRevision,advanced:advanced(item.definition)}));
@@ -251,4 +286,4 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
   if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n'); return receipt;
 }
 
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():process.argv[2]==='schema-renames'?runDataSchemaRenameRegression():runEditorAdvancedRegression()),null,2));
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():process.argv[2]==='schema-renames'?runDataSchemaRenameRegression():process.argv[2]==='switch-drafts'?runSwitchCaseDraftRegression():runEditorAdvancedRegression()),null,2));
