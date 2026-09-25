@@ -82,8 +82,8 @@ describe('strict public tool wire factoring',()=>{
         expect(Object.hasOwn(defs,ref.slice('#/$defs/'.length)),`${operation} unresolved ${ref}`).toBe(true);
       }
     }
-    expect(count(projected.test).nodes).toBe(1817);
-    expect(count(baseline.test).nodes).toBe(1971);
+    expect(count(projected.test).nodes).toBe(1818);
+    expect(count(baseline.test).nodes).toBe(1972);
   });
 
   it('preserves all required full-definition fields, version discrimination, and unknown-field rejection',()=>{
@@ -184,6 +184,7 @@ describe('strict public tool wire factoring',()=>{
       {id:'gate',kind:'gate',label:'Gate',evaluationId:'evaluate'},
       {id:'inject',kind:'context-lifecycle',label:'Inject',lifecycle:{operation:'inject',target:'/working',paths:['/input/text'],value:{literalJson:'{"zero":0,"none":null}'}}},
       {id:'retrieve',kind:'context-lifecycle',label:'Retrieve',lifecycle:{operation:'retrieve',target:'/recovered',paths:['/input/text'],source:{kind:'initial'}}},
+      {id:'retrieve-retained',kind:'context-lifecycle',label:'Retrieve retained',lifecycle:{operation:'retrieve',target:'/recovered',paths:['/input/text'],source:{kind:'retained',sourceId:'a'.repeat(64),format:'snapshot'}}},
       {id:'summarize',kind:'context-lifecycle',label:'Summarize',lifecycle:{operation:'summarize',target:'/summary',paths:['/input/text'],instructions:'Retain the selected text.'}},
       {id:'compact',kind:'context-lifecycle',label:'Compact',lifecycle:{operation:'compact',target:'/summary',paths:['/working'],instructions:'Retain the selected value.',reason:'Bounded compaction'}},
       {id:'reset',kind:'context-lifecycle',label:'Reset',lifecycle:{operation:'reset',target:'/restored',paths:['/input/text'],source:{kind:'initial'},reason:'Restore initial input'}},
@@ -220,6 +221,15 @@ describe('strict public tool wire factoring',()=>{
     (protectedSource.nodes[1] as Extract<Definition['nodes'][number],{kind:'context-lifecycle'}>).lifecycle.source={kind:'initial',sourceId:'cross-branch'} as never;
     parity('test',payload('test',protectedSource),false);
     expect(()=>parseDefinition(protectedSource)).toThrow();
+    for(const sourceId of ['short','A'.repeat(64),'a'.repeat(65)]){
+      const malformedRetained=definition(3);
+      malformedRetained.nodes=[malformedRetained.nodes[0]!,{id:'retrieve-retained',kind:'context-lifecycle',label:'Retrieve retained',lifecycle:{operation:'retrieve',target:'/recovered',paths:['/input/text'],source:{kind:'retained',sourceId,format:'snapshot'}}},malformedRetained.nodes.at(-1)!];
+      for(const operation of full)parity(operation,payload(operation,malformedRetained),false);
+      const created=content(3);created.nodes=malformedRetained.nodes;
+      parity('create',payload('create',created),false);
+      parity('edit',payload('edit',{nodes:malformedRetained.nodes}),false);
+      expect(()=>parseDefinition(malformedRetained)).toThrow();
+    }
     const protectedValue=definition(3);
     protectedValue.nodes=[protectedValue.nodes[0]!,{id:'inject',kind:'context-lifecycle',label:'Inject',lifecycle:{operation:'inject',target:'/working',paths:['/input/text'],value:{literalJson:'0'}}},protectedValue.nodes.at(-1)!];
     (protectedValue.nodes[1] as Extract<Definition['nodes'][number],{kind:'context-lifecycle'}>).lifecycle.value={literalJson:'0',template:'cross-branch'} as never;
