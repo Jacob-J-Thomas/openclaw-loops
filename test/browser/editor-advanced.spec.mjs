@@ -216,6 +216,31 @@ export async function runSwitchCaseDraftRegression({receiptPath}={}){
   return receipt;
 }
 
+export async function runBranchingReviewRegression({receiptPath}={}){
+  const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
+  const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
+  const receipt={runner:'mounted-branching-review-playwright',transport:'synthetic fake backend; no provider invoked',checks:[],errors:[]};let browser;
+  try{
+    browser=await chromium.launch({headless:true});const page=await browser.newPage();page.setDefaultTimeout(10_000);page.on('pageerror',error=>receipt.errors.push(error.message));
+    await page.goto(url);await waitFor(page,'select[aria-label="Load an example"]');await page.selectOption('select[aria-label="Load an example"]','summarize-text');
+    await page.getByRole('button',{name:'Save draft'}).click();await page.getByText('Revision 1 saved as a draft').waitFor();
+    await page.evaluate(()=>globalThis.__editorRegression.addTypedRouteRun('known-null-route',{port:'false',available:true,observed:'null'}));
+    await page.locator('select[aria-label="Select run"] option[value="known-null-route"]').waitFor({state:'attached'});await page.selectOption('select[aria-label="Select run"]','known-null-route');
+    await page.locator('.lp-run-node-detail .lp-route').getByText('null',{exact:true}).waitFor();assert.match(await page.locator('.lp-run-node-detail .lp-route').textContent(),/observed null/);receipt.checks.push('mounted Condition inspection preserves known null');
+    await page.evaluate(()=>globalThis.__editorRegression.addTypedRouteRun('absent-route',{port:'true',available:false}));
+    await page.locator('select[aria-label="Select run"] option[value="absent-route"]').waitFor({state:'attached'});await page.selectOption('select[aria-label="Select run"]','absent-route');
+    await page.getByText('observed value unavailable',{exact:true}).waitFor();assert.equal(await page.locator('.lp-run-node-detail .lp-route code').count(),1);receipt.checks.push('mounted Condition inspection explicitly labels unavailable operand');
+    await page.selectOption('select[aria-label="Node family"]','switch');await page.getByRole('button',{name:'+ Add node'}).click();
+    await page.getByLabel('Case 1 typed value JSON').fill('{"outer":{"a":1,"b":[0,{"ready":false}]}}');
+    await page.getByRole('button',{name:'+ Add case'}).click();await page.getByLabel('Case 2 typed value JSON').fill('{"outer":{"b":[0,{"ready":false}],"a":1}}');
+    await page.locator('.lp-node-error').filter({hasText:/duplicate reachable case values/i}).waitFor();receipt.checks.push('unique Switch rejects reordered structural duplicate');
+    await page.getByRole('combobox',{name:/Case matching/}).selectOption('ordered');await page.locator('.lp-node-error').filter({hasText:/duplicate reachable case values/i}).waitFor();receipt.checks.push('ordered Switch keeps the duplicate validation error');
+    await page.getByRole('button',{name:'Remove case'}).last().click();await page.locator('.lp-node-error').filter({hasText:/duplicate reachable case values/i}).waitFor({state:'detached'});receipt.checks.push('removing the unreachable case clears duplicate validation');
+    assert.deepEqual(receipt.errors,[]);receipt.passed=true;
+  }catch(error){receipt.failure=error.message;throw error;}finally{if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');await browser?.close();await new Promise(resolve=>server.close(resolve));}
+  return receipt;
+}
+
 export async function runEditorAdvancedRegression({receiptPath}={}){
   const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
   const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
@@ -258,12 +283,6 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
     await page.evaluate(()=>globalThis.__editorRegression.addTypedContextRun('context-fixture'));
     await page.locator('select[aria-label="Select run"] option[value="context-fixture"]').waitFor({state:'attached'}); await page.selectOption('select[aria-label="Select run"]','context-fixture'); await page.getByText('Shared context provenance').waitFor();
     await page.getByText('Context version 1',{exact:false}).waitFor(); await page.getByText('v0 → v1 · summary',{exact:true}).waitFor(); await page.getByText('Resolved value SHA-256',{exact:false}).waitFor(); await page.getByRole('heading',{name:'Recorded output',exact:true}).waitFor(); assert.equal(await page.locator('.lp-run-node-detail .lp-full-output').textContent(),'0'); receipt.checks.push('synthetic typed context fixture applies authored patch and consuming Return, then renders provenance');
-    await page.evaluate(()=>globalThis.__editorRegression.addTypedRouteRun('known-null-route',{port:'false',available:true,observed:'null'}));
-    await page.locator('select[aria-label="Select run"] option[value="known-null-route"]').waitFor({state:'attached'});await page.selectOption('select[aria-label="Select run"]','known-null-route');
-    await page.locator('.lp-run-node-detail .lp-route').getByText('null',{exact:true}).waitFor();assert.match(await page.locator('.lp-run-node-detail .lp-route').textContent(),/observed null/);receipt.checks.push('mounted Run inspection shows the exact null operand for a typed Condition');
-    await page.evaluate(()=>globalThis.__editorRegression.addTypedRouteRun('absent-route',{port:'true',available:false}));
-    await page.locator('select[aria-label="Select run"] option[value="absent-route"]').waitFor({state:'attached'});await page.selectOption('select[aria-label="Select run"]','absent-route');
-    await page.getByText('observed value unavailable',{exact:true}).waitFor();assert.equal(await page.locator('.lp-run-node-detail .lp-route code').count(),1);receipt.checks.push('mounted Run inspection labels unavailable binding without an invented observed value');
     await page.evaluate(()=>globalThis.__editorRegression.addPendingRun('empty-wait','waiting',''));
     await page.locator('select[aria-label="Select run"] option[value="empty-wait"]').waitFor({state:'attached'}); await page.selectOption('select[aria-label="Select run"]','empty-wait'); await page.getByRole('button',{name:'Continue'}).waitFor(); await page.getByRole('button',{name:'Continue'}).focus(); await page.keyboard.press('Enter'); await page.waitForFunction(()=>globalThis.__editorRegression.calls.some(call=>call.id==='resume'&&call.payload.runId==='empty-wait')); receipt.checks.push('empty Wait exposes keyboard Continue');
     await page.evaluate(()=>globalThis.__editorRegression.addPendingRun('empty-review','review',''));
@@ -321,4 +340,4 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
   if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n'); return receipt;
 }
 
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():process.argv[2]==='schema-renames'?runDataSchemaRenameRegression():process.argv[2]==='switch-drafts'?runSwitchCaseDraftRegression():process.argv[2]==='schema-history'?runUnvisitedSchemaHistoryRegression():runEditorAdvancedRegression()),null,2));
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():process.argv[2]==='schema-renames'?runDataSchemaRenameRegression():process.argv[2]==='switch-drafts'?runSwitchCaseDraftRegression():process.argv[2]==='schema-history'?runUnvisitedSchemaHistoryRegression():process.argv[2]==='branching-review'?runBranchingReviewRegression():runEditorAdvancedRegression()),null,2));
