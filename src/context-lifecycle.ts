@@ -22,6 +22,7 @@ export type LifecycleSourceRecord={id:string;operation:LifecycleOperation;docume
 
 const plain=(value:unknown):value is Record<string,Json>=>!!value&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype;
 const index=/^(?:0|[1-9][0-9]*)$/;
+const overlaps=(left:readonly string[],right:readonly string[])=>left.slice(0,right.length).every((part,index)=>part===right[index])||right.slice(0,left.length).every((part,index)=>part===left[index]);
 function read(root:Json,path:string):Json{let value:unknown=root;for(const part of pathSegments(path)){if(Array.isArray(value)){if(!index.test(part)||Number(part)>=value.length)throw executionError(`Context path is unavailable: ${path}`,'LOOPS_CONTEXT_UNAVAILABLE');value=value[Number(part)];}else if(plain(value)&&Object.hasOwn(value,part))value=value[part];else throw executionError(`Context path is unavailable: ${path}`,'LOOPS_CONTEXT_UNAVAILABLE');}return structuredClone(value as Json);}
 function replace(root:Record<string,Json>,path:string,value:Json){const parts=pathSegments(path);if(parts[0]==='input')throw executionError('Context input is immutable. Choose another context target.','LOOPS_CONTEXT_CONFLICT');let parent:Json=root;for(const part of parts.slice(0,-1)){if(Array.isArray(parent)&&index.test(part)&&Number(part)<parent.length)parent=parent[Number(part)];else if(plain(parent)&&Object.hasOwn(parent,part))parent=parent[part];else throw executionError(`Context parent is unavailable: ${path}`,'LOOPS_CONTEXT_UNAVAILABLE');}const last=parts.at(-1)!;if(Array.isArray(parent)){if(!index.test(last)||Number(last)>parent.length)throw executionError(`Context target is unavailable: ${path}`,'LOOPS_CONTEXT_UNAVAILABLE');parent[Number(last)]=structuredClone(value);}else if(plain(parent))parent[last]=structuredClone(value);else throw executionError(`Context parent is unavailable: ${path}`,'LOOPS_CONTEXT_UNAVAILABLE');}
 function remove(root:Record<string,Json>,path:string){const parts=pathSegments(path);if(parts[0]==='input')throw executionError('Context input is immutable.','LOOPS_CONTEXT_CONFLICT');let parent:Json=root;for(const part of parts.slice(0,-1)){if(Array.isArray(parent)&&index.test(part)&&Number(part)<parent.length)parent=parent[Number(part)];else if(plain(parent)&&Object.hasOwn(parent,part))parent=parent[part];else throw executionError(`Context path is unavailable: ${path}`,'LOOPS_CONTEXT_UNAVAILABLE');}const last=parts.at(-1)!;if(Array.isArray(parent)){if(!index.test(last)||Number(last)>=parent.length)throw executionError(`Context path is unavailable: ${path}`,'LOOPS_CONTEXT_UNAVAILABLE');parent.splice(Number(last),1);}else if(plain(parent)&&Object.hasOwn(parent,last))delete parent[last];else throw executionError(`Context path is unavailable: ${path}`,'LOOPS_CONTEXT_UNAVAILABLE');}
@@ -54,17 +55,25 @@ export function selectRetainedSource(value:unknown,paths:ContextPath[],format:'s
   return result;
 }
 export function lifecycleMutation(state:ContextState,target:ContextPath,value:Json,removedPaths:ContextPath[],source:Omit<LifecycleSourceRecord,'targetVersion'>):ContextState{
-  const next=structuredClone(state),before=state.version;
+  const before=state.version;
   if(source.sourceVersion!==before)throw requestError('Lifecycle source version does not match the current context.');
+  const targetParts=pathSegments(target),removed=removedPaths.map(path=>({path,parts:pathSegments(path)}));
+  if(removed.some(entry=>overlaps(targetParts,entry.parts)))throw requestError('Compact target must not overlap a removed path.');
+  if(removed.some((entry,index)=>removed.some((other,otherIndex)=>index!==otherIndex&&overlaps(entry.parts,other.parts))))throw requestError('Compact paths cannot overlap.');
+  const next=structuredClone(state);
+  // Resolve the authored target against the original coordinates. Array
+  // splices may shift sibling indices, so removals follow this write.
+  replace(next.value,target,value);
   // Removing a later array index first keeps selected positions stable. A
-  // deeper child must precede its parent; overlapping paths are rejected at
-  // authoring time, so this is deterministic for valid graphs.
-  const removals=[...removedPaths].sort((left,right)=>{const a=pathSegments(left),b=pathSegments(right);if(a.length!==b.length)return b.length-a.length;const parentA=a.slice(0,-1).join('/'),parentB=b.slice(0,-1).join('/');if(parentA===parentB&&index.test(a.at(-1)!)&&index.test(b.at(-1)!))return Number(b.at(-1)!)-Number(a.at(-1)!);return left.localeCompare(right);});
-  for(const path of removals){if(path===target||target.startsWith(`${path}/`)||path.startsWith(`${target}/`))throw requestError('Lifecycle removal and target paths overlap.');remove(next.value,path);}replace(next.value,target,value);next.version=before+1;next.sources??=[];next.sources.push({...source,targetVersion:next.version});return next;
+  // deeper child must precede its parent; all overlaps were checked before
+  // any write, so the sorted removal retains original selected identities.
+  const removals=removed.sort((left,right)=>{const a=left.parts,b=right.parts;if(a.length!==b.length)return b.length-a.length;const parentA=a.slice(0,-1).join('/'),parentB=b.slice(0,-1).join('/');if(parentA===parentB&&index.test(a.at(-1)!)&&index.test(b.at(-1)!))return Number(b.at(-1)!)-Number(a.at(-1)!);return left.path.localeCompare(right.path);});
+  for(const {path} of removals)remove(next.value,path);
+  next.version=before+1;next.sources??=[];next.sources.push({...source,targetVersion:next.version});return next;
 }
 export function retained(state:ContextState,id:string):LifecycleSourceRecord{const source=state.sources?.find(item=>item.id===id);if(!source)throw executionError('Retained context source is unavailable.','LOOPS_CONTEXT_SOURCE_UNAVAILABLE');return source;}
 export function validateLifecycle(config:ContextLifecycle){
-  for(const path of [config.target,...config.paths])pathSegments(path);
+  const targetParts=pathSegments(config.target),selectedPaths=config.paths.map(path=>pathSegments(path));
   assertMutableContextPath(config.target);
   if(config.source?.kind==='retained'&&(config.source.sourceId.length!==64||!/^[0-9a-f]{64}$/.test(config.source.sourceId)))throw requestError('Retained source ID must be a 64 lowercase hexadecimal character digest.');
   if(['retrieve','reset'].includes(config.operation)&&!config.source)throw requestError(`${config.operation} requires an explicit lifecycle source.`);
@@ -73,10 +82,11 @@ export function validateLifecycle(config:ContextLifecycle){
   if(config.operation!=='inject'&&config.value!==undefined)throw requestError('Only inject accepts an authored value.');
   if(['summarize','compact'].includes(config.operation)&&config.instructions===undefined)throw requestError(`${config.operation} requires authored instructions.`);
   if(['summarize','compact'].includes(config.operation)&&config.source)throw requestError(`${config.operation} cannot replace its explicit model completion with a retained source.`);
+  if(config.operation==='summarize'&&selectedPaths.some(parts=>overlaps(targetParts,parts)))throw requestError('Summarize target must not overlap a selected path; choose a disjoint target to keep selected values live.');
   if(config.operation==='compact'){
     for(const path of config.paths)assertMutableContextPath(path);
-    if(config.paths.some((path,index)=>config.paths.some((other,otherIndex)=>index!==otherIndex&&(path.startsWith(`${other}/`)||other.startsWith(`${path}/`)))))throw requestError('Compact paths cannot overlap.');
-    if(config.paths.some(path=>path===config.target||config.target.startsWith(`${path}/`)||path.startsWith(`${config.target}/`)))throw requestError('Compact target must not overlap a removed path.');
+    if(selectedPaths.some((parts,index)=>selectedPaths.some((other,otherIndex)=>index!==otherIndex&&overlaps(parts,other))))throw requestError('Compact paths cannot overlap.');
+    if(selectedPaths.some(parts=>overlaps(targetParts,parts)))throw requestError('Compact target must not overlap a removed path.');
   }
   if(['compact','reset'].includes(config.operation)&&!config.reason?.trim())throw requestError(`${config.operation} requires an authored reason for its lossy change.`);
 }

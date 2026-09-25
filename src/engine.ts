@@ -154,8 +154,29 @@ export class Engine{
   documentFinishUse(actor:Actor,id:string,readerId:string|undefined,links:DocumentLinks){return this.documentStore(actor).finishUse(actor,id,readerId,links);}
   maintenance(actor:Actor,policy:MaintenancePolicy,applyPlanId?:string){
     this.ensureAuthor(actor);
-    const runs=this.storage.indexed?.runMetadata()??Object.values(this.state.runs);
-    return this.documentStore(actor).maintenance(actor,policy,{runs:new Set(runs.map(run=>run.id)),loops:new Set(Object.keys(this.state.loops))},applyPlanId);
+    const owner=ownerKey(actor),metadata=(this.storage.indexed?.runMetadata()??Object.values(this.state.runs)).filter(run=>ownerKey(run.owner)===owner);
+    const documents=new Set<string>();
+    const fromDefinition=(definition:Definition)=>{
+      for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)]))
+        if(node.kind==='context-lifecycle'&&node.lifecycle.source?.kind==='retained')documents.add(node.lifecycle.source.sourceId);
+    };
+    for(const record of Object.values(this.state.loops)){
+      fromDefinition(record.definition);
+      for(const revision of Object.values(record.revisions??{}))fromDefinition(revision);
+    }
+    const fromRun=(run:Run)=>{
+      fromDefinition(run.definition);
+      for(const source of run.context?.sources??[])documents.add(source.documentId);
+    };
+    for(const item of metadata){
+      const run=this.storage.indexed?.readRun(item.id,owner)??this.state.runs[item.id];
+      if(!run)throw requestError('Saved run reference inventory is unavailable. Transport cleanup was not applied.','LOOPS_STORAGE_UNAVAILABLE');
+      fromRun(run);
+    }
+    // An in-flight run can carry a newer source until its checkpoint finishes.
+    // Including that source is conservative; cold SQLite rows are read above.
+    for(const run of Object.values(this.state.runs))if(ownerKey(run.owner)===owner)fromRun(run);
+    return this.documentStore(actor).maintenance(actor,policy,{runs:new Set(metadata.map(run=>run.id)),loops:new Set(Object.keys(this.state.loops)),documents},applyPlanId);
   }
   transportRelease(actor:Actor,input:TransportRelease){this.ensureAuthor(actor);return this.documentStore(actor).release(actor,input);}
   documentUpload(actor:Actor,input:Parameters<DocumentStore['upload']>[1]){return this.documentStore(actor).upload(actor,input);}
