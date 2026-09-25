@@ -1,10 +1,10 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync,fork,spawn,spawnSync} from 'node:child_process';
-import {createLifecycleOperations,lifecycleChildProcessState,lifecycleFailureReceipt,sanitizeLifecycleClientStartup} from '../scripts/lifecycle-failure-receipt.mjs';
+import {appendLifecycleClientMilestone,createLifecycleOperations,lifecycleChildProcessState,lifecycleFailureReceipt,sanitizeLifecycleClientStartup} from '../scripts/lifecycle-failure-receipt.mjs';
 
 const directories=[];
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
@@ -130,19 +130,75 @@ describe('sanitized lifecycle failure receipt',()=>{
     expect(sanitizeLifecycleClientStartup(hostile)).toMatchObject({gatewayProcessState:'unavailable',clientProcessState:'unavailable',timings:[]});
   });
 
+  it('accepts only ordered startup milestones and keeps worker execution separate from IPC receipt time',()=>{
+    const secret='token=private-client /private/operator/path';
+    let milestones=[];
+    milestones=appendLifecycleClientMilestone(milestones,{type:'startup-milestone',phase:'worker-entry',sequence:0,workerElapsedMs:0,secret},17);
+    expect(appendLifecycleClientMilestone(milestones,{type:'startup-milestone',phase:'client-started',sequence:2,workerElapsedMs:3},20)).toEqual(milestones);
+    expect(appendLifecycleClientMilestone(milestones,{type:'startup-milestone',phase:secret,sequence:1,workerElapsedMs:3},20)).toEqual(milestones);
+    milestones=appendLifecycleClientMilestone(milestones,{type:'startup-milestone',phase:'sdk-imported',sequence:1,workerElapsedMs:35,secret},58);
+    expect(appendLifecycleClientMilestone(milestones,{type:'startup-milestone',phase:'client-started',sequence:2,workerElapsedMs:34},60)).toEqual(milestones);
+    milestones=appendLifecycleClientMilestone(milestones,{type:'startup-milestone',phase:'client-started',sequence:2,workerElapsedMs:39,secret},64);
+    expect(appendLifecycleClientMilestone(milestones,{type:'startup-milestone',phase:'client-started',sequence:2,workerElapsedMs:40},65)).toEqual(milestones);
+    const receipt=lifecycleFailureReceipt('upgrade',new Error('Gateway client startup timed out.'),undefined,undefined,{clientStartup:{restartOrdinal:1,budgetMs:15000,elapsedMs:15000,milestones:[...milestones,{phase:secret,sequence:3,workerElapsedMs:42,receivedElapsedMs:70}],raw:secret}});
+    expect(receipt.clientStartup.milestones).toEqual([{phase:'worker-entry',sequence:0,workerElapsedMs:0,receivedElapsedMs:17},{phase:'sdk-imported',sequence:1,workerElapsedMs:35,receivedElapsedMs:58},{phase:'client-started',sequence:2,workerElapsedMs:39,receivedElapsedMs:64}]);
+    expect(receipt.category).toBe('timeout');
+    expect(JSON.stringify(receipt)).not.toContain(secret);
+    const hostile={get phase(){throw Error(secret);},sequence:0,workerElapsedMs:0,receivedElapsedMs:0};
+    expect(sanitizeLifecycleClientStartup({milestones:[hostile]}).milestones).toEqual([]);
+    expect(appendLifecycleClientMilestone([],{get type(){throw Error(secret);}},1)).toEqual([]);
+  });
+
   it('forwards an allowlisted public client timing without a timeout override',async()=>{
     const root=mkdtempSync(join(tmpdir(),'loops-client-worker-'));directories.push(root);
     const packageRoot=join(root,'node_modules','openclaw');mkdirSync(packageRoot,{recursive:true});
     writeFileSync(join(root,'package.json'),JSON.stringify({name:'worker-fixture',private:true,type:'module'}));
     writeFileSync(join(packageRoot,'package.json'),JSON.stringify({name:'openclaw',private:true,type:'module',exports:{'./plugin-sdk/gateway-runtime':'./gateway-runtime.mjs'}}));
-    writeFileSync(join(packageRoot,'gateway-runtime.mjs'),"export class GatewayClient { constructor(options){ this.options=options; } start(){ queueMicrotask(()=>{ this.options.onTiming({phase:'challenge',generation:2,durationMs:7,phaseDurationMs:3,hasChallenge:true,usedFallback:false,plan:'token=private'}); this.options.onHelloOk(); }); } async stopAndWait(){} }");
+    writeFileSync(join(packageRoot,'gateway-runtime.mjs'),"export class GatewayClient { constructor(options){ this.options=options; } start(){ this.options.onTiming({phase:'challenge',generation:2,durationMs:7,phaseDurationMs:3,hasChallenge:true,usedFallback:false,plan:'token=private'}); this.options.onHelloOk(); } async stopAndWait(){} }");
     const {LOOPS_GATEWAY_STARTUP_BUDGET_MS:_timeoutOverride,...env}=process.env;
     const worker=fork(new URL('./helpers/gateway-client-worker.mjs',import.meta.url),[],{cwd:root,env:{...env,LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:root,LOOPS_GATEWAY_URL:'ws://127.0.0.1:21961',LOOPS_GATEWAY_TOKEN:'private-token'},silent:true});
     const messages=[];
     await new Promise((resolveDone,reject)=>{const timer=setTimeout(()=>reject(Error('Worker did not stop.')),5_000);worker.on('message',message=>{messages.push(message);if(message?.type==='ready')worker.send({type:'stop'});});worker.once('error',reject);worker.once('exit',code=>{clearTimeout(timer);if(code===0)resolveDone();else reject(Error(`Worker exited ${code}.`));});});
     expect(messages).toEqual(expect.arrayContaining([{type:'timing',timing:{phase:'challenge',generation:2,durationMs:7,phaseDurationMs:3,hasChallenge:true,usedFallback:false}},{type:'ready'},{type:'stopped'}]));
+    expect(messages.filter(message=>message?.type==='startup-milestone').map(message=>[message.phase,message.sequence])).toEqual([['worker-entry',0],['sdk-imported',1],['client-started',2]]);
+    expect(messages.findIndex(message=>message?.phase==='client-started')).toBeLessThan(messages.findIndex(message=>message?.type==='ready'));
     expect(JSON.stringify(messages)).not.toContain('private');
   });
+
+  it('distinguishes bounded pre-entry, SDK-import, and post-import stalls using only owned fake workers',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-client-phases-'));directories.push(root);
+    const packageRoot=join(root,'node_modules','openclaw'),preload=join(root,'preload.mjs');mkdirSync(packageRoot,{recursive:true});
+    const preGate=join(root,'enter'),importGate=join(root,'import'),helloGate=join(root,'hello');
+    writeFileSync(join(root,'package.json'),JSON.stringify({name:'phase-fixture',private:true,type:'module'}));
+    writeFileSync(join(packageRoot,'package.json'),JSON.stringify({name:'openclaw',private:true,type:'module',exports:{'./plugin-sdk/gateway-runtime':'./gateway-runtime.mjs'}}));
+    const waitSource=file=>`await new Promise((done,reject)=>{let tries=0;const poll=setInterval(()=>{if(existsSync(${JSON.stringify(file)})){clearInterval(poll);done();}else if(++tries===300){clearInterval(poll);reject(Error('fixture gate expired'));}},10);});`;
+    writeFileSync(preload,'import {existsSync} from "node:fs"; process.send?.({type:"fixture-preload-entered"}); '+waitSource(preGate));
+    writeFileSync(join(packageRoot,'gateway-runtime.mjs'),'import {existsSync} from "node:fs"; '+waitSource(importGate)+' export class GatewayClient { constructor(options){this.options=options;} start(){this.poll=setInterval(()=>{if(existsSync('+JSON.stringify(helloGate)+')){clearInterval(this.poll);this.options.onHelloOk();}},10);} async stopAndWait(){clearInterval(this.poll);} }');
+    const worker=fork(new URL('./helpers/gateway-client-worker.mjs',import.meta.url),[],{cwd:root,execArgv:['--import',preload],env:{PATH:process.env.PATH??'/usr/bin:/bin',LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:root,LOOPS_GATEWAY_URL:'ws://127.0.0.1:21961',LOOPS_GATEWAY_TOKEN:'private-token'},silent:true});
+    const messages=[];let milestones=[];
+    const started=Date.now();
+    worker.on('message',message=>{messages.push(message);if(message?.type==='startup-milestone')milestones=appendLifecycleClientMilestone(milestones,message,Date.now()-started);});
+    const until=async(predicate,label)=>{for(let attempt=0;attempt<300;attempt++){if(predicate())return;await new Promise(done=>setTimeout(done,10));}throw Error('Fixture timed out waiting for '+label);};
+    try{
+      await until(()=>messages.some(message=>message?.type==='fixture-preload-entered'),'pre-entry fixture gate');
+      await new Promise(done=>setTimeout(done,80));
+      expect(milestones).toEqual([]); // The parent spawned it, but worker entry was not observed.
+      writeFileSync(preGate,'go');await until(()=>milestones.length===1,'worker entry');
+      expect(milestones[0].phase).toBe('worker-entry');
+      await new Promise(done=>setTimeout(done,80));expect(milestones).toHaveLength(1); // SDK import is held.
+      writeFileSync(importGate,'go');await until(()=>milestones.length===3,'client start');
+      expect(milestones.map(value=>value.phase)).toEqual(['worker-entry','sdk-imported','client-started']);
+      expect(messages.some(message=>message?.type==='ready')).toBe(false); // Client start precedes hello.
+      writeFileSync(helloGate,'go');await until(()=>messages.some(message=>message?.type==='ready'),'hello');
+      worker.send({type:'stop'});await until(()=>worker.exitCode!==null||worker.signalCode!==null,'owned worker exit');
+      expect(worker.exitCode).toBe(0);
+      expect(milestones.every(value=>value.workerElapsedMs<=value.receivedElapsedMs)).toBe(true);
+      expect(JSON.stringify(messages)).not.toContain('private-token');
+    }finally{
+      for(const gate of [preGate,importGate,helloGate])if(!existsSync(gate))writeFileSync(gate,'go');
+      if(worker.exitCode===null&&worker.signalCode===null){worker.kill('SIGTERM');await until(()=>worker.exitCode!==null||worker.signalCode!==null,'terminated worker');}
+    }
+  },7000);
 
   it('classifies an unspawned child before alive and preserves live, exit, and signal states',async()=>{
     const directory=mkdtempSync(join(tmpdir(),'loops-child-state-'));directories.push(directory);
