@@ -6156,8 +6156,9 @@
                           },
                           "sourceId": {
                             "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
+                            "minLength": 64,
+                            "maxLength": 64,
+                            "pattern": "^[0-9a-f]{64}$"
                           },
                           "format": {
                             "anyOf": [
