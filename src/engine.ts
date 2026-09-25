@@ -353,8 +353,10 @@ export class Engine{
   }
   private pinAgentModels(actor:Actor,definition:Definition){
     const agentModels:Record<string,string>=Object.create(null);
-    for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)]))if(node.kind==='inference'&&node.agentId&&!node.model&&node.agentId!==actor.agentId&&!Object.hasOwn(agentModels,node.agentId)){
-      const model=this.capabilities(actor,{agentId:node.agentId}).model;if(model)agentModels[node.agentId]=model;
+    for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)])){
+      const settings=node.kind==='inference'?node:node.kind==='context-lifecycle'&&['summarize','compact'].includes(node.lifecycle.operation)?node.lifecycle:undefined;
+      if(!settings?.agentId||settings.model||settings.agentId===actor.agentId||Object.hasOwn(agentModels,settings.agentId))continue;
+      const model=this.capabilities(actor,{agentId:settings.agentId}).model;if(model)agentModels[settings.agentId]=model;
     }
     return agentModels;
   }

@@ -9,7 +9,7 @@ export const LifecycleOperationSchema=Type.Union([Type.Literal('retrieve'),Type.
 export type LifecycleOperation='retrieve'|'inject'|'summarize'|'compact'|'reset';
 export const LifecycleSourceSchema=Type.Union([
   Type.Object({kind:Type.Literal('initial')},strict),
-  Type.Object({kind:Type.Literal('retained'),sourceId:Type.String({minLength:1,maxLength:128}),format:Type.Optional(Type.Union([Type.Literal('snapshot'),Type.Literal('document')]))},strict),
+  Type.Object({kind:Type.Literal('retained'),sourceId:Type.String({minLength:64,maxLength:64,pattern:'^[0-9a-f]{64}$'}),format:Type.Optional(Type.Union([Type.Literal('snapshot'),Type.Literal('document')]))},strict),
 ]);
 export type LifecycleSource={kind:'initial'}|{kind:'retained';sourceId:string;format?:'snapshot'|'document'};
 export const ContextLifecycleSchema=Type.Object({
@@ -66,6 +66,7 @@ export function retained(state:ContextState,id:string):LifecycleSourceRecord{con
 export function validateLifecycle(config:ContextLifecycle){
   for(const path of [config.target,...config.paths])pathSegments(path);
   assertMutableContextPath(config.target);
+  if(config.source?.kind==='retained'&&(config.source.sourceId.length!==64||!/^[0-9a-f]{64}$/.test(config.source.sourceId)))throw requestError('Retained source ID must be a 64 lowercase hexadecimal character digest.');
   if(['retrieve','reset'].includes(config.operation)&&!config.source)throw requestError(`${config.operation} requires an explicit lifecycle source.`);
   if(config.operation==='inject'&&config.value===undefined&&!config.source)throw requestError('Inject requires an explicit value or retained source.');
   if(config.source&&config.value!==undefined)throw requestError('Choose one lifecycle source or authored value, not both.');
