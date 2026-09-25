@@ -896,6 +896,10 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "structuredGeneration": {
+                "type": "string",
+                "const": "native"
               }
             },
             "additionalProperties": false
@@ -2160,6 +2164,10 @@
                           }
                         },
                         "additionalProperties": false
+                      },
+                      "structuredGeneration": {
+                        "type": "string",
+                        "const": "native"
                       }
                     },
                     "additionalProperties": false
@@ -5283,7 +5291,8 @@
                 "$ref": "#/$defs/loops_json_value"
               },
               "minItems": 1,
-              "maxItems": 128
+              "maxItems": 128,
+              "uniqueItems": true
             },
             "properties": {
               "type": "object",
@@ -5336,7 +5345,8 @@
                 "$ref": "#/$defs/loops_json_value"
               },
               "minItems": 1,
-              "maxItems": 128
+              "maxItems": 128,
+              "uniqueItems": true
             },
             "items": {
               "$ref": "#/$defs/loops_data_schema"
@@ -5376,7 +5386,8 @@
                 "$ref": "#/$defs/loops_json_value"
               },
               "minItems": 1,
-              "maxItems": 128
+              "maxItems": 128,
+              "uniqueItems": true
             },
             "minLength": {
               "type": "integer",
@@ -5417,7 +5428,8 @@
                 "$ref": "#/$defs/loops_json_value"
               },
               "minItems": 1,
-              "maxItems": 128
+              "maxItems": 128,
+              "uniqueItems": true
             },
             "minimum": {
               "type": "number"
@@ -5452,7 +5464,8 @@
                 "$ref": "#/$defs/loops_json_value"
               },
               "minItems": 1,
-              "maxItems": 128
+              "maxItems": 128,
+              "uniqueItems": true
             },
             "minimum": {
               "type": "number"
@@ -5487,7 +5500,8 @@
                 "$ref": "#/$defs/loops_json_value"
               },
               "minItems": 1,
-              "maxItems": 128
+              "maxItems": 128,
+              "uniqueItems": true
             }
           },
           "additionalProperties": false
@@ -5516,7 +5530,8 @@
                 "$ref": "#/$defs/loops_json_value"
               },
               "minItems": 1,
-              "maxItems": 128
+              "maxItems": 128,
+              "uniqueItems": true
             }
           },
           "additionalProperties": false
@@ -5545,7 +5560,8 @@
                 "$ref": "#/$defs/loops_json_value"
               },
               "minItems": 1,
-              "maxItems": 128
+              "maxItems": 128,
+              "uniqueItems": true
             }
           },
           "additionalProperties": false

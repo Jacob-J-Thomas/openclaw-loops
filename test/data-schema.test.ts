@@ -5,6 +5,7 @@ import {validateGraph,validateInput,type Definition} from '../src/graph.js';
 import {Engine,type Actor,type HostCapabilities,type Storage} from '../src/engine.js';
 import {examples} from '../src/examples.js';
 import {wireContract} from '../src/wire-contract.js';
+import {inspectionOutput} from '../src/run-inspection.js';
 
 class Memory implements Storage{state:ReturnType<Storage['read']>;read(){return structuredClone(this.state);}write(state:Parameters<Storage['write']>[0]){this.state=structuredClone(state);}}
 const actor=():Actor=>({agentId:'schema',sessionKey:'agent:schema:test',sessionId:'schema-session',source:'tool',human:false,check:()=>{}});
@@ -32,6 +33,24 @@ describe('bounded recursive data schemas',()=>{
     expect(dataSchemaIssues({type:'object',properties:{a:{type:'string'}},required:['a','a']}).map(issue=>issue.keyword)).toContain('required');
     expect(dataSchemaIssues(new Date()).map(issue=>issue.keyword)).toContain('type');
     expect(dataSchemaIssues({type:'string',title:'x'.repeat(140000)}).map(issue=>issue.keyword)).toContain('maxBytes');
+  });
+  it('rejects inapplicable structural keywords and structurally duplicate enum values before runtime compilation',()=>{
+    const invalid=[
+      {type:'object',items:{type:'string'}},
+      {type:'object',minItems:1},
+      {type:'array',items:{type:'json'},properties:{ignored:{type:'integer'}}},
+      {type:'array',items:{type:'json'},required:['ignored']},
+      {type:'array',items:{type:'json'},additionalProperties:false},
+    ];
+    for(const schema of invalid){
+      expect(dataSchemaIssues(schema).some(issue=>issue.keyword==='inapplicable'),JSON.stringify(schema)).toBe(true);
+      expect(Value.Check(wireContract.operations.validate.input,{definition:{...definition(),inputSchema:[{name:'data',label:'Data',type:'json',required:true,schema}]}}),JSON.stringify(schema)).toBe(false);
+    }
+    for(const schema of [{type:'integer',enum:[0,0]},{type:'object',enum:[{a:1,b:2},{b:2,a:1}]}]){
+      expect(dataSchemaIssues(schema).some(issue=>issue.keyword==='uniqueItems'),JSON.stringify(schema)).toBe(true);
+      expect(()=>validateDataValue(schema,0),JSON.stringify(schema)).not.toThrow();
+      expect(Value.Check(wireContract.operations.validate.input,{definition:{...definition(),inputSchema:[{name:'data',label:'Data',type:'json',required:true,schema}]}}),JSON.stringify(schema)).toBe(false);
+    }
   });
   it('exposes bounded recursive schemas on the actual public definition wire',()=>{
     const input=wireContract.operations.validate.input,valid={definition:definition()};
@@ -77,7 +96,30 @@ describe('bounded recursive data schemas',()=>{
     const engine=new Engine(storage,host);const run=await engine.test(actor(),d,{data:{profile:{name:'Núll',scores:[0]},note:null}},'output-schema');
     expect(run).toMatchObject({state:'failed',errorDetail:{code:'LOOPS_OUTPUT_SCHEMA_INVALID'},outputs:{input:{fields:['data']}}});
     expect(run.outputs).not.toHaveProperty('summary');expect(run.context?.journal).toHaveLength(0);
+    expect(run.trace.find(step=>step.nodeId==='summary')).toMatchObject({rejectedResponse:{preview:'{"name":"rejected"}',truncated:false,bytes:19}});
+    expect(run.errorDetail?.message).toMatch(/Output summary\/name:.*enum; actual string/);
+    expect(inspectionOutput(run,'summary')).toMatchObject({label:'Rejected model response · never checkpointed',value:expect.stringContaining('SHA-256')});
     const persisted=new Engine(storage,host).status(actor(),run.id);expect(persisted.outputs).not.toHaveProperty('summary');
+  });
+  it('keeps rejected Unicode previews within the byte bound without replacement characters',async()=>{
+    const d=definition(),node=d.nodes.find(item=>item.kind==='inference');if(!node||node.kind!=='inference')throw Error();node.output='json';
+    const response='a'.repeat(1022)+'🙂'+'tail';
+    const host:HostCapabilities={check:vi.fn(),complete:vi.fn(async()=>({text:response})),modelInfo:vi.fn(async()=>({}))};
+    const run=await new Engine(new Memory(),host).test(actor(),d,{data:{profile:{name:'Núll',scores:[0]}}},'unicode-rejection');
+    const rejected=run.trace.find(step=>step.nodeId===node.id)?.rejectedResponse;
+    expect(rejected).toMatchObject({preview:'a'.repeat(1022),truncated:true,bytes:1030});
+    expect(rejected?.preview).not.toContain('�');expect(run.outputs).not.toHaveProperty(node.id);
+  });
+  it('requires an explicit v3 JSON schema for native structured generation and passes it to the host',async()=>{
+    const d=definition(),node=d.nodes.find(item=>item.kind==='inference');if(!node||node.kind!=='inference')throw Error();
+    node.structuredGeneration='native';
+    expect(validateGraph(d).map(issue=>issue.message)).toContain('Native structured generation requires JSON output and a valid output schema.');
+    node.output='json';node.outputSchema={type:'object',properties:{name:{type:'string'}},required:['name'],additionalProperties:false};
+    expect(validateGraph(d)).toEqual([]);
+    const host:HostCapabilities={check:vi.fn(),complete:vi.fn(async()=>({text:'{"name":"Núll"}'})),modelInfo:vi.fn(async()=>({}))};
+    const engine=new Engine(new Memory(),host);await engine.test(actor(),d,{data:{profile:{name:'Núll',scores:[0]}}},'native-schema');
+    expect(vi.mocked(host.complete).mock.calls[0]?.[5]).toEqual({nodeId:node.id,schema:node.outputSchema});
+    const old=structuredClone(d);old.schemaVersion=2;expect(validateGraph(old).map(issue=>issue.message)).toContain('Recursive output schemas require schemaVersion 3.');
   });
   it('records invalid parked output as a failed run when Wait is released',async()=>{
     const d=definition();d.inputSchema=[];d.capabilities=[];d.nodes=[{id:'input',kind:'input',label:'Input'},{id:'wait',kind:'wait',label:'Wait',message:'Continue',outputSchema:{type:'string'}},{id:'return',kind:'return',label:'Return',value:'accepted'}];d.edges=[{id:'a',source:'input',target:'wait',port:'next'},{id:'b',source:'wait',target:'return',port:'next'}];

@@ -80,6 +80,41 @@ async function verifyEvaluationDraftRaces(browser,url,checks){
   }
 }
 
+export async function runDataSchemaDraftRegression({receiptPath}={}){
+  const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
+  const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
+  const receipt={runner:'mounted-data-schema-editor-playwright',transport:'synthetic fake backend; no provider invoked',checks:[],errors:[]};let browser;
+  try{
+    browser=await chromium.launch({headless:true});const page=await browser.newPage();page.setDefaultTimeout(10_000);page.on('pageerror',error=>receipt.errors.push(error.message));
+    await page.goto(url);await waitFor(page,'select[aria-label="Load an example"]');await page.selectOption('select[aria-label="Load an example"]','summarize-text');
+    await page.getByRole('button',{name:'Save draft'}).click();await page.getByText('Revision 1 saved as a draft').waitFor();
+    await page.getByRole('button',{name:'Add nested schema'}).click();const enumBox=page.getByRole('textbox',{name:'Enum JSON values'}).first();
+    receipt.browserBuffer=await page.evaluate(()=>typeof Buffer);receipt.visibleValidation=await page.locator('.lp-validation-error').allTextContents();
+    await enumBox.fill('[');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Save & publish'}).isDisabled(),true);receipt.checks.push('invalid enum draft blocks Save and Publish without overwriting the last valid schema');
+    await page.selectOption('select[aria-label="Select node to edit"]','summary');await page.selectOption('select[aria-label="Select node to edit"]','input');assert.equal(await enumBox.inputValue(),'[');receipt.checks.push('invalid enum text survives node selection');
+    await enumBox.fill('[0]');await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft());await page.getByRole('button',{name:'Save draft'}).click();await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1);
+    await enumBox.fill('[');await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft());await page.getByText('Revision 2 saved; newer draft edits are retained.').waitFor();assert.equal(await enumBox.inputValue(),'[');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);receipt.checks.push('newer invalid enum text survives pending save acknowledgment');
+    await page.evaluate(()=>{globalThis.__editorRegression.deferNextLoad();globalThis.__editorRegression.refresh();});await page.waitForFunction(()=>globalThis.__editorRegression.deferredLoadCount()===1);
+    await enumBox.fill('[,');await page.evaluate(()=>globalThis.__editorRegression.resolveNextLoad());await page.waitForFunction(()=>globalThis.__editorRegression.deferredLoadCount()===0);assert.equal(await enumBox.inputValue(),'[,');receipt.checks.push('newer invalid enum text survives pending refresh');
+    await page.getByRole('button',{name:'Remove schema'}).click();assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),false);
+    await page.getByRole('button',{name:'Undo',exact:true}).click();assert.equal(await enumBox.inputValue(),'[,');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);
+    await page.getByRole('button',{name:'Redo',exact:true}).click();assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),false);receipt.checks.push('inactive invalid schema draft does not block Save; Undo restores its active location');
+    await page.getByRole('button',{name:'Undo',exact:true}).click();await page.getByRole('button',{name:'Discard invalid enum text'}).click();assert.equal(await enumBox.inputValue(),'[0]');
+    await enumBox.fill('[1]');await page.getByRole('button',{name:'Undo',exact:true}).click();assert.equal(await enumBox.inputValue(),'[0]');await page.getByRole('button',{name:'Redo',exact:true}).click();assert.equal(await enumBox.inputValue(),'[1]');receipt.checks.push('valid parent enum value resynchronizes after Undo and Redo');
+    await page.getByRole('button',{name:'Add property'}).click();const propertyEnum=page.getByRole('textbox',{name:'Enum JSON values'}).nth(1);await propertyEnum.fill('{');
+    await page.selectOption('select[aria-label="Select node to edit"]','summary');await page.selectOption('select[aria-label="Select node to edit"]','input');assert.equal(await propertyEnum.inputValue(),'{');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);receipt.checks.push('nested property enum draft retains its schema-location identity across selection');
+    await page.getByRole('button',{name:'Discard invalid enum text'}).last().click();await page.selectOption('select[aria-label="Select node to edit"]','summary');
+    await page.locator('details.lp-output-schema summary').click();const structured=page.getByLabel('Structured generation');
+    await page.locator('details.lp-output-schema').getByRole('button',{name:'Add nested schema'}).click();
+    await page.getByLabel('Output format').selectOption('json');await structured.selectOption('native');await page.getByRole('button',{name:'Save draft'}).click();
+    await page.waitForFunction(()=>globalThis.__editorRegression.calls.some(call=>call.mode==='draft'&&call.definition.nodes.find(node=>node.id==='summary')?.structuredGeneration==='native'));
+    const authored=await page.evaluate(()=>globalThis.__editorRegression.calls.findLast(call=>call.mode==='draft').definition);
+    assert.equal(authored.schemaVersion,3);assert.equal(authored.nodes.find(node=>node.id==='summary').outputSchema.type,'object');receipt.checks.push('explicit native mode authoring upgrades v3 and saves with its schema');
+    assert.deepEqual(receipt.errors,[]);receipt.passed=true;
+  }catch(error){receipt.failure=error.message;throw error;}finally{if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');await browser?.close();await new Promise(resolve=>server.close(resolve));}
+  return receipt;
+}
+
 export async function runEditorAdvancedRegression({receiptPath}={}){
   const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
   const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
@@ -167,4 +202,4 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
   if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n'); return receipt;
 }
 
-if(import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await runEditorAdvancedRegression(),null,2));
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():runEditorAdvancedRegression()),null,2));

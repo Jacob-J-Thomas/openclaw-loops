@@ -39,25 +39,27 @@ export const DataSchemaWireDefinitions={
     Type.Record(Type.String(),wireJsonValueRef),
   ]),
   loops_data_schema:Type.Union([
-    Type.Object({type:Type.Literal('object'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),properties:Type.Optional(Type.Record(wirePropertyName,wireDataSchemaRef,{maxProperties:dataSchemaLimits.maxProperties})),required:Type.Optional(Type.Array(wirePropertyName,{maxItems:dataSchemaLimits.maxProperties,uniqueItems:true})),additionalProperties:Type.Optional(Type.Boolean())},wireStrict),
-    Type.Object({type:Type.Literal('array'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),items:wireDataSchemaRef,minItems:Type.Optional(wireInteger),maxItems:Type.Optional(wireInteger)},wireStrict),
-    Type.Object({type:Type.Literal('string'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),minLength:Type.Optional(wireInteger),maxLength:Type.Optional(wireInteger),pattern:Type.Optional(Type.String({maxLength:dataSchemaLimits.maxPatternBytes}))},wireStrict),
-    Type.Object({type:Type.Literal('number'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number())},wireStrict),
-    Type.Object({type:Type.Literal('integer'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems})),minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number())},wireStrict),
-    Type.Object({type:Type.Literal('boolean'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
-    Type.Object({type:Type.Literal('null'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
-    Type.Object({type:Type.Literal('json'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems}))},wireStrict),
+    Type.Object({type:Type.Literal('object'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems,uniqueItems:true})),properties:Type.Optional(Type.Record(wirePropertyName,wireDataSchemaRef,{maxProperties:dataSchemaLimits.maxProperties})),required:Type.Optional(Type.Array(wirePropertyName,{maxItems:dataSchemaLimits.maxProperties,uniqueItems:true})),additionalProperties:Type.Optional(Type.Boolean())},wireStrict),
+    Type.Object({type:Type.Literal('array'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems,uniqueItems:true})),items:wireDataSchemaRef,minItems:Type.Optional(wireInteger),maxItems:Type.Optional(wireInteger)},wireStrict),
+    Type.Object({type:Type.Literal('string'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems,uniqueItems:true})),minLength:Type.Optional(wireInteger),maxLength:Type.Optional(wireInteger),pattern:Type.Optional(Type.String({maxLength:dataSchemaLimits.maxPatternBytes}))},wireStrict),
+    Type.Object({type:Type.Literal('number'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems,uniqueItems:true})),minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number())},wireStrict),
+    Type.Object({type:Type.Literal('integer'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems,uniqueItems:true})),minimum:Type.Optional(Type.Number()),maximum:Type.Optional(Type.Number())},wireStrict),
+    Type.Object({type:Type.Literal('boolean'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems,uniqueItems:true}))},wireStrict),
+    Type.Object({type:Type.Literal('null'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems,uniqueItems:true}))},wireStrict),
+    Type.Object({type:Type.Literal('json'),title:Type.Optional(wireTitle),description:Type.Optional(wireTitle),enum:Type.Optional(Type.Array(wireJsonValueRef,{minItems:1,maxItems:dataSchemaLimits.maxEnumItems,uniqueItems:true}))},wireStrict),
   ]),
 } as const;
 export const DataSchemaWireRef=wireDataSchemaRef;
 
 const pointer=(parts:string[])=>parts.length?'/'+parts.map(part=>part.replaceAll('~','~0').replaceAll('/','~1')).join('/'):'';
-const bytes=(value:unknown)=>{try{return Buffer.byteLength(JSON.stringify(value));}catch{return Number.POSITIVE_INFINITY;}};
+const textBytes=(value:string)=>new TextEncoder().encode(value).byteLength;
+const bytes=(value:unknown)=>{try{return textBytes(JSON.stringify(value));}catch{return Number.POSITIVE_INFINITY;}};
+const canonicalJson=(value:Json)=>JSON.stringify(value,(_key,item:unknown)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0)):item);
 const issue=(instancePath:string,keyword:string,message:string):DataSchemaDiagnostic=>({instancePath,keyword,message});
 function safePattern(value:string){
   // One bounded quantifier in an anchored expression avoids combinatorial
   // backtracking while retaining common character-class constraints.
-  if(Buffer.byteLength(value)>dataSchemaLimits.maxPatternBytes||!value.startsWith('^')||!value.endsWith('$')||/[()|]/.test(value))return false;
+  if(textBytes(value)>dataSchemaLimits.maxPatternBytes||!value.startsWith('^')||!value.endsWith('$')||/[()|]/.test(value))return false;
   const quantifiers=value.match(/[+*?]|\{[^}]*\}/g)??[];
   if(quantifiers.length>1)return false;
   if(quantifiers[0]?.startsWith('{')){
@@ -78,9 +80,10 @@ export function dataSchemaIssues(value:unknown):DataSchemaDiagnostic[]{
     const allowed=new Set(['type','title','description','enum','minimum','maximum','minLength','maxLength','pattern','properties','required','additionalProperties','items','minItems','maxItems']);
     for(const key of Object.keys(schema))if(!allowed.has(key)||forbidden.has(key))issues.push(issue(pointer([...path,key]),'additionalProperties','Unknown schema property.'));
     if(typeof type!=='string'||!['object','array','string','number','integer','boolean','null','json'].includes(type))issues.push(issue(pointer([...path,'type']),'type','Select a supported value type.'));
-    for(const key of ['title','description'])if(schema[key]!==undefined&&(typeof schema[key]!=='string'||Buffer.byteLength(schema[key])>1024))issues.push(issue(pointer([...path,key]),'type',`${key} must be text up to 1,024 bytes.`));
+    for(const key of ['title','description'])if(schema[key]!==undefined&&(typeof schema[key]!=='string'||textBytes(schema[key])>1024))issues.push(issue(pointer([...path,key]),'type',`${key} must be text up to 1,024 bytes.`));
     if(schema.enum!==undefined){
       if(!Array.isArray(schema.enum)||schema.enum.length===0||schema.enum.length>dataSchemaLimits.maxEnumItems||schema.enum.some(item=>!isJson(item)))issues.push(issue(pointer([...path,'enum']),'enum',`Enum must contain 1 to ${dataSchemaLimits.maxEnumItems} JSON values.`));
+      else if(new Set(schema.enum.map(canonicalJson)).size!==schema.enum.length)issues.push(issue(pointer([...path,'enum']),'uniqueItems','Enum values must be structurally distinct.'));
     }
     for(const key of ['minimum','maximum'])if(schema[key]!==undefined&&(typeof schema[key]!=='number'||!Number.isFinite(schema[key])))issues.push(issue(pointer([...path,key]),'type',`${key} must be a finite number.`));
     for(const key of ['minLength','maxLength','minItems','maxItems'])if(schema[key]!==undefined&&(!Number.isSafeInteger(schema[key])||Number(schema[key])<0))issues.push(issue(pointer([...path,key]),'type',`${key} must be a non-negative safe integer.`));
@@ -91,14 +94,16 @@ export function dataSchemaIssues(value:unknown):DataSchemaDiagnostic[]{
     if(type==='object'){
       if(schema.properties!==undefined){
         if(!schema.properties||typeof schema.properties!=='object'||Array.isArray(schema.properties)||Object.getPrototypeOf(schema.properties)!==Object.prototype||Object.keys(schema.properties).length>dataSchemaLimits.maxProperties)issues.push(issue(pointer([...path,'properties']),'properties',`properties must contain at most ${dataSchemaLimits.maxProperties} named schemas.`));
-        else for(const [key,child] of Object.entries(schema.properties)){if(!key||Buffer.byteLength(key)>100||forbidden.has(key))issues.push(issue(pointer([...path,'properties',key]),'propertyName','Property name is not allowed.'));else visit(child,[...path,'properties',key],depth+1);}
+        else for(const [key,child] of Object.entries(schema.properties)){if(!key||textBytes(key)>100||forbidden.has(key))issues.push(issue(pointer([...path,'properties',key]),'propertyName','Property name is not allowed.'));else visit(child,[...path,'properties',key],depth+1);}
       }
       if(schema.required!==undefined){
         if(!Array.isArray(schema.required)||schema.required.length>dataSchemaLimits.maxProperties||new Set(schema.required).size!==schema.required.length||schema.required.some(key=>typeof key!=='string'||!schema.properties||!Object.hasOwn(schema.properties as object,key)))issues.push(issue(pointer([...path,'required']),'required','required must contain unique names of declared properties.'));
       }
       if(schema.additionalProperties!==undefined&&typeof schema.additionalProperties!=='boolean')issues.push(issue(pointer([...path,'additionalProperties']),'type','additionalProperties must be true or false.'));
+      for(const key of ['items','minItems','maxItems'])if(schema[key]!==undefined)issues.push(issue(pointer([...path,key]),'inapplicable',`${key} only applies to arrays.`));
     }else if(type==='array'){
       if(schema.items===undefined)issues.push(issue(pointer([...path,'items']),'required','Arrays need an item schema.'));else visit(schema.items,[...path,'items'],depth+1);
+      for(const key of ['properties','required','additionalProperties'])if(schema[key]!==undefined)issues.push(issue(pointer([...path,key]),'inapplicable',`${key} only applies to objects.`));
     }else for(const key of ['properties','required','additionalProperties','items','minItems','maxItems'])if(schema[key]!==undefined)issues.push(issue(pointer([...path,key]),'inapplicable',`${key} only applies to ${key==='items'||key.includes('Items')?'arrays':'objects'}.`));
     if(!['number','integer'].includes(String(type)))for(const key of ['minimum','maximum'])if(schema[key]!==undefined)issues.push(issue(pointer([...path,key]),'inapplicable',`${key} only applies to number or integer values.`));
     if(type!=='string')for(const key of ['minLength','maxLength','pattern'])if(schema[key]!==undefined)issues.push(issue(pointer([...path,key]),'inapplicable',`${key} only applies to text values.`));
@@ -107,7 +112,7 @@ export function dataSchemaIssues(value:unknown):DataSchemaDiagnostic[]{
   };
   visit(value,[],0);return issues;
 }
-function toJsonSchema(schema:DataSchema):Record<string,unknown>|boolean{
+export function toJsonSchema(schema:DataSchema):Record<string,unknown>|boolean{
   const base:Record<string,unknown>={...schema.type==='json'?{}:{type:schema.type},...schema.enum===undefined?{}:{enum:schema.enum}};
   for(const key of ['minimum','maximum','minLength','maxLength','pattern','minItems','maxItems'] as const)if(schema[key]!==undefined)base[key]=schema[key];
   if(schema.type==='object'){

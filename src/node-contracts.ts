@@ -35,7 +35,7 @@ return {
 const schemas=schemasForValues(NodeValueSchema),legacySchemas=schemasForValues(text);
 export const NodeSchema=Type.Union([schemas.input,schemas.inference,schemas.action,schemas.condition,schemas.repeat,schemas.wait,schemas.review,schemas.return,schemas.fail]);
 export const LegacyNodeSchema=Type.Union([legacySchemas.input,legacySchemas.inference,legacySchemas.action,legacySchemas.condition,legacySchemas.repeat,legacySchemas.wait,legacySchemas.review,legacySchemas.return,legacySchemas.fail]);
-type BaseGraphNode=Static<typeof NodeSchema>&{context?:ContextNodeConfig;outputSchema?:DataSchema};
+type BaseGraphNode=Static<typeof NodeSchema>&{context?:ContextNodeConfig;outputSchema?:DataSchema;structuredGeneration?:'native'};
 type EvaluateNode={id:string;kind:'evaluate';label:string;value:NodeValue;evaluator:Evaluator;context?:ContextNodeConfig;outputSchema?:DataSchema};
 type GateNode={id:string;kind:'gate';label:string;evaluationId:string;context?:ContextNodeConfig;outputSchema?:DataSchema};
 export type GraphNode=BaseGraphNode|EvaluateNode|GateNode;
@@ -48,7 +48,7 @@ const evaluatorSchema=Type.Union([
 const evaluateSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('evaluate'),value:NodeValueSchema,evaluator:evaluatorSchema,...contextExtension.properties},strict);
 const gateSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('gate'),evaluationId:identifierSchema,...contextExtension.properties},strict);
 const contextSchemas={
-  input:Type.Object({...schemas.input.properties,...contextExtension.properties},strict),inference:withContext(schemas.inference),action:withContext(schemas.action),condition:withContext(schemas.condition),
+  input:Type.Object({...schemas.input.properties,...contextExtension.properties},strict),inference:Type.Object({...schemas.inference.properties,...outputExtension,...contextExtension.properties,structuredGeneration:Type.Optional(Type.Literal('native'))},strict),action:withContext(schemas.action),condition:withContext(schemas.condition),
   wait:withContext(schemas.wait),review:withContext(schemas.review),return:withContext(schemas.return),fail:withContext(schemas.fail),
 };
 const contextRepeatSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:Type.Tuple([contextSchemas.inference,contextSchemas.condition]),...contextExtension.properties},strict);

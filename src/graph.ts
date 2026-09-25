@@ -69,6 +69,7 @@ export function validateGraph(d:Definition):Issue[] {
     if(node.kind==='evaluate'){const issue=evaluatorConfigurationIssue(node.evaluator);if(issue)error(issue,node.id);}
     if(node.outputSchema!==undefined)for(const diagnostic of dataSchemaIssues(node.outputSchema))error(`Output schema ${diagnostic.instancePath||'/'}: ${diagnostic.message}`,node.id);
     if(node.kind==='inference'&&node.outputSchema!==undefined&&node.output!=='json')error('Inference output schemas require JSON output mode.',node.id);
+    if(node.kind==='inference'&&node.structuredGeneration==='native'&&(node.output!=='json'||node.outputSchema===undefined))error('Native structured generation requires JSON output and a valid output schema.',node.id);
     const context=node.context;
     if(!context)continue;
     try{
