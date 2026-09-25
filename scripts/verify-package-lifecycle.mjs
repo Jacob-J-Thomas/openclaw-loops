@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {cpSync,createWriteStream,existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,readdirSync,renameSync,rmSync,writeFileSync} from 'node:fs';
+import {cpSync,createWriteStream,existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,realpathSync,readdirSync,renameSync,rmSync,writeFileSync} from 'node:fs';
 import {execFileSync,spawn,spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {createConnection} from 'node:net';
@@ -30,6 +30,7 @@ try{
  profile=pathResolve('.dev-profile',`package-lifecycle-${randomUUID()}`);
  const worker=pathResolve('test/helpers/gateway-client-worker.mjs');
 const hash=file=>createHash('sha256').update(readFileSync(file)).digest('hex');
+const source={head:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),clean:execFileSync('git',['status','--porcelain','--untracked-files=normal'],{encoding:'utf8'}).trim()==='',verifierSha256:hash(pathResolve('scripts/verify-package-lifecycle.mjs'))};
  previousSha=hash(previous);currentSha=hash(current);
  assert.notEqual(previousSha,currentSha,'Upgrade requires distinct archive bytes.');
 const host=name=>{
@@ -49,13 +50,35 @@ const inventory=(directory,prefix='')=>Object.fromEntries(readdirSync(directory,
 const archiveBoundary=file=>{const files=execFileSync('tar',['-tzf',file],{encoding:'utf8'}).trim().split('\n').filter(name=>name!=='package/').map(name=>name.replace(/^package\//,''));const manifest=JSON.parse(execFileSync('tar',['-xOf',file,'package/package.json'],{encoding:'utf8'})),allowed=new Set(['package.json',...manifest.files]);for(const name of files)assert([...allowed].some(entry=>name===entry||name.startsWith(entry+'/')),`Published archive contains path outside package.json files: ${name}`);return {count:files.length,files};};
 mkdirSync(evidence,{recursive:true});
 mkdirSync(raw,{recursive:true,mode:0o700});
+mkdirSync(profile,{recursive:true,mode:0o700});
+const profileRoot=realpathSync(pathResolve('.dev-profile'));
+const ownedPath=file=>{const canonical=realpathSync(file);assert(canonical.startsWith(profileRoot+'/'),`Lifecycle path escapes the isolated profile: ${file}`);return canonical;};
+const isolatedProfile=ownedPath(profile);
+const privateDirectories=['home','config','data','cache','tmp','browser'];
+for(const name of privateDirectories){const directory=pathResolve(profile,name);mkdirSync(directory,{recursive:true,mode:0o700});assert(ownedPath(directory).startsWith(isolatedProfile+'/'));}
 const port=Number(process.env.LOOPS_LIFECYCLE_PORT??20991),token=randomBytes(32).toString('hex');
 assert.equal(spawnSync('lsof',['-t',`-iTCP:${port}`,'-sTCP:LISTEN'],{encoding:'utf8'}).status,1,`Lifecycle port ${port} is already listening.`);
 mkdirSync(pathResolve(profile,'workspace'),{recursive:true,mode:0o700});
 const config={gateway:{mode:'local',bind:'loopback',port,auth:{mode:'token',token},controlUi:{experimental:{customPlugins:true}}},discovery:{mdns:{mode:'off'}},browser:{enabled:false},cron:{enabled:false},logging:{file:pathResolve(profile,'gateway.log')},agents:{defaults:{workspace:pathResolve(profile,'workspace'),heartbeat:{every:'0m'}}},plugins:{entries:{}}};
 writeFileSync(pathResolve(profile,'openclaw.json'),JSON.stringify(config,null,2)+'\n',{mode:0o600});
-const env={...process.env,OPENCLAW_CONFIG_PATH:pathResolve(profile,'openclaw.json'),OPENCLAW_STATE_DIR:pathResolve(profile,'state')};
+mkdirSync(pathResolve(profile,'state'),{recursive:true,mode:0o700});
+const env={
+  PATH:process.env.PATH??'/usr/bin:/bin',LANG:process.env.LANG??'C',
+  HOME:pathResolve(profile,'home'),OPENCLAW_HOME:pathResolve(profile,'home'),
+  XDG_CONFIG_HOME:pathResolve(profile,'config'),XDG_DATA_HOME:pathResolve(profile,'data'),XDG_CACHE_HOME:pathResolve(profile,'cache'),
+  TMPDIR:pathResolve(profile,'tmp'),TMP:pathResolve(profile,'tmp'),TEMP:pathResolve(profile,'tmp'),
+  PLAYWRIGHT_BROWSERS_PATH:pathResolve(profile,'browser'),
+  OPENCLAW_CONFIG_PATH:pathResolve(profile,'openclaw.json'),OPENCLAW_STATE_DIR:pathResolve(profile,'state')
+};
+for(const name of ['HOME','OPENCLAW_HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','TMPDIR','TMP','TEMP','PLAYWRIGHT_BROWSERS_PATH','OPENCLAW_CONFIG_PATH','OPENCLAW_STATE_DIR'])assert(ownedPath(env[name]).startsWith(isolatedProfile+'/'));
 const runCli=(selected,...args)=>execFileSync(process.execPath,[selected.cli,...args],{cwd:selected.root,env,encoding:'utf8',maxBuffer:8*1024*1024});
+const migrateCurrentHost=()=>{
+  beginOperation('host-state-migration');
+  const result=spawnSync(process.execPath,[hosts.current.cli,'doctor','--fix','--non-interactive'],{cwd:hosts.current.root,env,encoding:'utf8',maxBuffer:8*1024*1024});
+  writeFileSync(pathResolve(raw,'current-host-doctor.txt'),`${result.stdout??''}\n${result.stderr??''}`,{mode:0o600});
+  assert.equal(result.status,0,'Current host Doctor could not migrate the disposable predecessor state.');
+  completeOperation();
+};
 const install=(selected,archive)=>{beginOperation('installer');const result=runCli(selected,'plugins','install',`npm-pack:${pathResolve(archive)}`,'--force','--accept-capabilities');completeOperation();return result;};
 const installedRoot=selected=>pathResolve(JSON.parse(runCli(selected,'plugins','info','loops-poc','--json')).plugin.rootDir);
 const installations=[];
@@ -121,6 +144,20 @@ const pluginState=pathResolve(profile,'state','loops-poc');
   writeFileSync(pathResolve(raw,'install-current.txt'),install(hosts.current,current),{mode:0o600});
   beginOperation('state-validation');assert.equal(protectedConfig(),configBeforeUpgrade,'Upgrade changed protected operator settings.');completeOperation();
   verifyInstalled(hosts.current,current,previous);
+  migrateCurrentHost();
+  beginOperation('state-validation');
+  const configAfterMigration=protectedConfig();
+  const previousProtected=JSON.parse(configBeforeUpgrade),migratedProtected=JSON.parse(configAfterMigration);
+  const hostDoctorConfigChanges=[...new Set([...Object.keys(previousProtected),...Object.keys(migratedProtected)])].filter(key=>JSON.stringify(previousProtected[key])!==JSON.stringify(migratedProtected[key]));
+  assert(hostDoctorConfigChanges.every(key=>key==='agents'||key==='skills'),'Host Doctor changed an existing protected operator setting.');
+  if(hostDoctorConfigChanges.includes('agents'))assert.deepEqual(migratedProtected.agents,{...previousProtected.agents,entries:{main:{}}},'Host Doctor changed an existing agent setting.');
+  if(hostDoctorConfigChanges.includes('skills')){
+    assert.equal(previousProtected.skills,undefined,'Host Doctor changed an existing skill setting.');
+    assert.deepEqual(Object.keys(migratedProtected.skills??{}),['entries'],'Host Doctor added an unexpected skill setting.');
+    for(const entry of Object.values(migratedProtected.skills.entries))assert.deepEqual(entry,{enabled:false},'Host Doctor added an unexpected skill value.');
+  }
+  const hostDoctorDisabledSkillsCount=Object.keys(migratedProtected.skills?.entries??{}).length;
+  completeOperation();
   await observeOperation('gateway-readiness',async()=>{start(hosts.current);await waitForListening();},{restartOrdinal:restartOrdinal+1});client=await observeOperation('sdk-client-startup',()=>connect(hosts.current));
   const upgraded=await action(client,session,'load',{id:created.record.definition.id});
   const upgradedRun=await action(client,session,'inspect',{runId:run.id});
@@ -135,7 +172,7 @@ const pluginState=pathResolve(profile,'state','loops-poc');
   beginOperation('state-validation');const afterReinstall=JSON.parse(readFileSync(env.OPENCLAW_CONFIG_PATH));
   assert.equal(afterReinstall.plugins.entries['loops-poc'].enabled,false,'Reinstall must preserve the host disable marker left by uninstall.');completeOperation();
   beginOperation('installer');writeFileSync(pathResolve(raw,'enable-reinstalled.txt'),runCli(hosts.current,'plugins','enable','loops-poc'),{mode:0o600});completeOperation();
-  beginOperation('state-validation');assert.equal(protectedConfig(),configBeforeUpgrade);completeOperation();verifyInstalled(hosts.current,current,previous);
+  beginOperation('state-validation');assert.equal(protectedConfig(),configAfterMigration);completeOperation();verifyInstalled(hosts.current,current,previous);
   await observeOperation('gateway-readiness',async()=>{start(hosts.current);await waitForListening();},{restartOrdinal:restartOrdinal+1});client=await observeOperation('sdk-client-startup',()=>connect(hosts.current));
   assert.deepEqual(await action(client,session,'load',{id:created.record.definition.id}),created.record);
   assert.deepEqual(await action(client,session,'inspect',{runId:run.id}),originalRun);
@@ -162,7 +199,7 @@ const pluginState=pathResolve(profile,'state','loops-poc');
   await observeOperation('client-shutdown',()=>client.stopAndWait());client=null;await observeOperation('gateway-shutdown',stop);
 
   beginOperation('receipt-write');
-  write('receipt.json',{previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,rollbackInstallerReplacedCurrentBytes:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,gatewayStartups:startupTimings,operationOutcomes:operations.completed(),installations});
+  write('receipt.json',{source,previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,rollbackInstallerReplacedCurrentBytes:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,hostStateMigrationCompleted:true,hostDoctorConfigChanges,hostDoctorDisabledSkillsCount,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,gatewayStartups:startupTimings,operationOutcomes:operations.completed(),installations});
   completeOperation();completed=true;
 }catch(error){
   lifecycleFailure=error;

@@ -10,6 +10,15 @@ const directories=[];
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
 
 describe('sanitized lifecycle failure receipt',()=>{
+  it('identifies a host-state migration failure without exposing Doctor output',()=>{
+    const privateOutput='private profile and credentials';
+    const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal:0}));
+    recorder.begin('host-state-migration');
+    const receipt=lifecycleFailureReceipt('upgrade',new Error(privateOutput),undefined,undefined,recorder.snapshot());
+    expect(receipt).toMatchObject({status:'failed',phase:'upgrade',activeOperation:{operation:'host-state-migration',outcome:'failed'}});
+    expect(JSON.stringify(receipt)).not.toContain(privateOutput);
+  });
+
   it.each(['sdk-client-startup','public-session-actions'])('captures a rejected %s callback before successful cleanup',async name=>{
     let now=0;
     const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal:1}),()=>now);
