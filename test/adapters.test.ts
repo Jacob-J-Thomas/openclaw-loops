@@ -310,7 +310,18 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`retry ${JSON.stringify(recovery)}`})).text).toContain('physical execution cleanup');
       else expect(await invoke('retry',recovery)).toMatchObject({kind:'loops-error',error:{message:expect.stringContaining('physical execution cleanup')}});
       expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'queued',executions:0,trace:[]});expect(entered).toHaveLength(1);
-      release();await vi.waitFor(async()=>expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'completed',result:'An actual adapter result.'}));
+      const releasedAt=performance.now();
+      release();
+      try{
+        await vi.waitFor(async()=>expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'completed',result:'An actual adapter result.'}),{timeout:5000});
+      }catch(error){
+        let nextState='readback-unavailable',firstCleanupPending:boolean|null=null;
+        try{
+          const [observedNext,observedFirst]=await Promise.all([invoke('inspect',{runId:next.id}),invoke('inspect',{runId:first.id})]) as [Run,Run];
+          nextState=observedNext.state;firstCleanupPending=observedFirst.cleanupPending??null;
+        }catch{/* Keep the original wait error and bounded state counters. */}
+        throw new Error('Queued run did not complete after release: '+JSON.stringify({elapsedMs:Math.round(performance.now()-releasedAt),nextState,firstCleanupPending,entered:entered.length,physical,maximum}),{cause:error});
+      }
       await vi.waitFor(async()=>expect((await invoke('inspect',{runId:first.id}) as Run).cleanupPending).not.toBe(true));
       expect(entered).toHaveLength(2);expect(maximum).toBe(1);expect(physical).toBe(0);
       const completed=await Promise.all([first.id,cancelled.id,next.id].map(runId=>invoke('inspect',{runId}))) as Run[];
