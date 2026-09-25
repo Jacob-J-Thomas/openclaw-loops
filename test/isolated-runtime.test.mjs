@@ -17,15 +17,23 @@ function positivePid(file){
   if(!/^[1-9]\d*$/.test(raw)||!Number.isSafeInteger(Number(raw)))throw Error('Incomplete or invalid positive PID marker '+file+': '+JSON.stringify(raw));
   return Number(raw);
 }
-async function waitForPositivePid(file){
+async function waitForPositivePid(file,attempts=150){
   let last='marker absent';
-  for(let attempt=0;attempt<150;attempt++){
+  for(let attempt=0;attempt<attempts;attempt++){
     if(existsSync(file)){
       try{return positivePid(file);}catch(error){last=error.message;}
     }
     await new Promise(done=>setTimeout(done,10));
   }
   throw Error('PID marker did not publish a positive ID: '+last);
+}
+function waitForChildExit(child,timeoutMs){
+  return new Promise((done,reject)=>{
+    if(child.exitCode!==null||child.signalCode!==null){done({code:child.exitCode,signal:child.signalCode});return;}
+    const timer=setTimeout(()=>reject(Error('Supervisor did not exit within '+timeoutMs+' ms.')),timeoutMs);
+    child.once('error',error=>{clearTimeout(timer);reject(error);});
+    child.once('exit',(code,signal)=>{clearTimeout(timer);done({code,signal});});
+  });
 }
 async function freePort(){
   const server=createServer();
@@ -568,29 +576,75 @@ describe('round-two isolation boundaries',()=>{
       }
     }
   });
-  it('preserves readiness and guard failures when the child handles TERM and exits zero',async()=>{
+  it('records an early TERM when a deliberately delayed child has not installed its handler',async()=>{
     const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
-    const childFile=join(f.root,'term-zero.mjs'),runner=join(f.root,'supervisor.mjs'),port=await freePort();
-    writeFileSync(childFile,"process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000);");
+    const delayed=join(f.root,'delayed-start.mjs'),childFile=join(f.root,'term-zero.mjs');
+    const runner=join(f.root,'supervisor.mjs'),marker=join(f.root,'handler-ready');
+    const lease=join(f.root,'early-readiness.lease.json'),receipts=join(f.root,'early-receipts'),port=await freePort();
+    writeFileSync(delayed,'await new Promise(done=>setTimeout(done,10000));');
+    writeFileSync(childFile,'import {writeFileSync} from "node:fs"; process.on("SIGTERM",()=>process.exit(0)); writeFileSync('+JSON.stringify(marker)+',String(process.pid)); setInterval(()=>{},1000); setTimeout(()=>process.exit(9),15000);');
+    writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,["--import",'+JSON.stringify(delayed)+','+JSON.stringify(childFile)+'],process.env,()=>acquireLease('+JSON.stringify(lease)+',"gateway",null,'+JSON.stringify(receipts)+'),'+port+');');
     const foreign=createServer();await new Promise(done=>foreign.listen(port,'127.0.0.1',done));
+    const parent=spawn(process.execPath,[runner],{stdio:'ignore'});
     try{
-      for(const [mode,expected] of [['readiness','readiness-failed'],['guard-false','authority-guard-failed'],['guard-throw','authority-guard-error'],['success',null]]){
+      const finished=await waitForChildExit(parent,7000);
+      expect(finished.code).toBe(1);expect(finished.signal).toBe(null);
+      expect(existsSync(marker)).toBe(false);expect(existsSync(lease)).toBe(false);
+      const saved=JSON.parse(readFileSync(join(receipts,readdirSync(receipts)[0])));
+      expect(saved.exitCode).toBe(null);expect(saved.signal).toBe('SIGTERM');
+      expect(saved.wrapperExitCode).toBe(1);expect(saved.supervisionFailure).toBe('readiness-failed');
+      expect(saved.groupSettled).toBe(true);expect(saved.leaseRemoved).toBe(true);
+      expect(()=>process.kill(-saved.childPid,0)).toThrow();
+    }finally{
+      try{
+        if(parent.exitCode===null&&parent.signalCode===null){
+          parent.kill('SIGTERM');
+          try{await waitForChildExit(parent,7000);}catch{parent.kill('SIGKILL');await waitForChildExit(parent,2000);}
+        }
+      }finally{await new Promise(done=>foreign.close(done));}
+    }
+  },10000);
+  it('preserves readiness and guard failures after the child installs its TERM handler',async()=>{
+    const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
+    const childFile=join(f.root,'term-zero.mjs'),runner=join(f.root,'supervisor.mjs'),delayed=join(f.root,'delayed-start.mjs'),port=await freePort();
+    const marker=join(f.root,'handler-ready');
+    writeFileSync(delayed,'await new Promise(done=>setTimeout(done,300));');
+    writeFileSync(childFile,'import {writeFileSync,renameSync} from "node:fs"; process.on("SIGTERM",()=>process.exit(0)); const file='+JSON.stringify(marker)+'; writeFileSync(file+".tmp",String(process.pid));renameSync(file+".tmp",file); setInterval(()=>{},1000); setTimeout(()=>process.exit(9),15000);');
+    for(const [mode,expected] of [['readiness','readiness-failed'],['guard-false','authority-guard-failed'],['guard-throw','authority-guard-error'],['success',null]]){
         const lease=join(f.root,mode+'.lease.json'),receipts=join(f.root,mode+'-receipts');
-        const guard=mode==='guard-false'?'()=>false':mode==='guard-throw'?'()=>{throw Error("fixture");}':'null';
+        const guard=mode==='guard-false'?'()=>!existsSync('+JSON.stringify(marker)+')':mode==='guard-throw'?'()=>{if(existsSync('+JSON.stringify(marker)+'))throw Error("fixture");return true;}':'null';
         const ready=mode==='readiness'?String(port):'null';
         const binary=mode==='success'?join(f.root,'success.mjs'):childFile;
         if(mode==='success')writeFileSync(binary,'process.exit(0);');
-        writeFileSync(runner,'import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,['+JSON.stringify(binary)+'],process.env,()=>acquireLease('+JSON.stringify(lease)+',"gateway",null,'+JSON.stringify(receipts)+'),'+ready+','+guard+');');
-        const finished=spawnSync(process.execPath,[runner],{encoding:'utf8',timeout:7000});
-        expect(finished.status).toBe(expected?1:0);
-        expect(existsSync(lease)).toBe(false);
-        const saved=JSON.parse(readFileSync(join(receipts,readdirSync(receipts)[0])));
-        expect(saved.exitCode).toBe(0);expect(saved.signal).toBe(null);
-        expect(saved.wrapperExitCode).toBe(expected?1:0);
-        expect(saved.supervisionFailure).toBe(expected);
-        expect(saved.groupSettled).toBe(true);expect(saved.leaseRemoved).toBe(true);
-      }
-    }finally{await new Promise(done=>foreign.close(done));}
+        const childArgs=mode==='success'?[binary]:['--import',delayed,binary];
+        writeFileSync(runner,'import {existsSync} from "node:fs"; import {runOwned,acquireLease} from '+JSON.stringify(helper)+'; await runOwned(process.execPath,'+JSON.stringify(childArgs)+',process.env,()=>acquireLease('+JSON.stringify(lease)+',"gateway",null,'+JSON.stringify(receipts)+'),'+ready+','+guard+');');
+        if(mode!=='success')rmSync(marker,{force:true});
+        const parent=spawn(process.execPath,[runner],{stdio:'ignore'}),foreign=createServer();
+        let observedChildPid=null;
+        try{
+          if(mode!=='success'){
+            observedChildPid=await waitForPositivePid(marker,500);
+            if(mode==='readiness')await new Promise(done=>foreign.listen(port,'127.0.0.1',done));
+          }
+          const finished=await waitForChildExit(parent,7000);
+          expect(finished.code).toBe(expected?1:0);expect(finished.signal).toBe(null);
+          expect(existsSync(lease)).toBe(false);
+          const saved=JSON.parse(readFileSync(join(receipts,readdirSync(receipts)[0])));
+          if(mode!=='success')expect(saved.childPid).toBe(observedChildPid);
+          expect(saved.exitCode).toBe(0);expect(saved.signal).toBe(null);
+          expect(saved.wrapperExitCode).toBe(expected?1:0);
+          expect(saved.supervisionFailure).toBe(expected);
+          expect(saved.groupSettled).toBe(true);expect(saved.leaseRemoved).toBe(true);
+          expect(()=>process.kill(-saved.childPid,0)).toThrow();
+        }finally{
+          try{
+            if(parent.exitCode===null&&parent.signalCode===null){
+              parent.kill('SIGTERM');
+              try{await waitForChildExit(parent,7000);}catch{parent.kill('SIGKILL');await waitForChildExit(parent,2000);}
+            }
+          }finally{if(foreign.listening)await new Promise(done=>foreign.close(done));}
+        }
+    }
   },30000);
   it('settles an owned descendant before releasing capacity while preserving an unrelated process',async()=>{
     const f=await fixture(),helper=pathToFileURL(resolve('scripts/isolated-runtime.mjs')).href;
