@@ -164,6 +164,33 @@ export async function runDataSchemaRenameRegression({receiptPath}={}){
   return receipt;
 }
 
+export async function runUnvisitedSchemaHistoryRegression({receiptPath}={}){
+  const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
+  const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
+  const receipt={runner:'mounted-unvisited-schema-history-playwright',transport:'synthetic fake backend; no provider invoked',checks:[],errors:[]};let browser;
+  try{
+    browser=await chromium.launch({headless:true});const page=await browser.newPage();page.setDefaultTimeout(10_000);page.on('pageerror',error=>receipt.errors.push(error.message));
+    await page.goto(url);await waitFor(page,'select[aria-label="Load an example"]');
+    const fixture={schemaVersion:3,id:'unvisited-schema-history',slug:'unvisited-schema-history',name:'Unvisited schema history',description:'Mounted history regression.',revision:1,inputSchema:[{name:'payload',label:'Payload',type:'json',required:true,schema:{type:'object',properties:{title:{type:'string'}},required:['title'],additionalProperties:false}}],capabilities:[],limits:{maxExecutions:8,maxOutputBytes:4096},nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:{literalJson:'[{"status":"done"}]'},outputSchema:{type:'array',items:{type:'object',properties:{status:{type:'string'}},required:['status'],additionalProperties:false}}}],edges:[{id:'input-return',source:'input',target:'return',port:'next'}],layout:{input:{x:0,y:0},return:{x:280,y:0}}};
+    await page.evaluate(definition=>{const state=globalThis.__editorRegression,record={definition,enabledRevision:1,publishedRevision:1,grants:[],revisions:{1:structuredClone(definition)}};state.records.set(definition.id,record);state.refresh();},fixture);
+    await page.locator('.lp-loop-card').filter({hasText:'Unvisited schema history'}).click();await page.getByLabel('Input 1 name').waitFor();
+    await page.getByLabel('Display label').fill('Changed payload label');receipt.checks.push('unrelated edit snapshots an already existing but unvisited nested output schema');
+    await page.selectOption('select[aria-label="Select node to edit"]','return');await page.locator('details.lp-output-schema summary').click();const enumBox=page.getByRole('textbox',{name:'Enum JSON values'}).last();
+    await enumBox.fill('[');assert.equal(await enumBox.inputValue(),'[');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Save & publish'}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Export',exact:true}).isDisabled(),true);
+    await page.getByLabel('Run target').selectOption('draft');const draftTest=page.locator('.lp-run-button');assert.equal(await draftTest.isDisabled(),true);await draftTest.evaluate(button=>button.removeAttribute('disabled'));await draftTest.click();await draftTest.evaluate(button=>button.setAttribute('disabled',''));assert.equal(await page.evaluate(()=>globalThis.__editorRegression.calls.some(call=>call.id==='test')),false);
+    let downloads=0;page.on('download',()=>downloads++);const exportButton=page.getByRole('button',{name:'Export',exact:true});await exportButton.evaluate(button=>button.removeAttribute('disabled'));await exportButton.click();await exportButton.evaluate(button=>button.setAttribute('disabled',''));assert.equal(downloads,0);receipt.checks.push('invalid nested output text blocks Save, Publish, draft Test dispatch and Export download');
+    await page.getByLabel('Run target').selectOption('published');assert.equal(await page.getByRole('button',{name:'▶ Run loop'}).isDisabled(),false);await page.getByRole('button',{name:'▶ Run loop'}).click();assert.equal(await page.evaluate(()=>globalThis.__editorRegression.calls.some(call=>call.id==='run'&&call.payload.slug==='unvisited-schema-history')),true);await page.getByLabel('Run target').selectOption('draft');receipt.checks.push('published revision remains independently runnable');
+    await page.getByRole('button',{name:'Undo',exact:true}).click();assert.equal(await enumBox.inputValue(),'[');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Save & publish'}).isDisabled(),true);assert.equal(await page.locator('.lp-run-button').isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Export',exact:true}).isDisabled(),true);
+    await page.getByRole('button',{name:'Redo',exact:true}).click();assert.equal(await enumBox.inputValue(),'[');receipt.checks.push('Undo and Redo of unrelated label edit retain newer invalid text in previously unvisited nested array output');
+    await page.getByRole('button',{name:'Discard invalid enum text'}).last().click();await enumBox.fill('["done"]');await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft());await page.getByRole('button',{name:'Save draft'}).click();await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1);
+    await enumBox.fill('[');await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft());await page.getByText('Revision 2 saved; newer draft edits are retained.').waitFor();assert.equal(await enumBox.inputValue(),'[');
+    await page.getByRole('button',{name:'Undo',exact:true}).click();await page.getByRole('button',{name:'Undo',exact:true}).click();assert.equal(await enumBox.inputValue(),'[');assert.equal(await page.getByRole('button',{name:'Save draft'}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Save & publish'}).isDisabled(),true);assert.equal(await page.locator('.lp-run-button').isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Export',exact:true}).isDisabled(),true);
+    await page.getByRole('button',{name:'Redo',exact:true}).click();await page.getByRole('button',{name:'Redo',exact:true}).click();assert.equal(await enumBox.inputValue(),'[');receipt.checks.push('pending save acknowledgment and revision rebase retain invalid text through unrelated Undo and Redo');
+    assert.deepEqual(receipt.errors,[]);receipt.passed=true;
+  }catch(error){receipt.failure=error.message;throw error;}finally{if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');await browser?.close();await new Promise(resolve=>server.close(resolve));}
+  return receipt;
+}
+
 export async function runSwitchCaseDraftRegression({receiptPath}={}){
   const bundle=await build({stdin:{contents:harness(),resolveDir:root,loader:'ts'},bundle:true,format:'iife',platform:'browser',write:false,target:'es2022'});
   const {server,url}=await serve(`<!doctype html><html><body><div id="app"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
@@ -286,4 +313,4 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
   if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n'); return receipt;
 }
 
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():process.argv[2]==='schema-renames'?runDataSchemaRenameRegression():process.argv[2]==='switch-drafts'?runSwitchCaseDraftRegression():runEditorAdvancedRegression()),null,2));
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)console.log(JSON.stringify(await (process.argv[2]==='schema-drafts'?runDataSchemaDraftRegression():process.argv[2]==='schema-renames'?runDataSchemaRenameRegression():process.argv[2]==='switch-drafts'?runSwitchCaseDraftRegression():process.argv[2]==='schema-history'?runUnvisitedSchemaHistoryRegression():runEditorAdvancedRegression()),null,2));
