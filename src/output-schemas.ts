@@ -19,6 +19,12 @@ const attemptState=enums(['running','completed','waiting','review','failed','can
 const owner=Type.Object({agentId:text,sessionKey:text,sessionId:text},strict);
 const error=LoopErrorSchema;
 const review=Type.Object({decision:enums(['approve','reject']),at:text,requester:text},strict);
+const routeIdentity={port:text,caseId:Type.Optional(text)};
+const routeTrace=Type.Union([
+  Type.Object({...routeIdentity,observed:text,truncated:Type.Optional(Type.Boolean())},strict),
+  Type.Object({...routeIdentity,available:Type.Literal(true),observed:text,truncated:Type.Optional(Type.Boolean())},strict),
+  Type.Object({...routeIdentity,available:Type.Literal(false)},strict),
+]);
 const summary=Type.Object({id:text,slug:text,name:text,revision:Type.Integer({minimum:0})},strict);
 const issues=Type.Array(Type.Object({nodeId:Type.Optional(text),message:text},strict));
 const grantGeneration=Type.String({minLength:1,maxLength:64});
@@ -45,7 +51,7 @@ const runData=Type.Object({
   cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),context:Type.Optional(ContextStateSchema),
   grantGeneration:Type.Optional(grantGeneration),
   definition:DefinitionSchema,input:Type.Record(text,Type.Unknown()),state:runState,cursor:text,outputs:Type.Record(text,Type.Unknown()),
-  trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text),rejectedResponse:Type.Optional(Type.Object({preview:text,bytes:integer,sha256:text,truncated:Type.Boolean()},strict)),route:Type.Optional(Type.Object({port:text,caseId:Type.Optional(text),observed:text,truncated:Type.Optional(Type.Boolean())},strict))},strict)),
+  trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text),rejectedResponse:Type.Optional(Type.Object({preview:text,bytes:integer,sha256:text,truncated:Type.Boolean()},strict)),route:Type.Optional(routeTrace)},strict)),
   executions:integer,activeMs:Type.Number({minimum:0}),createdAt:text,updatedAt:text,result:Type.Optional(Type.Unknown()),error:Type.Optional(text),
   errorDetail:Type.Optional(error),pending:Type.Optional(text),uncertainty:Type.Optional(text),review:Type.Optional(review),
 },strict);

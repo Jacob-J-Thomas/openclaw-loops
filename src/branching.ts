@@ -34,7 +34,8 @@ export const TypedConditionNodeSchema=Type.Object({
 },strict);
 export type TypedConditionNode=Static<typeof TypedConditionNodeSchema>;
 export type ValueResolution={available:boolean;value?:Json};
-export type RouteEvidence={port:string;caseId?:string;observed:Json};
+export type RouteEvidence={port:string;caseId?:string;available:true;observed:Json}|{port:string;caseId?:string;available:false};
+export type TypedEvaluation={passed:boolean;available:true;observed:Json}|{passed:boolean;available:false};
 
 export function jsonType(value:Json):JsonType{
   if(value===null)return 'null';if(Array.isArray(value))return 'array';if(typeof value==='object')return 'object';
@@ -62,7 +63,7 @@ export function validateSwitch(node:SwitchNode):string[]{
     if(ids.has(item.id))issues.push('Switch case IDs must be unique ('+item.id+').');ids.add(item.id);
     if(!isJson(item.value)){issues.push('Switch case '+item.id+' must be a JSON value.');continue;}
     const duplicate=values.find(value=>equalJson(value.value,item.value));
-    if(node.strategy==='unique'&&duplicate)issues.push('Switch has duplicate reachable case values ('+item.id+' and '+duplicate.id+').');
+    if(duplicate)issues.push('Switch has duplicate reachable case values ('+item.id+' and '+duplicate.id+').');
     values.push(item);
   }
   if(!node.default&&!node.exhaustive)issues.push('Switch requires an explicit default or an exhaustive finite domain.');
@@ -78,24 +79,25 @@ function requireValue(value:ValueResolution,operator:TypedOperator):Json{
   if(value.available)return value.value!;
   throw executionError(operator+' cannot evaluate an unavailable binding.','LOOPS_BINDING_UNAVAILABLE');
 }
-export function evaluateTypedCondition(condition:TypedCondition,resolve:(value:NodeValue)=>ValueResolution):{passed:boolean;observed?:Json}{
+export function evaluateTypedCondition(condition:TypedCondition,resolve:(value:NodeValue)=>ValueResolution):TypedEvaluation{
   const left=resolve(condition.value);
-  if(condition.operator==='exists')return {passed:left.available};
-  if(condition.operator==='missing')return {passed:!left.available};
+  const presence=(passed:boolean):TypedEvaluation=>left.available?{passed,available:true,observed:left.value!}:{passed,available:false};
+  if(condition.operator==='exists')return presence(left.available);
+  if(condition.operator==='missing')return presence(!left.available);
   const observed=requireValue(left,condition.operator);
-  if(condition.operator==='type-is')return {passed:jsonType(observed)===condition.jsonType,observed};
+  if(condition.operator==='type-is')return {passed:jsonType(observed)===condition.jsonType,available:true,observed};
   const expected=requireValue(resolve(condition.expected!),condition.operator);
   switch(condition.operator){
-    case'equals':return {passed:equalJson(observed,expected),observed};
-    case'not-equals':return {passed:!equalJson(observed,expected),observed};
+    case'equals':return {passed:equalJson(observed,expected),available:true,observed};
+    case'not-equals':return {passed:!equalJson(observed,expected),available:true,observed};
     case'less-than':case'less-than-or-equals':case'greater-than':case'greater-than-or-equals':{
       if(typeof observed!=='number'||typeof expected!=='number')throw executionError(condition.operator+' requires numeric values.','LOOPS_BRANCH_TYPE');
       const passed=condition.operator==='less-than'?observed<expected:condition.operator==='less-than-or-equals'?observed<=expected:condition.operator==='greater-than'?observed>expected:observed>=expected;
-      return {passed,observed};
+      return {passed,available:true,observed};
     }
     case'in':case'not-in':{
       if(!Array.isArray(expected))throw executionError(condition.operator+' requires an array expected value.','LOOPS_BRANCH_TYPE');
-      const found=expected.some(item=>equalJson(observed,item));return {passed:condition.operator==='in'?found:!found,observed};
+      const found=expected.some(item=>equalJson(observed,item));return {passed:condition.operator==='in'?found:!found,available:true,observed};
     }
   }
 }
@@ -103,8 +105,8 @@ export function evaluateSwitch(node:SwitchNode,resolve:(value:NodeValue)=>ValueR
   const resolved=resolve(node.value);const observed=requireValue(resolved,'equals');const matching=node.cases.filter(item=>equalJson(observed,item.value));
   if(node.strategy==='unique'&&matching.length>1)throw executionError('Switch unique cases matched more than once.','LOOPS_INVALID_GRAPH');
   const selected=matching[0];
-  if(selected)return {output:{value:observed,caseId:selected.id},route:{port:selected.id,caseId:selected.id,observed}};
-  if(node.default)return {output:{value:observed,caseId:'default'},route:{port:'default',caseId:'default',observed}};
+  if(selected)return {output:{value:observed,caseId:selected.id},route:{port:selected.id,caseId:selected.id,available:true,observed}};
+  if(node.default)return {output:{value:observed,caseId:'default'},route:{port:'default',caseId:'default',available:true,observed}};
   throw executionError('An exhaustive Switch did not match its finite domain.','LOOPS_INVALID_GRAPH');
 }
 export function literalNodeValue(value:Json):NodeValue{return {literalJson:JSON.stringify(value)};}
