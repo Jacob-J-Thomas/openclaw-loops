@@ -22,20 +22,25 @@ Run from this repository. These commands use separate development state, workspa
 
 ```sh
 npm install --prefix .dev-runtime node@24.16.0 --no-audit --no-fund
-export PATH="$PWD/.dev-runtime/node_modules/.bin:$PATH"
+export LOOPS_NODE_BIN="$PWD/.dev-runtime/node_modules/node/bin/node"
+export PATH="$(dirname "$LOOPS_NODE_BIN"):$PATH"
+# Optional for a fresh profile when 11439 is already owned by another service:
+# export LOOPS_OLLAMA_PORT=<unused high loopback port>
 npm ci --cache .dev-profile/npm-cache
-node scripts/init-profile.mjs
+"$LOOPS_NODE_BIN" scripts/init-profile.mjs
 ```
 
 With the Ollama CLI installed, start its isolated server in a dedicated terminal:
 
 ```sh
+export LOOPS_OLLAMA_BIN="$(command -v ollama)"
 bash scripts/ollama.sh serve
 ```
 
 Then build and install the plugin, and start the development Gateway:
 
 ```sh
+export LOOPS_OLLAMA_BIN="$(command -v ollama)"
 bash scripts/ollama.sh pull qwen3.5:4b
 npm run check
 node scripts/verify-package.mjs
@@ -47,6 +52,13 @@ bash scripts/dev.sh gateway run
 Open [the Ollama Loops page](http://127.0.0.1:19491/plugin?plugin=loops-poc&id=loops). On first connection, use the Gateway secret from `.dev-profile/openclaw.json` in the Control UI's secret field. Keep that private configuration out of Git and URLs. The isolated Ollama server listens on `127.0.0.1:11439`.
 
 The development server uses one loaded model and one inference worker, 32K context, flash attention and an 8-bit KV cache. The observed loaded model allocation was about 3.7 GB; total machine memory includes the OS, apps and Gateway. Keep plugin `maxConcurrentRuns` at 1 for the 16 GB local setup. Existing custom profiles are preserved; the initializer repairs only recognizable old generated single-model policies, with a backup.
+
+The wrappers require exact Node 24.16.0 or 26.1.0. `scripts/dev.sh` resolves only this checkout's pinned `node_modules/openclaw/openclaw.mjs`; a missing project installation fails before dispatch. It admits the documented build, local package installation and inspection, config validation, Gateway run/calls, session agent command, and isolated Codex sign-in command shapes. Other CLI flags and methods require a deliberate harness update. Runtime commands require the selected profile's own config, state, workspace, cache, browser directory, temporary directory and token-authenticated loopback port. Set `LOOPS_PROFILE=codex-test` for that profile through `scripts/codex.sh`; do not redirect inherited `OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR`, `OPENCLAW_HOME` or browser/cache paths to another profile. The wrappers remove inherited provider credentials and use a private home. `plugins build` has a separate disposable build home and needs no runtime profile, so `npm run build` remains usable immediately after `npm ci`.
+
+`scripts/ollama.sh` requires an explicit executable path in `LOOPS_OLLAMA_BIN`. The Ollama profile admits only the loopback provider endpoint recorded when it was initialized; `LOOPS_OLLAMA_PORT` defaults to 11439 and may select a different unused high port for a fresh profile. Export the same value in each Ollama and Gateway terminal. A mismatch with the saved profile fails before dispatch. The Codex profile admits the public `openai` agent runtime with its own profile authentication and only `{ "sessionCatalog": { "enabled": false } }` in its plugin configuration. Edited profiles naming other provider routes, Codex runtime/catalog/discovery overrides, external plugin paths or enabled channels fail admission. The supported `agents.entries` roster may use paths inside this profile's workspace and state directories and its approved provider; explicit session-store paths, custom agent runtimes and sandbox subtrees are not admitted. Both generated profiles explicitly disable the runtime browser; edited browser attachment, import, MCP and launch settings are refused. Native browser qualification remains with its separate product owner, and the plugin's browser capabilities are unchanged. Ollama refuses to start when its selected port is occupied, keeps model files in this checkout, and uses one machine-local inference-worker lease. Model CLI requests and the Ollama Gateway require the live owned child and a ready lease for that exact port. The Gateway wrapper likewise refuses a foreign listener or concurrent owner on its configured port. Ctrl-C forwards to the owned process group; each wrapper removes only its matching lease after the group settles and saves a private cleanup/exit receipt under ignored `.dev-profile/receipts/` (or the selected profile's `receipts/`). Supervision failures produce a nonzero wrapper result even if the child exits cleanly. If a wrapper reports an unreadable lease, inspect it before retrying; do not stop an unrelated daemon to make the check pass.
+Service readiness also requires evidence that the owned child PID holds the selected IPv4 loopback listener. This check uses `lsof` scoped to that PID on macOS and the owned PID's socket descriptors with `/proc/net/tcp` on Linux; missing ownership evidence refuses dispatch. The one-worker inference lease lives in an owned private directory under canonical `/tmp`, independent of inherited temporary-directory variables.
+Lease mutations use an atomic same-directory gate. A published stale lease can be recovered once its parent, child and owned process group are gone. If a process dies while holding the short acquisition gate, the wrapper refuses automatic recovery; inspect the private gate and associated lease before removing the abandoned gate manually. It never removes a gate or lease merely because another caller appears slow.
+The shell wrappers clear `NODE_OPTIONS` and `NODE_PATH` before starting any Node interpreter. Child processes inherit only `PATH`, locale, terminal, color, `CI` and time-zone settings before the wrapper adds its own profile paths and provider settings. Inherited proxy variables are omitted, so network-dependent sign-in or package installation requires a separately controlled network environment rather than a personal shell proxy.
 
 Profile updates and explicit tool-inventory updates stage complete files before atomic replacement. Each change retains a uniquely named, byte-exact `openclaw.json.before-loops-*.bak` with private permissions. Repeating an unchanged setup creates no new backup. Failures before replacement preserve the active profile; a killed process may leave a private `.tmp` file for diagnosis. A detected concurrent edit aborts the replacement, so rerun setup against the current file. This is not a lock on OpenClaw or other configuration writers; avoid editing the same profile during setup. These checks cover process interruption, not power-loss guarantees.
 
@@ -60,6 +72,8 @@ bash scripts/codex.sh models auth login --provider openai
 bash scripts/codex.sh copy-secret
 bash scripts/codex.sh gateway run
 ```
+
+Setup installs `@openclaw/codex` at the exact version of this checkout's pinned OpenClaw host, replacing only a matching package already materialized inside this disposable profile. It accepts an existing installation only when the enabled plugin and its installed path/version match that host; the Loops installation must also match this checkout's package version and archive hash. A plugin-info lookup alone does not establish that either plugin is installed in this profile. A previously generated Codex profile without the explicit disabled browser and catalog settings is refused; create a fresh disposable profile rather than treating an old or edited profile as qualified.
 
 Complete the host's sign-in flow if authentication is missing or expired. Open [the Codex Loops page](http://127.0.0.1:19691/plugin?plugin=loops-poc&id=loops) and paste the copied Gateway secret into the connection form. This profile uses the official `@openclaw/codex` runtime with `openai/gpt-6-astra` as its initial default. The candidate uses an explicit node model first, otherwise the host agent's configured model on every path through generic public-plugin completion. Unset reasoning follows the selected runtime. New runs do not copy a conversation account or reasoning pin; legacy pinned accounts and honest host-policy denials remain preserved. Automatic conversation model/account inheritance parity remains deferred. The initializer preserves an existing profile and does not enable personal-session catalog discovery.
 
