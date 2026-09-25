@@ -46,10 +46,17 @@ describe('real profile setup files',()=>{
     expect(command(paths,script).status).toBe(0);expect(readFileSync(paths.file)).toEqual(before);expect(backups(paths.file)).toEqual([]);
     const parsed=JSON.parse(before);expect(parsed.plugins?.entries?.['loops-poc']?.llm?.allowedCompletionModels).toBeUndefined();
   });
-  it.each([false,true])('repairs only the recognized policy and repeats actual setup (Codex=%s)',codex=>{
+  it.each([false,true])('repairs recognized policy only for an admitted setup (Codex=%s)',codex=>{
     const paths=fixture(codex),before=custom(),original=bytes(before);writeFileSync(paths.file,original);
     const script=codex?'init-codex-profile.mjs':'init-profile.mjs',args=codex?['finish']:[];
-    const result=command(paths,script,args);expect(result.status,result.stderr).toBe(0);const after=JSON.parse(readFileSync(paths.file));
+    const result=command(paths,script,args);
+    if(codex){
+      expect(result.status).not.toBe(0);
+      expect(readFileSync(paths.file)).toEqual(original);
+      expect(backups(paths.file)).toEqual([]);
+      return;
+    }
+    expect(result.status,result.stderr).toBe(0);const after=JSON.parse(readFileSync(paths.file));
     expect(after.agents).toEqual(before.agents);expect(after.models).toEqual(before.models);expect(after.gateway).toEqual(before.gateway);
     expect(after.plugins).toEqual({...before.plugins,entries:{...before.plugins.entries,'loops-poc':{enabled:true,llm:{allowAgentIdOverride:true,allowModelOverride:true}}}});
     expect(after.tools.deny).toEqual(['exec']);expect(after.tools.profile).toBe('minimal');expect(after.tools.alsoAllow).toContain('operator_tool');
@@ -58,7 +65,13 @@ describe('real profile setup files',()=>{
     const committed=readFileSync(paths.file);expect(command(paths,script,args).status).toBe(0);expect(readFileSync(paths.file)).toEqual(committed);expect(backups(paths.file)).toEqual([backup]);
   });
   it('preserves custom restrictions, independent Codex settings and explicit tool denial',()=>{
-    const paths=fixture(true),before=custom();before.plugins.entries['loops-poc'].llm={...policy,allowAuthProfileOverride:false};writeFileSync(paths.file,bytes(before));
+    const paths=fixture(true);
+    expect(command(paths,'init-codex-profile.mjs').status).toBe(0);
+    const before=JSON.parse(readFileSync(paths.file));
+    before.plugins.entries.codex.enabled=true;
+    before.plugins.entries['loops-poc']={enabled:true,llm:{...policy,allowAuthProfileOverride:false}};
+    before.tools={profile:'minimal',deny:['exec'],alsoAllow:['operator_tool']};
+    writeFileSync(paths.file,bytes(before));
     expect(command(paths,'init-codex-profile.mjs',['finish']).status).toBe(0);
     const after=JSON.parse(readFileSync(paths.file));expect(after.plugins).toEqual(before.plugins);expect(after.agents).toEqual(before.agents);expect(after.tools.deny).toEqual(before.tools.deny);
     const updated=readFileSync(paths.file),originalBackups=backups(paths.file);expect(command(paths,'enable-agent-tools.mjs',[paths.file]).status).toBe(0);expect(readFileSync(paths.file)).toEqual(updated);expect(backups(paths.file)).toEqual(originalBackups);

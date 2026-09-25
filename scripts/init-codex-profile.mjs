@@ -25,12 +25,6 @@ if(process.argv[2]==='finish'){
   writeProfileWithBackup(configPath,config,before);
   console.log(`Codex test profile configured for ${selected}.`);
 }else if(existsSync(configPath)){
-  const before=readFileSync(configPath),config=JSON.parse(before.toString('utf8'));
-  if(config.browser===undefined&&config.plugins?.entries?.codex?.config?.sessionCatalog?.enabled===false&&
-     Object.keys(config.plugins.entries.codex.config).length===1&&Object.keys(config.plugins.entries.codex.config.sessionCatalog).length===1){
-    config.browser={enabled:false};
-    writeProfileWithBackup(configPath,config,before);
-  }
   profileEnvironment(resolve('.'),'codex-test');
   console.log('Keeping the existing Codex test profile.');
 }else{
