@@ -202,7 +202,9 @@ export class Engine{
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}
   private memoryHasEffects(definition:Definition){return definition.nodes.flatMap(node=>[node,...childNodes(node)]).some(node=>node.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(node.memory.operation));}
   private issueMemoryWriteGrant(actor:Actor,run:Run){
-    if(!this.memoryHasEffects(run.definition))return;
+    // An unpublished Test (including a retry) cannot acquire a persisted
+    // Memory write grant. Saved revisions use a fresh grant per admission.
+    if(run.testMode||run.definition.revision<1||!this.memoryHasEffects(run.definition))return;
     this.ensureAuthor(actor); // An actual host-admitted writer creates this exact plugin-owned run grant.
     run.memoryWriteGrant={runId:run.id,ownerKey:ownerKey(run.owner),loopId:run.definition.id,revision:run.definition.revision,
       grantGeneration:run.grantGeneration??legacyGrantGeneration,policySha256:fingerprintJson(run.definition.memoryPolicy??null)};
@@ -613,6 +615,8 @@ export class Engine{
         const mode=operation==='retention-apply'?'retention':'reset';
         const selected=typeof plan==='string'?core.removalPreview(inv,key,mode):plan as MemoryRemovalPlan;
         if(typeof plan==='string'&&selected.planId!==plan)throw requestError('Memory removal changed since preview. No values were removed.','LOOPS_MEMORY_CONFLICT');
+        if(!selected||typeof selected!=='object'||selected.mode!==mode||selected.prefix!==key)
+          throw requestError('Memory removal plan does not match this node’s authored operation and key prefix. No values were removed.','LOOPS_MEMORY_CONFLICT');
         return {receipts:core.applyRemoval(inv,selected,mutationId)} as unknown as Json;
       }
     }
