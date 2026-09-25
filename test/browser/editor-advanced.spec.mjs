@@ -460,6 +460,121 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
       receipt.checks.push('synthetic browser: summary and retained-source transitions materialize authored null for Save, Export, and draft Test while invalid source text blocks dispatch');await lifecyclePage.close();
     }
     {
+      const memoryPage=await browser.newPage();await memoryPage.goto(url);await waitFor(memoryPage,'select[aria-label="Load an example"]');
+      await memoryPage.selectOption('select[aria-label="Load an example"]','summarize-text');
+      await memoryPage.selectOption('select[aria-label="Node family"]','memory');await memoryPage.getByRole('button',{name:'+ Add node'}).click();
+      const controls=memoryPage.getByRole('region',{name:'Memory node settings'});
+      await controls.getByRole('combobox',{name:'Memory operation'}).selectOption('write');
+      await controls.getByRole('checkbox',{name:'Enable memory for this loop'}).check();
+      await controls.getByRole('button',{name:'Add write scope'}).click();
+      await controls.getByRole('textbox',{name:'Write prefix 1'}).fill('notes');
+      const memorySchemaId=controls.getByRole('textbox',{name:'Schema ID'});
+      await memorySchemaId.focus();await memoryPage.keyboard.type('x');
+      assert.equal(await memorySchemaId.inputValue(),'notex');
+      await memoryPage.keyboard.press('Backspace');
+      await controls.getByRole('textbox',{name:'Schema ID'}).fill('note');
+      await memoryPage.getByRole('button',{name:'Save draft'}).click();await memoryPage.getByText('Revision 1 saved as a draft').waitFor();
+      let savedMemory=await memoryPage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedMemory.schemaVersion,3);assert.equal(savedMemory.memoryPolicy.enabled,true);
+      assert.equal(savedMemory.nodes.find(node=>node.kind==='memory').memory.operation,'write');
+      assert.equal(savedMemory.memoryPolicy.nodes[savedMemory.nodes.find(node=>node.kind==='memory').id].writeScopes[0].prefix,'notes');
+      assert.equal(savedMemory.memorySchemas.length,1);
+      assert.equal(savedMemory.memorySchemas.some(entry=>entry.id==='note'&&entry.version===1),true);
+      const memoryEnum=controls.getByRole('textbox',{name:'Enum JSON values'});
+      await memoryEnum.fill('[');
+      assert.equal(await memoryPage.getByRole('button',{name:'Save draft'}).isDisabled(),true);
+      assert.equal(await memoryPage.getByRole('button',{name:'Save & publish'}).isDisabled(),true);
+      assert.equal(await memoryPage.getByRole('button',{name:'Export',exact:true}).isDisabled(),true);
+      await controls.getByRole('button',{name:'Discard invalid enum text'}).click();
+      assert.equal(await memoryEnum.inputValue(),'');
+      await memoryPage.evaluate(()=>globalThis.__editorRegression.refresh());await controls.getByRole('combobox',{name:'Memory operation'}).waitFor();
+      await controls.getByRole('combobox',{name:'Memory operation'}).selectOption('reset-preview');
+      await controls.getByRole('textbox',{name:'Memory forget prefixes'}).fill('notes');
+      await memoryPage.getByRole('button',{name:'Save draft'}).click();await memoryPage.getByText('Revision 2 saved as a draft').waitFor();
+      savedMemory=await memoryPage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedMemory.nodes.find(node=>node.kind==='memory').memory.operation,'reset-preview');
+      assert.deepEqual(savedMemory.memoryPolicy.nodes[savedMemory.nodes.find(node=>node.kind==='memory').id].forgetPrefixes,['notes']);
+      receipt.checks.push('synthetic browser: v3 opt-in Memory write policy, versioned schema and reset preview survive save and refresh');await memoryPage.close();
+    }
+    {
+      const fixture={schemaVersion:3,id:'memory-invalid-mounted',slug:'memory-invalid-mounted',name:'Memory invalid mounted',description:'Disposable invalid-policy draft.',revision:0,
+        inputSchema:[],capabilities:[],limits:{maxExecutions:5,maxOutputBytes:8192},layout:{},
+        nodes:[{id:'input',kind:'input',label:'Input'},{id:'remember',kind:'memory',label:'Remember',memory:{operation:'consume',key:'notes.fact'}},{id:'sibling',kind:'memory',label:'Sibling',memory:{operation:'consume',key:'notes.fact'}},{id:'return',kind:'return',label:'Return',value:'done'}],
+        edges:[{id:'a',source:'input',target:'remember',port:'next'},{id:'b',source:'remember',target:'sibling',port:'next'},{id:'c',source:'sibling',target:'return',port:'next'}],
+        memoryPolicy:{version:1,enabled:true,nodes:null}};
+      const fixturePath=join(importDirectory,'memory-invalid.json');
+      const loadInvalid=async(policy,name)=>{
+        const page=await browser.newPage();page.setDefaultTimeout(10_000);page.on('pageerror',error=>receipt.errors.push(error.message));page.on('dialog',dialog=>void dialog.accept());
+        await page.goto(url);await waitFor(page,'select[aria-label="Load an example"]');
+        await writeFile(fixturePath,JSON.stringify({...fixture,name,memoryPolicy:policy}));
+        const chooser=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Import',exact:true}).click();await (await chooser).setFiles(fixturePath);
+        await page.getByLabel('Select node to edit',{exact:true}).selectOption('remember');
+        return page;
+      };
+      const nullPage=await loadInvalid({version:1,enabled:true,nodes:null},'Memory null nodes');
+      const nullControls=nullPage.getByRole('region',{name:'Memory node settings'});
+      await nullControls.getByRole('alert').getByText(/node collection is invalid/i).waitFor();
+      assert.equal(await nullPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+      assert.equal(await nullPage.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),true);
+      const beforeNull=await nullPage.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>call.id==='test').length);
+      await nullPage.getByRole('button',{name:'Save draft',exact:true}).click();await nullPage.getByText('Revision 1 saved as a draft').waitFor();
+      const savedNull=await nullPage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedNull.memoryPolicy.nodes,null);
+      await nullPage.locator('details.lp-definition-settings summary').click();
+      await nullPage.locator('details.lp-definition-settings input').first().fill('Memory null nodes unsaved');
+      await nullPage.waitForFunction(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('Memory null nodes unsaved'))return true;return false;});
+      await nullPage.reload();await waitFor(nullPage,'select[aria-label="Load an example"]');
+      const drafts=nullPage.locator('.lp-local-drafts');await drafts.locator('summary').waitFor();
+      if(!await drafts.evaluate(element=>element.open))await drafts.locator('summary').click();
+      await drafts.getByRole('button',{name:/^Recover Memory null nodes unsaved draft/}).first().click();
+      await nullPage.getByLabel('Select node to edit',{exact:true}).selectOption('remember');
+      await nullPage.getByRole('region',{name:'Memory node settings'}).getByRole('button',{name:'Repair memory node collection'}).click();
+      await nullPage.getByRole('textbox',{name:'Memory read prefixes'}).fill('notes');
+      await nullPage.getByLabel('Select node to edit',{exact:true}).selectOption('sibling');
+      await nullPage.getByRole('button',{name:'Repair this Memory node policy'}).click();
+      await nullPage.getByRole('textbox',{name:'Memory read prefixes'}).fill('notes');
+      assert.equal(await nullPage.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),false);
+      // The synthetic backend is page-local; restore its last persisted record
+      // after reload so this save tests the real editor revision transition.
+      await nullPage.evaluate(definition=>globalThis.__editorRegression.records.set(definition.id,{definition,enabledRevision:null,publishedRevision:null,grants:definition.capabilities,revisions:{[definition.revision]:definition}}),savedNull);
+      await nullPage.getByRole('button',{name:'Save & publish',exact:true}).click();await nullPage.getByText(/Revision \d+ saved and enabled for chat and UI\./).waitFor();
+      assert.equal((await nullPage.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>call.id==='test').length)),beforeNull);
+      receipt.checks.push('synthetic browser: null Memory nodes imports and reloads unchanged, blocks dispatch, then explicit repair permits publication');
+      await nullPage.close();
+      const malformed={version:1,enabled:true,nodes:{remember:{readPrefixes:'notes',writeScopes:[null,{prefix:'notes',schemaId:'note',schemaVersion:1,retentionDays:30}],forgetPrefixes:null},sibling:{readPrefixes:['notes'],writeScopes:[],forgetPrefixes:[]}}};
+      const malformedPage=await loadInvalid(malformed,'Memory malformed rows');
+      const malformedControls=malformedPage.getByRole('region',{name:'Memory node settings'});
+      await malformedControls.getByRole('alert').getByText(/invalid collections or write scopes/i).waitFor();
+      await malformedPage.getByLabel('Select node to edit',{exact:true}).selectOption('sibling');
+      await malformedPage.getByRole('textbox',{name:'Memory read prefixes'}).fill('notes.other');
+      await malformedPage.getByLabel('Select node to edit',{exact:true}).selectOption('remember');
+      const beforeRepair=await malformedPage.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>call.id==='test').length);
+      const exportedPromise=malformedPage.waitForEvent('download');await malformedPage.getByRole('button',{name:'Export',exact:true}).click();
+      const exported=JSON.parse(await readFile(await (await exportedPromise).path(),'utf8'));
+      assert.equal(exported.memoryPolicy.nodes.remember.readPrefixes,'notes');assert.equal(exported.memoryPolicy.nodes.remember.forgetPrefixes,null);
+      assert.equal(exported.memoryPolicy.nodes.remember.writeScopes[0],null);assert.deepEqual(exported.memoryPolicy.nodes.sibling.readPrefixes,['notes.other']);
+      assert.equal(await malformedPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+      await malformedControls.getByRole('button',{name:'Repair read prefixes'}).click();
+      await malformedControls.getByRole('button',{name:'Repair forget prefixes'}).click();
+      await malformedControls.getByRole('button',{name:'Repair write scope 1'}).click();
+      assert.equal((await malformedPage.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>call.id==='test').length)),beforeRepair);
+      receipt.checks.push('synthetic browser: malformed Memory collections and a scope row remain intact across sibling edit until explicit field repairs');
+      await malformedPage.close();
+      for(const [name,policy,repair] of [
+        ['Memory string nodes',{version:1,enabled:true,nodes:'invalid'},'Repair memory node collection'],
+        ['Memory missing read',{version:1,enabled:true,nodes:{remember:{writeScopes:[],forgetPrefixes:[]},sibling:{readPrefixes:['notes'],writeScopes:[],forgetPrefixes:[]}}},'Repair read prefixes'],
+        ['Memory nonarray write',{version:1,enabled:true,nodes:{remember:{readPrefixes:['notes'],writeScopes:'notes',forgetPrefixes:[]},sibling:{readPrefixes:['notes'],writeScopes:[],forgetPrefixes:[]}}},'Repair write scopes'],
+        ['Memory mixed read',{version:1,enabled:true,nodes:{remember:{readPrefixes:['notes',0],writeScopes:[],forgetPrefixes:[]},sibling:{readPrefixes:['notes'],writeScopes:[],forgetPrefixes:[]}}},'Repair read prefixes'],
+      ]){
+        const repairPage=await loadInvalid(policy,name);
+        await repairPage.getByRole('region',{name:'Memory node settings'}).getByRole('button',{name:repair}).waitFor();
+        assert.equal(await repairPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+        assert.equal(await repairPage.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),true);
+        await repairPage.close();
+      }
+      receipt.checks.push('synthetic browser: nonrecord nodes, missing and nonarray scope collections, and mixed prefix entries render explicit repair controls without dispatch');
+    }
+    {
       // F1: the mounted editor must reject every way a Summary write can
       // replace its own selected live values, while keeping the draft editable.
       const overlapPage=await browser.newPage();overlapPage.setDefaultTimeout(10_000);

@@ -51,6 +51,61 @@ async function blockWriter(file:string,duration=350){
 const references=(service:EngineService)=>(service as unknown as {actors:Map<string,unknown>}).actors.size;
 
 describe('asynchronous committed-state service (real SQLite, synthetic host)',()=>{
+  it('joins native run work through physical settlement while the UI path retains its running handle',async()=>{
+    let entered!:()=>void,finish!:()=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+    const root=mkdtempSync(join(tmpdir(),'loops-joined-'));dirs.push(root);
+    const {service}=setup({file:join(root,'loops.sqlite'),replyTimeoutMs:1},{complete:async()=>{entered();await gate;return {text:'joined result'};}});
+    await service.ready;const definition=structuredClone(examples[0]);definition.revision=1;
+    await service.invoke('save',actor(),definition,1,true);
+    let joined=false,early:{state:string;id:string}|undefined;
+    const pending=service.invokeJoinedWithHandle('run',actor(),result=>{early=result;},'summarize-text',{text:'join'},'native-joined').then(result=>{joined=true;return result;});
+    try{
+      await started;await sleep(20);expect(early).toMatchObject({state:'running'});expect(joined).toBe(false);expect(references(service)).toBeGreaterThan(0);
+      const rows=await service.invoke('runs',actor());expect(rows).toHaveLength(1);expect(rows[0].state).toBe('running');
+    }finally{finish();}
+    const result=await pending;
+    expect(result).toMatchObject({id:early?.id,state:'completed',result:'joined result'});
+    await vi.waitFor(()=>expect(references(service)).toBe(0));
+  });
+  it('does not release a joined admission on service failure before an abort-ignoring local host call settles',async()=>{
+    let entered!:()=>void,finish!:()=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+    const root=mkdtempSync(join(tmpdir(),'loops-joined-failure-'));dirs.push(root);
+    const {service}=setup({file:join(root,'loops.sqlite'),replyTimeoutMs:1},{complete:async()=>{entered();await gate;return {text:'late local result'};}});
+    await service.ready;const definition=structuredClone(examples[0]);definition.revision=1;
+    await service.invoke('save',actor(),definition,1,true);
+    let early=false,settled=false;
+    const pending=service.invokeJoinedWithHandle('run',actor(),()=>{early=true;},'summarize-text',{text:'join'},'joined-service-failure')
+      .finally(()=>{settled=true;});
+    void pending.catch(()=>{});
+    try{
+      await started;await vi.waitFor(()=>expect(early).toBe(true));
+      (service as unknown as {fail:(error:Error)=>void}).fail(requestError('Forced service failure.'));
+      await sleep(20);expect(settled).toBe(false);
+    }finally{finish();}
+    await expect(pending).rejects.toThrow(/unavailable|Forced service failure/i);
+    expect(settled).toBe(true);
+  });
+  it('joins a rejected worker request before any handle until its local host promise settles',async()=>{
+    let entered!:()=>void,finish!:()=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+    const root=mkdtempSync(join(tmpdir(),'loops-joined-request-failure-'));dirs.push(root);
+    const {service}=setup({file:join(root,'loops.sqlite'),replyTimeoutMs:60_000},{complete:async()=>{entered();await gate;return {text:'late local result'};}});
+    await service.ready;const definition=structuredClone(examples[0]);definition.revision=1;
+    await service.invoke('save',actor(),definition,1,true);
+    let early=false,settled=false;
+    const pending=service.invokeJoinedWithHandle('run',actor(),()=>{early=true;},'summarize-text',{text:'join'},'joined-request-failure')
+      .finally(()=>{settled=true;});
+    void pending.catch(()=>{});
+    try{
+      await started;
+      (service as unknown as {fail:(error:Error)=>void}).fail(requestError('Forced request failure.'));
+      await sleep(20);expect(early).toBe(false);expect(settled).toBe(false);
+    }finally{finish();}
+    await expect(pending).rejects.toThrow(/unavailable|Forced request failure/i);
+    expect(settled).toBe(true);
+  });
   it('forwards v3 native structured generation through the real worker boundary',async()=>{
     const schema={type:'object' as const,properties:{ok:{type:'boolean' as const}},required:['ok'],additionalProperties:false};
     const definition=structuredClone(examples[0]);definition.schemaVersion=3;
@@ -101,7 +156,8 @@ describe('asynchronous committed-state service (real SQLite, synthetic host)',()
       await vi.waitFor(()=>{expect(references(service)).toBe(0);expect(physical).toBe(0);});
       expect(maximum).toBe(capacity);expect(calls.map(call=>call.prompt)).toEqual([...Array.from({length:capacity},(_,i)=>`active-${i}`),...expectedReady]);
       expect(await service.invoke('status',actor(),queued['cancel-queued'].id)).toMatchObject({state:'cancelled',executions:0,trace:[]});
-      for(const [label,code] of [['abort-queued','HOST_ABORTED'],['revoke-queued','HOST_POLICY_DENIED']])expect(await service.invoke('status',actor(),queued[label].id)).toMatchObject({state:'failed',executions:0,trace:[],errorDetail:{code}});
+      expect(await service.invoke('status',actor(),queued['abort-queued'].id)).toMatchObject({state:'cancelled',executions:0,trace:[]});
+      expect(await service.invoke('status',actor(),queued['revoke-queued'].id)).toMatchObject({state:'failed',executions:0,trace:[],errorDetail:{code:'HOST_POLICY_DENIED'}});
       const cancelled=await service.invoke('status',actor(),runs[0].id);expect(cancelled).toMatchObject({state:'cancelled',cleanupPending:false});expect(cancelled.result).toBeUndefined();expect(cancelled.outputs.summary).toBeUndefined();expect(cancelled.trace.some(node=>node.nodeId==='return')).toBe(false);
       if(capacity>1)expect(await service.invoke('status',actor(),runs[1].id)).toMatchObject({state:'failed',errorDetail:{code:'HOST_RATE_LIMITED'}});
       const committed=await Promise.all(runs.map(run=>service.invoke('status',actor(),run.id)));await service.close();

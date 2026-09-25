@@ -21,10 +21,26 @@ import {emptyDocumentLinks} from './document-maintenance.js';
 const runtimeKey=Symbol.for('openclaw-loops-poc.executor.v2');
 const scope=globalThis as typeof globalThis & {[runtimeKey]?:Map<string,EngineService>};
 const engines=scope[runtimeKey]??=new Map<string,EngineService>();
-const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description:'Inspectable, bounded loops shared by native UI and chat.',setup(api,events){
+// The feature helper's tool factory is v1. Keep its scoped session actions and
+// events, and register the same declared tools below through the public v2
+// factory so every native write has a required live-invocation assertion.
+const actionContract={...wireContract,operations:Object.fromEntries(Object.entries(wireContract.operations).map(([name,operation])=>{
+  const action={...operation} as Record<string,unknown>;delete action.tool;return [name,action];
+}))} as typeof wireContract;
+const plugin=defineFeaturePlugin({contract:actionContract,name:'Loops',description:'Inspectable, bounded loops shared by native UI and chat.',setup(api,events){
   const config=parsePluginConfig(api.pluginConfig),budgets=resolveBudgets(config.budgets);
   const bridge=createBridge(api);const stateFile=join(api.runtime.state.resolveStateDir(),'loops-poc','state.json');
   const service=()=>{const engine=engines.get(stateFile);if(!engine)throw requestError('Loops service has not started in this Gateway.','LOOPS_SERVICE_UNAVAILABLE','Start or restart the enabled Loops plugin in this Gateway before trying again.');return engine;};
+  const runWork=<T>(context:FeatureInvocationContext,actor:Actor,invoke:(actor:Actor,onHandle?:(value:T)=>void)=>Promise<T>):Promise<T>=>{
+    if(context.source!=='session-action')return bridge.withCurrentWork(actor,joined=>invoke(joined));
+    // The UI keeps its early inspectable handle. The separate session work
+    // admission stays joined to the physical worker after this promise resolves.
+    let resolve!: (value:T)=>void, reject!: (error:unknown)=>void;
+    const handle=new Promise<T>((done,fail)=>{resolve=done;reject=fail;});
+    const work=bridge.withCurrentWork(actor,joined=>invoke(joined,resolve));
+    void work.then(resolve,reject);
+    return handle;
+  };
   api.registerService({id:'loops-poc-store',async start(){
     const existing=engines.get(stateFile);if(existing)return existing.ready;
     const engine=new EngineService({file:join(api.runtime.state.resolveStateDir(),'loops-poc','loops.sqlite'),legacyFile:stateFile,budgets,concurrency:config.maxConcurrentRuns??1},bridge.host,()=>events.emit('changed',{}));
@@ -56,19 +72,21 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     }catch(error){return {text:`Loops ${formatFailure(errorDetail(error,{phase:'operation'}))}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
+    memory:(p,c)=>service().invoke('memoryQuery',bridge.actor(c),p),
     browse:(p,c)=>service().invoke('browse',bridge.actor(c),p),
     retention:(p,c)=>service().invoke('retention',bridge.actor(c),p.policy,p.applyPlanId),
     maintenance:(p,c)=>service().invoke('maintenance',bridge.actor(c),p.policy,p.applyPlanId),
     transport_release:(p,c)=>service().invoke('transportRelease',bridge.actor(c),p),
-    test:async(p,c)=>receipt(await service().invoke('test',bridge.actor(c),p.definition,p.input,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),retry:async(p,c)=>receipt(await service().invoke('retry',bridge.actor(c),p.runId,p.mode,p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})()))),
+    test:async(p,c)=>{const requestId=p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})());return receipt(await runWork(c,bridge.actor(c),(actor,onHandle)=>service().invokeJoinedWithHandle('test',actor,onHandle,p.definition,p.input,requestId)));},
+    retry:async(p,c)=>{const requestId=p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required.');})());return receipt(await runWork(c,bridge.actor(c),(actor,onHandle)=>service().invokeJoinedWithHandle('retry',actor,onHandle,p.runId,p.mode,requestId)));},
     draft:(p,c)=>service().invoke('draft',bridge.actor(c),p.definition,p.expectedRevision),versions:(p,c)=>service().invoke('versions',bridge.actor(c),p.id),publish:(p,c)=>service().invoke('publish',bridge.actor(c),p.id,p.revision,p.expectedRevision),restore:(p,c)=>service().invoke('restore',bridge.actor(c),p.id,p.revision,p.expectedRevision),archive:(p,c)=>service().invoke('archive',bridge.actor(c),p.id,p.expectedRevision,p.archived),deleted:(_,c)=>service().invoke('deleted',bridge.actor(c)),recover:(p,c)=>service().invoke('recover',bridge.actor(c),p.id,p.expectedRevision),output:(p,c)=>service().invoke('output',bridge.actor(c),p.runId,p.nodeId,p.offset,p.limit),history:(p,c)=>service().invoke('history',bridge.actor(c),p.cursor,p.limit),
     capabilities:(p,c)=>service().invoke('capabilities',bridge.actor(c),p),validate:(p,c)=>service().invoke('validate',bridge.actor(c),p.definition),
     list:(_,c)=>service().invoke('list',bridge.actor(c)),describe:async(p,c)=>describe(await service().invoke('describe',bridge.actor(c),p.slug)),
-    run:async(p,c)=>{if(p.input!==undefined&&p.text!==undefined)throw requestError('Supply input or the text shortcut, not both.');return receipt(await service().invoke('run',bridge.actor(c),p.slug,p.input??(p.text===undefined?{}:{text:p.text}),p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required for UI execution.');})())));},
-    status:async(p,c)=>receipt(await service().invoke('status',bridge.actor(c),p.runId)),resume:async(p,c)=>receipt(await service().invoke('resume',bridge.actor(c),p.runId)),cancel:async(p,c)=>receipt(await service().invoke('cancel',bridge.actor(c),p.runId)),
+    run:async(p,c)=>{if(p.input!==undefined&&p.text!==undefined)throw requestError('Supply input or the text shortcut, not both.');const requestId=p.requestId??(c.source==='tool'?`tool:${c.toolCallId}`:(()=>{throw requestError('requestId is required for UI execution.');})());const input=p.input??(p.text===undefined?{}:{text:p.text});return receipt(await runWork(c,bridge.actor(c),(actor,onHandle)=>service().invokeJoinedWithHandle('run',actor,onHandle,p.slug,input,requestId)));},
+    status:async(p,c)=>receipt(await service().invoke('status',bridge.actor(c),p.runId)),resume:async(p,c)=>receipt(await runWork(c,bridge.actor(c),(actor,onHandle)=>service().invokeJoinedWithHandle('resume',actor,onHandle,p.runId))),cancel:async(p,c)=>receipt(await service().invoke('cancel',bridge.actor(c),p.runId)),
     library:(_,c)=>service().invoke('library',bridge.actor(c)),load:(p,c)=>service().invoke('load',bridge.actor(c),p.id),save:(p,c)=>service().invoke('save',bridge.actor(c),p.definition,p.expectedRevision,p.enabled),
     create:(p,c)=>service().invoke('create',bridge.actor(c),p.definition,p.enabled),edit:(p,c)=>service().invoke('edit',bridge.actor(c),p.id,p.expectedRevision,p.changes,p.enabled),delete:(p,c)=>service().invoke('delete',bridge.actor(c),p.id,p.expectedRevision),
-    enable:(p,c)=>service().invoke('enable',bridge.actor(c),p.id,p.revision,p.enabled,p.grants),revoke:(p,c)=>service().invoke('revoke',bridge.actor(c),p.id),runs:(_,c)=>service().invoke('runs',bridge.actor(c)),inspect:(p,c)=>service().invoke('status',bridge.actor(c),p.runId),review:async(p,c)=>receipt(await service().invoke('review',bridge.actor(c),p.runId,p.decision)),
+    enable:(p,c)=>service().invoke('enable',bridge.actor(c),p.id,p.revision,p.enabled,p.grants),revoke:(p,c)=>service().invoke('revoke',bridge.actor(c),p.id),runs:(_,c)=>service().invoke('runs',bridge.actor(c)),inspect:(p,c)=>service().invoke('status',bridge.actor(c),p.runId),review:async(p,c)=>receipt(await runWork(c,bridge.actor(c),(actor,onHandle)=>service().invokeJoinedWithHandle('review',actor,onHandle,p.runId,p.decision))),
   };
   const safely=async<T>(name:string,context:FeatureInvocationContext,handler:(actor:Actor)=>T|Promise<T>)=>{
     let actor:Actor|undefined;
@@ -101,7 +119,7 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
       const links=documentLinks(name,payload,result);
       for(const use of uses)await service().invoke('documentFinishUse',actor,use.documentId,use.readerId,links);
       finished=true;
-      const tool='tool' in operation?operation.tool.name:undefined;
+      const tool='tool' in operation&&operation.tool?operation.tool.name:undefined;
       const value=context.source==='tool'&&tool&&name==='output'&&Value.Check(outputs.output,result)?toolPage(result,tool):result;
       const output=await service().invoke('documentWrap',actor,value,links);
       return context.source==='tool'&&tool&&!fitsToolReply(output,tool)?service().invoke('documentSnapshot',actor,output,documentLinks(name,payload,output)):output;
@@ -119,6 +137,21 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     document_release:(p,c)=>safely('document_release',c,actor=>service().invoke('documentRelease',actor,p.documentId,p.readerId)),
     upload:(p,c)=>safely('upload',c,actor=>service().invoke('documentUpload',actor,p)),
   };
+  for(const [name,operation] of Object.entries(wireContract.operations))if('tool' in operation&&operation.tool){
+    const tool=operation.tool;
+    api.registerTool({contextVersion:2,create(toolContext){return {
+      name:tool.name,label:'label' in tool&&typeof tool.label==='string'?tool.label:tool.name,description:operation.description,parameters:operation.input,outputSchema:operation.output,
+      execute:async(toolCallId,input,signal,onUpdate)=>{
+        toolContext.assertInvocationCurrent();signal?.throwIfAborted();
+        if(!Value.Check(operation.input,input))throw requestError('Tool input does not match its Loops schema.');
+        const context:FeatureInvocationContext={source:'tool',tool:toolContext,toolCallId,signal,onUpdate,api};
+        const result=await (wireHandlers[name as keyof typeof wireHandlers] as (value:unknown,context:FeatureInvocationContext)=>unknown)(input,context);
+        toolContext.assertInvocationCurrent();signal?.throwIfAborted();
+        if(!Value.Check(operation.output,result))throw new Error('Tool output does not match its Loops schema.');
+        return {content:[{type:'text' as const,text:JSON.stringify(result,null,2)}],details:result};
+      },
+    };}},{name:tool.name,...'optional' in tool&&tool.optional?{optional:true}:{}});
+  }
   return wireHandlers;
 }});
 Object.assign(plugin.configSchema.jsonSchema??={},pluginConfigSchema);

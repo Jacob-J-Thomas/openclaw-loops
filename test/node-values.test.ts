@@ -78,6 +78,10 @@ describe('explicit JSON node values',()=>{
     // Lifecycle nodes are deliberately v3-only; the port registry remains
     // exhaustive without pretending a v2 graph can author context behavior.
     if(node.kind==='context-lifecycle')d.schemaVersion=3;
+    if(node.kind==='memory'){
+      d.schemaVersion=3;
+      d.memoryPolicy={version:1,enabled:true,nodes:{node:{readPrefixes:['notes'],writeScopes:[],forgetPrefixes:[]}}};
+    }
     d.nodes=kind==='input'?[node,d.nodes[1]]:nodeContract(kind).terminal?[d.nodes[0],node]:[d.nodes[0],node,d.nodes[1]];
     d.edges=[...kind==='input'?[]:[{id:'entry',source:'input',target:'node',port:'next' as const}],...ports(node).map(port=>({id:`node-${port}`,source:'node',target:'result',port}))];d.capabilities=requiredCapabilities(d.nodes);
     if(node.kind==='gate'){

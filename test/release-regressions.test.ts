@@ -80,13 +80,13 @@ describe('real bridge parameter forwarding (fake host completion)',()=>{
     const complete=vi.fn(async()=>({text:'ok'}));
     const cfg={plugins:{entries:{'loops-poc':{enabled:true,llm:{allowModelOverride:true}}}},agents:{defaults:{model:{primary:'fake/default'}}}};
     const entry={sessionId:'test',modelOverride:'active',providerOverride:'fake',thinkingLevel:'high',authProfileOverride:'new-session-profile'};
-    const api={config:cfg,runtime:{config:{current:()=>cfg},llm:{complete},modelConfig:{resolveDefaultModelForAgent:({agentId}:{agentId:string})=>resolveDefaultModelForAgent(agentId)},agent:{normalizeThinkingLevel:(value:string)=>value,session:{getSessionEntry:()=>entry}}}} as unknown as OpenClawPluginApi;
+    const api={config:cfg,runtime:{config:{current:()=>cfg},llm:{complete},modelConfig:{resolveDefaultModelForAgent:({agentId}:{agentId:string})=>resolveDefaultModelForAgent(agentId)},agent:{normalizeThinkingLevel:(value:string)=>value,session:{resolveStorePath:()=>'/isolated/bridge-fixture/sessions.json',getSessionEntry:()=>entry}}}} as unknown as OpenClawPluginApi;
     return {...createBridge(api),api,complete};
   }
   it('uses the configured host default for UI, command and agent tool paths without forcing sampling defaults',async()=>{
     const bridge=bridgeSetup();
     for(const source of ['session-action','command','tool'] as const){
-      const c={agentId:'research',sessionKey:'agent:research:test',sessionId:'test',isAuthorizedSender:true,client:{connId:'test',scopes:['operator.admin']}};
+      const c={agentId:'research',sessionKey:'agent:research:test',sessionId:'test',isAuthorizedSender:true,assertInvocationCurrent:()=>{},assertOwnerCurrent:()=>{},client:{connId:'test',scopes:['operator.admin']}};
       const context={source,api:bridge.api,...source==='session-action'?{action:c}:source==='command'?{command:c}:{tool:c}} as unknown as FeatureInvocationContext;
       const a=bridge.actor(context);
       await bridge.host.complete(a,'Prompt',new AbortController().signal,10000);

@@ -1,10 +1,12 @@
 import { build } from 'esbuild';
 import {copyFileSync,mkdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
-rmSync('dist',{recursive:true,force:true});
+const manifestOnly=process.argv.includes('--manifest-only');
+if(!manifestOnly)rmSync('dist',{recursive:true,force:true});
 const metadata=await build({stdin:{contents:"export {examples} from './src/examples.ts'; export {DefinitionVersionSchemas} from './src/graph.ts'; export {pluginConfigSchema} from './src/budgets.ts'; export {wireContract,withRecursiveDataSchemaWire} from './src/wire-contract.ts';",resolveDir:resolve('.'),loader:'ts'},bundle:true,platform:'node',format:'esm',write:false});
 const {examples,DefinitionVersionSchemas,pluginConfigSchema,wireContract,withRecursiveDataSchemaWire}=await import('data:text/javascript;base64,'+Buffer.from(metadata.outputFiles[0].contents).toString('base64'));
 const manifest=JSON.parse(readFileSync('openclaw.plugin.json','utf8'));manifest.configSchema=pluginConfigSchema;manifest.contracts.tools=Object.values(wireContract.operations).flatMap(op=>op.tool?[op.tool.name]:[]).sort();writeFileSync('openclaw.plugin.json',JSON.stringify(manifest,null,2)+'\n');
+if(!manifestOnly){
 mkdirSync('examples',{recursive:true});
 for(const definition of examples)writeFileSync(`examples/${definition.slug}.json`,JSON.stringify(definition,null,2)+'\n');
 for(const version of [1,2,3]){const source=DefinitionVersionSchemas[version],schema=version===3?withRecursiveDataSchemaWire(source):source;writeFileSync(`examples/schema-v${version}.json`,JSON.stringify({...schema,properties:{...schema.properties,schemaVersion:{const:version,type:'number'}}},null,2)+'\n');}
@@ -14,3 +16,4 @@ await build({entryPoints:['src/index.ts'], outfile:'dist/index.js', bundle:true,
 await build({entryPoints:['src/engine-service-worker.ts'], outfile:'dist/engine-service-worker.js', bundle:true, platform:'node', target:'node24', format:'esm', external:['openclaw/*']});
 await build({entryPoints:['src/evaluation-worker.ts'], outfile:'dist/evaluation-worker.js', bundle:true, platform:'node', target:'node24', format:'esm'});
 copyFileSync('src/storage-worker.mjs','dist/storage-worker.mjs');
+}

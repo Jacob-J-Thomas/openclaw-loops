@@ -5,7 +5,7 @@ import {LoopError,type LoopErrorData} from './errors.js';
 
 // Private, same-process worker protocol. It is not a second host API or a
 // capability token that callers can supply through the feature contract.
-export const engineMethods=['browse','retention','maintenance','transportRelease','test','retry','draft','versions','publish','restore','archive','deleted','recover','output','history','capabilities','validate','list','describe','run','status','resume','cancel','library','load','save','create','edit','delete','enable','revoke','runs','review','documentWrap','documentSnapshot','documentRead','documentUpload','documentResolve','documentAcquire','documentRelease','documentUse','documentFinishUse'] as const satisfies ReadonlyArray<keyof Engine>;
+export const engineMethods=['browse','memoryQuery','retention','maintenance','transportRelease','test','retry','draft','versions','publish','restore','archive','deleted','recover','output','history','capabilities','validate','list','describe','run','status','resume','cancel','library','load','save','create','edit','delete','enable','revoke','runs','review','documentWrap','documentSnapshot','documentRead','documentUpload','documentResolve','documentAcquire','documentRelease','documentUse','documentFinishUse'] as const satisfies ReadonlyArray<keyof Engine>;
 export type EngineMethod=typeof engineMethods[number];
 export type EngineArgs<M extends EngineMethod>=Parameters<Engine[M]> extends [Actor,...infer A]?A:never;
 export type EngineResult<M extends EngineMethod>=Awaited<ReturnType<Engine[M]>>;
