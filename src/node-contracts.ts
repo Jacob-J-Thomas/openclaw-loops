@@ -5,6 +5,7 @@ import {NodeValueSchema,type NodeValue,type Json} from './node-values.js';
 import {ContextNodeConfigSchema,type ContextNodeConfig} from './context.js';
 import {type EvaluationResult,type Evaluator} from './evaluation.js';
 import type {DataSchema} from './data-schema.js';
+import {SwitchSchema,TypedConditionNodeSchema,evaluateSwitch,evaluateTypedCondition,type RouteEvidence,type SwitchNode,type TypedConditionNode} from './branching.js';
 export type {Json,NodeValue} from './node-values.js';
 
 export const identifierSchema=Type.String({pattern:'^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$'});
@@ -38,7 +39,7 @@ export const LegacyNodeSchema=Type.Union([legacySchemas.input,legacySchemas.infe
 type BaseGraphNode=Static<typeof NodeSchema>&{context?:ContextNodeConfig;outputSchema?:DataSchema;structuredGeneration?:'native'};
 type EvaluateNode={id:string;kind:'evaluate';label:string;value:NodeValue;evaluator:Evaluator;context?:ContextNodeConfig;outputSchema?:DataSchema};
 type GateNode={id:string;kind:'gate';label:string;evaluationId:string;context?:ContextNodeConfig;outputSchema?:DataSchema};
-export type GraphNode=BaseGraphNode|EvaluateNode|GateNode;
+export type GraphNode=BaseGraphNode|EvaluateNode|GateNode|(TypedConditionNode&{context?:ContextNodeConfig;outputSchema?:DataSchema})|(SwitchNode&{context?:ContextNodeConfig;outputSchema?:DataSchema});
 const contextExtension=Type.Object({context:Type.Optional(ContextNodeConfigSchema)},strict);
 const withContext=(schema:{properties:Record<string,TSchema>})=>Type.Object({...schema.properties,...outputExtension,...contextExtension.properties},strict);
 const evaluatorSchema=Type.Union([
@@ -51,18 +52,21 @@ const contextSchemas={
   input:Type.Object({...schemas.input.properties,...contextExtension.properties},strict),inference:Type.Object({...schemas.inference.properties,...outputExtension,...contextExtension.properties,structuredGeneration:Type.Optional(Type.Literal('native'))},strict),action:withContext(schemas.action),condition:withContext(schemas.condition),
   wait:withContext(schemas.wait),review:withContext(schemas.review),return:withContext(schemas.return),fail:withContext(schemas.fail),
 };
+const contextTypedConditionSchema=withContext(TypedConditionNodeSchema);
+const contextSwitchSchema=withContext(SwitchSchema);
 const contextRepeatSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:Type.Tuple([contextSchemas.inference,contextSchemas.condition]),...contextExtension.properties},strict);
-export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail,evaluateSchema,gateSchema]));
+export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextTypedConditionSchema,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail,contextSwitchSchema,evaluateSchema,gateSchema]));
 export type Predicate=Static<typeof PredicateSchema>;
 export type NodeKind=GraphNode['kind'];
 export type NodeOf<K extends NodeKind>=Extract<GraphNode,{kind:K}>;
 export type NodeCapability='llm'|'model-info';
 export type BindingUse={text:NodeValue;prior?:string[]};
-export type NodeOutcome={output:Json;port?:string;park?:{state:'waiting'|'review';value:Json};returned?:boolean};
+export type NodeOutcome={output:Json;port?:string;route?:RouteEvidence;park?:{state:'waiting'|'review';value:Json};returned?:boolean};
 export type NodeExecutionContext={
   signal:AbortSignal;
   input:Record<string,Json>;
   bind:(template:NodeValue,node?:GraphNode)=>Json;
+  resolve:(template:NodeValue,node?:GraphNode)=>{available:boolean;value?:Json};
   compare:(predicate:Predicate,node?:GraphNode,iteration?:number)=>boolean;
   infer:(node:NodeOf<'inference'>,iteration?:number)=>Promise<Json>;
   evaluate:(value:Json,evaluator:Evaluator,nodeId:string)=>Promise<EvaluationResult>;
@@ -76,7 +80,7 @@ export type NodeExecutionContext={
   validateOutput:(node:GraphNode,output:Json)=>Json;
   commitContext:(node:GraphNode,output:Json)=>void;
 };
-type NodeContract<K extends NodeKind>={
+type NodeContract<K extends NodeKind=NodeKind>={
   schema:TSchema;
   ports:readonly string[];
   capabilities:readonly NodeCapability[];
@@ -107,9 +111,12 @@ export const nodeContracts:{[K in NodeKind]:NodeContract<K>}={
   action:{schema:schemas.action,ports:['next'],capabilities:['model-info'],terminal:false,bindings:noBindings,outputFields:()=>['provider','model','agentId'],
     execute:async(node,context)=>{context.requireCapability(node.capability);return {output:await context.modelInfo()};},
     editor:{title:'Model action',icon:'TOOL',description:()=> 'OpenClaw · model metadata',create:id=>({id,kind:'action',label:'Model action',capability:'model-info'})}},
-  condition:{schema:schemas.condition,ports:['true','false'],capabilities:[],terminal:false,bindings:node=>predicateBindings(node.predicate),outputFields:()=>['value'],
-    execute:(node,context)=>{const passed=context.compare(node.predicate,node);return {output:{value:passed},port:passed?'true':'false'};},
-    editor:{title:'Condition',icon:'IF',description:node=>node.predicate.op,create:id=>({id,kind:'condition',label:'Condition',predicate:{left:'{{input.text}}',op:'equals',right:'yes'}})}},
+  condition:{schema:schemas.condition,ports:['true','false'],capabilities:[],terminal:false,bindings:node=>('condition'in node?[{text:node.condition.value},...node.condition.expected?[{text:node.condition.expected}]:[]]:predicateBindings(node.predicate)),outputFields:()=>['value'],
+    execute:(node,context)=>{if('condition'in node){const evaluated=evaluateTypedCondition(node.condition,value=>context.resolve(value,node));const port=evaluated.passed?'true':'false';return {output:{value:evaluated.passed},port,route:evaluated.available?{port,available:true,observed:evaluated.observed}:{port,available:false}};}const passed=context.compare(node.predicate,node);return {output:{value:passed},port:passed?'true':'false'};},
+    editor:{title:'Condition',icon:'IF',description:node=>'condition'in node?node.condition.operator:node.predicate.op,create:id=>({id,kind:'condition',label:'Condition',predicate:{left:'{{input.text}}',op:'equals',right:'yes'}})}},
+  switch:{schema:SwitchSchema,ports:[],capabilities:[],terminal:false,bindings:node=>[{text:node.value}],outputFields:()=>['value','caseId'],
+    execute:(node,context)=>{const evaluated=evaluateSwitch(node,value=>context.resolve(value,node));return {output:evaluated.output,port:evaluated.route.port,route:evaluated.route};},
+    editor:{title:'Switch',icon:'⇄',description:node=>node.strategy+' cases',create:id=>({id,kind:'switch',label:'Switch',value:'{{input.text}}',cases:[{id:'match',label:'Match',value:'yes'}],strategy:'unique',default:true})}},
   evaluate:{schema:evaluateSchema,ports:['next'],capabilities:[],terminal:false,bindings:node=>[{text:node.value}],outputFields:()=>['passed','errors','evidenceDigest','evaluatorDigest','inputDigest','evaluatorVersion','evaluatorNodeId'],
     execute:async(node,context)=>({output:await context.evaluate(context.bind(node.value,node),node.evaluator,node.id)}),
     editor:{title:'Evaluate',icon:'✓?',description:()=> 'Deterministic schema or predicate evidence',create:id=>({id,kind:'evaluate',label:'Evaluate',value:'{{input.text}}',evaluator:{kind:'json-schema-2020',version:'2020-12',schema:{type:'string'}}})}},

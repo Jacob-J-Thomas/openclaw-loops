@@ -4,6 +4,8 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {contextPage,inspectionOutput,journalSource,readOnlyGraphAriaLabelConfig,RunInspection} from '../src/run-inspection.js';
 import {parseDefinition} from '../src/graph.js';
 import type {Run} from '../src/engine.js';
+import {outputs} from '../src/output-schemas.js';
+import {Value} from 'typebox/value';
 
 const pinned=parseDefinition({schemaVersion:2,id:'published-loop',revision:3,slug:'pinned-loop',name:'Pinned published workflow',description:'immutable',inputSchema:[],capabilities:[],nodes:[{id:'input',kind:'input',label:'Pinned input'},{id:'repeat',kind:'repeat',label:'Pinned repeat',maxIterations:2,body:[{id:'body',kind:'inference',label:'Pinned body',prompt:'write',output:'text'},{id:'check',kind:'condition',label:'Pinned check',predicate:{left:'true',op:'truthy',right:''}}]},{id:'wait',kind:'wait',label:'Pinned wait',message:'wait'},{id:'return',kind:'return',label:'Pinned return',value:'{{nodes.repeat.text}}'}],edges:[{id:'a',source:'input',target:'repeat',port:'next'},{id:'b',source:'repeat',target:'wait',port:'next'},{id:'c',source:'wait',target:'return',port:'next'}],layout:{input:{x:0,y:0},repeat:{x:240,y:0},wait:{x:480,y:0},return:{x:720,y:0}},limits:{maxExecutions:20,maxOutputBytes:1048576}});
 const run:Run={id:'child-run',requestKey:'request',requestFingerprint:'fingerprint',owner:{agentId:'agent',sessionKey:'session',sessionId:'session-id'},source:'session-action',parentRunId:'parent-run',definition:pinned,input:{},state:'waiting',cursor:'repeat',outputs:{repeat:{iterations:0,succeeded:false,value:null},wait:0},trace:[{nodeId:'input',kind:'input',state:'completed',startedAt:'2026-01-01T00:00:00.000Z',output:'{}'},{nodeId:'repeat',kind:'repeat',state:'completed',startedAt:'2026-01-01T00:00:01.000Z',output:'false'}],executions:2,activeMs:0,createdAt:'2026-01-01T00:00:00.000Z',updatedAt:'2026-01-01T00:00:02.000Z'};
@@ -24,6 +26,19 @@ describe('run inspection',()=>{
     const html=render(contextual);expect(html).toContain('Shared context provenance');expect(html).toContain('Context version 2');expect(html).toContain('Current shared context value');expect(html).toContain('Committed patch journal');expect(html).toContain('v0 → v1 · input');expect(html).toContain('v1 → v2 · return');expect(html).toContain('Resolved value SHA-256');expect(html).toContain('🧪&lt;script&gt;alert(1)&lt;/script&gt;');expect(html).toContain('/value');
   });
   it('states when an older run did not retain shared context',()=>expect(render()).toContain('This run has no shared context'));
+  it('renders known null, explicit absence and legacy route previews without inventing operands',()=>{
+    const evidence=run.trace[1],known:Run={...run,cursor:'repeat',trace:[run.trace[0],{...evidence,route:{port:'true',available:true,observed:'null'}}]};
+    const unavailable:Run={...known,trace:[run.trace[0],{...evidence,route:{port:'false',available:false}}]};
+    const legacy:Run={...known,trace:[run.trace[0],{...evidence,route:{port:'true',observed:'0'}}]};
+    expect(Value.Check(outputs.completeRun,known)).toBe(true);
+    expect(Value.Check(outputs.completeRun,unavailable)).toBe(true);
+    expect(Value.Check(outputs.completeRun,legacy)).toBe(true);
+    expect(Value.Check(outputs.completeRun,{...known,trace:[run.trace[0],{...evidence,route:{port:'true',available:true}}]})).toBe(false);
+    expect(Value.Check(outputs.completeRun,{...known,trace:[run.trace[0],{...evidence,route:{port:'false',available:false,observed:'false'}}]})).toBe(false);
+    expect(render(known)).toContain('observed <code>null</code>');
+    expect(render(unavailable)).toContain('observed value unavailable');
+    expect(render(legacy)).toContain('observed <code>0</code>');
+  });
   it('renders the pinned definition, Repeat body settings, and readonly graph handles',()=>{
     const html=render();expect(html).toContain('Pinned published workflow');expect(html).toContain('Pinned repeat');expect(html).toContain('Pinned body');expect(html).toContain('read-only');expect(html).toContain('data-handleid="next"');
   });

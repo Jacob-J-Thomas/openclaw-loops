@@ -8,7 +8,7 @@ import type {ContextJournalEntry,ContextState} from './context.js';
 import {truncateCodePoints} from './unicode.js';
 
 type InspectionNode=Node<{node:GraphNode;output:OutputState},'inspection'>;
-type OutputState={label:string;value?:Json|string;checkpoint?:{label:string;value:Json|string}};
+type OutputState={label:string;value?:Json|string;checkpoint?:{label:string;value:Json|string};route?:NonNullable<Run['trace'][number]['route']>};
 export const readOnlyGraphAriaLabelConfig={
   'node.a11yDescription.default':'Press Enter or Space to select a node and inspect its pinned evidence. This graph is read only.',
   'node.a11yDescription.keyboardDisabled':'Press Enter or Space to select a node and inspect its pinned evidence. This graph is read only.',
@@ -42,9 +42,9 @@ export function inspectionOutput(run:Run,nodeId:string):OutputState{
   const evidence=[...run.trace].reverse().find(item=>item.nodeId===nodeId);
   const node=run.definition.nodes.find(item=>item.id===nodeId);
   const hasOutput=Object.hasOwn(run.outputs,nodeId),value=run.outputs[nodeId];
-  const recorded={label:run.parentRunId?evidence?.state==='completed'&&Object.hasOwn(evidence,'output')?'Recorded in this recovery':'Inherited from parent run':'Recorded output',value};
-  if(node?.kind==='evaluate'&&hasOutput&&value&&typeof value==='object'&&!Array.isArray(value)&&value.kind==='loops-evaluation')return {label:`Committed evaluation evidence · ${value.passed===true?'passed':'failed'}`,value};
-  if(node?.kind==='gate'&&hasOutput&&value&&typeof value==='object'&&!Array.isArray(value)&&typeof value.passed==='boolean')return {label:`Evidence gate · ${value.passed?'pass route':'fail route'}`,value};
+  const recorded={label:run.parentRunId?evidence?.state==='completed'&&Object.hasOwn(evidence,'output')?'Recorded in this recovery':'Inherited from parent run':'Recorded output',value,...evidence?.route?{route:evidence.route}:{}};
+  if(node?.kind==='evaluate'&&hasOutput&&value&&typeof value==='object'&&!Array.isArray(value)&&value.kind==='loops-evaluation')return {...recorded,label:`Committed evaluation evidence · ${value.passed===true?'passed':'failed'}`};
+  if(node?.kind==='gate'&&hasOutput&&value&&typeof value==='object'&&!Array.isArray(value)&&typeof value.passed==='boolean')return {...recorded,label:`Evidence gate · ${value.passed?'pass route':'fail route'}`};
   if(node?.kind==='wait'||node?.kind==='review'){
     const title=node.kind==='wait'?'Wait checkpoint':'Human review proposal';
     const pending=run.cursor===nodeId&&run.pending!==undefined&&((node.kind==='wait'&&run.state==='waiting')||(node.kind==='review'&&run.state==='review'));
@@ -84,7 +84,7 @@ export function RunInspection({run,onSelectRun,onExport}:{run:Run;onSelectRun:(i
     <details open><summary>Executed workflow (read-only)</summary><p className="lp-hint">This graph is the definition saved with this run. It does not edit or replace the current authoring draft.</p>
       <label className="lp-field"><span>Select executed node</span><select aria-label="Select executed node" value={selectedId} onChange={event=>setSelectedId(event.target.value)}>{run.definition.nodes.map(node=><option key={node.id} value={node.id}>{node.label} · {nodeContract(node.kind).editor.title}</option>)}</select></label>
       <div className="lp-executed-flow"><ReactFlow id={`loops-executed-${run.id}`} aria-label="Executed workflow. Select a node with Enter to inspect its pinned evidence." ariaLabelConfig={readOnlyGraphAriaLabelConfig} nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView nodesDraggable={false} nodesConnectable={false} nodesFocusable edgesFocusable elementsSelectable deleteKeyCode={null} onNodeClick={(_,node)=>setSelectedId(node.id)} onNodesChange={changes=>{const selected=selectionChange(changes);if(selected.selectedId)setSelectedId(selected.selectedId);}} onEdgesChange={()=>{}} proOptions={{hideAttribution:true}}><Background id={`loops-executed-background-${run.id}`}/><Controls showInteractive={false}/><MiniMap pannable zoomable/></ReactFlow></div>
-      {selected&&<div className="lp-run-node-detail"><h3>{selected.label}</h3><p className="lp-muted">{nodeContract(selected.kind).editor.title} · {selected.id}</p><h4>Executed settings</h4><pre>{settings(selected)}</pre>{output.checkpoint&&<><h4>{output.checkpoint.label}</h4><pre className="lp-checkpoint-output">{display(output.checkpoint.value)}</pre></>}<h4>{output.label}</h4>{output.value===undefined?<p className="lp-muted">No output is available for this node in this run.</p>:<pre className="lp-full-output">{display(output.value)}</pre>}</div>}
+      {selected&&<div className="lp-run-node-detail"><h3>{selected.label}</h3><p className="lp-muted">{nodeContract(selected.kind).editor.title} · {selected.id}</p><h4>Executed settings</h4><pre>{settings(selected)}</pre>{output.route&&<><h4>Selected route</h4><p className="lp-route"><code>{output.route.port}</code>{output.route.caseId&&<> · case {output.route.caseId}</>} · {output.route.available===false?<span>observed value unavailable</span>:<>observed <code>{output.route.observed}{output.route.truncated?'…':''}</code></>}</p></>}{output.checkpoint&&<><h4>{output.checkpoint.label}</h4><pre className="lp-checkpoint-output">{display(output.checkpoint.value)}</pre></>}<h4>{output.label}</h4>{output.value===undefined?<p className="lp-muted">No output is available for this node in this run.</p>:<pre className="lp-full-output">{display(output.value)}</pre>}</div>}
     </details>
   </section>;
 }
