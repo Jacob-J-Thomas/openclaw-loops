@@ -139,6 +139,11 @@ function confinedPath(value,parent,project,label){
 }
 function validateAgentModels(agent,prefix){
   validateModelSelection(agent.model,prefix);
+  // OpenClaw 2026.9.6 accepts a separate Decision model. An empty string
+  // explicitly disables that role; a selected model must stay on this profile's provider.
+  assert(agent.decisionModel===undefined||agent.decisionModel===''||
+    (typeof agent.decisionModel==='string'&&agent.decisionModel.startsWith(prefix)&&agent.decisionModel.length>prefix.length),
+  'Decision model must use this profile\'s approved provider or be disabled.');
   for(const [key,entry] of Object.entries(agent.models??{})){
     assert(key.startsWith(prefix)&&key.length>prefix.length,'Configured model route uses an unapproved provider.');
     assert(entry?.agentRuntime===undefined&&entry?.pickerRuntimes===undefined,'Model route runtime overrides are not admitted.');

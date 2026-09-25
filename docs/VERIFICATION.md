@@ -4,7 +4,7 @@
 
 ## 1.0.0 candidate qualification
 
-The standalone 1.0 baseline completed the accepted source/package/runtime qualification needed for publication preparation. The following immutable receipt identifies that historical candidate; its later documentation/package repack has its own archive identity and member comparisons on [Bolt #224](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/224). Neither receipt identifies the current post-1.0 feature artifact. Feature changes have separate per-Bolt evidence and require combined qualification under [the feature delivery contract](POST_1_0_DELIVERY.md). Registry availability, publication hash and fresh public installation/migration are established only by [Bolt #76](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/76).
+The standalone OpenClaw 2026.9.5 baseline completed the accepted source/package/runtime qualification needed for publication preparation. The following immutable receipt identifies that historical candidate; its later documentation/package repack has its own archive identity and member comparisons on [Bolt #224](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/224). Neither receipt identifies the current 2026.9.6 host-floor candidate under [Bolt #273](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/273). Feature changes have separate per-Bolt evidence and require combined qualification under [the feature delivery contract](POST_1_0_DELIVERY.md). Registry availability, publication hash and fresh public installation/migration are established only by [Bolt #76](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/76).
 
 | Candidate baseline | Recorded result |
 |---|---|

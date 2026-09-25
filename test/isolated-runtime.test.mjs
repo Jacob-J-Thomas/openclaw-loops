@@ -38,8 +38,8 @@ async function fixture(name='ollama'){
   const root=realpathSync(mkdtempSync(join(tmpdir(),'loops-isolated-')));roots.push(root);
   const module=join(root,'node_modules','openclaw'),profile=join(root,'.dev-profile',name==='ollama'?'':name);
   mkdirSync(module,{recursive:true});mkdirSync(join(profile,'workspace'),{recursive:true});
-  writeFileSync(join(root,'package.json'),JSON.stringify({name:'openclaw-loops-poc',version:'1.0.0',devDependencies:{openclaw:'2026.9.5'}}));
-  writeFileSync(join(module,'package.json'),JSON.stringify({name:'openclaw',version:'2026.9.5'}));
+  writeFileSync(join(root,'package.json'),JSON.stringify({name:'openclaw-loops-poc',version:'1.0.0',devDependencies:{openclaw:'2026.9.6'}}));
+  writeFileSync(join(module,'package.json'),JSON.stringify({name:'openclaw',version:'2026.9.6'}));
   writeFileSync(join(module,'openclaw.mjs'),"import {writeFileSync} from 'node:fs'; writeFileSync(new URL('../../output.json',import.meta.url),JSON.stringify({args:process.argv.slice(2),env:process.env}));");
   const port=await freePort();
   writeFileSync(join(profile,'openclaw.json'),JSON.stringify({
@@ -66,16 +66,16 @@ describe('isolated runtime admission',()=>{
     mkdirSync(join(installed,'dist'),{recursive:true});writeFileSync(source,'export default {}');
     const config=JSON.parse(readFileSync(file));
     config.plugins.entries.codex.enabled=true;writeFileSync(file,JSON.stringify(config));
-    const info={plugin:{id:'codex',packageName:'@openclaw/codex',packageVersion:'2026.9.5',version:'2026.9.5',enabled:true,activated:true,status:'loaded',source},install:{installPath:installed,source:'clawhub',spec:'clawhub:@openclaw/codex@2026.9.5',version:'2026.9.5'}};
+    const info={plugin:{id:'codex',packageName:'@openclaw/codex',packageVersion:'2026.9.6',version:'2026.9.6',enabled:true,activated:true,status:'loaded',source},install:{installPath:installed,source:'clawhub',spec:'clawhub:@openclaw/codex@2026.9.6',version:'2026.9.6'}};
     expect(installedProfilePlugin(info,f.profile,'codex')).toBe(true);
-    expect(installedProfilePlugin({...info,install:{...info.install,source:'npm',spec:'@openclaw/codex@2026.9.5'}},f.profile,'codex')).toBe(true);
+    expect(installedProfilePlugin({...info,install:{...info.install,source:'npm',spec:'@openclaw/codex@2026.9.6'}},f.profile,'codex')).toBe(true);
     expect(installedProfilePlugin({...info,install:{...info.install,source:'npm',spec:'@openclaw/codex'}},f.profile,'codex')).toBe(false);
     const accepted=spawnSync(process.execPath,[resolve('scripts/profile-plugin-status.mjs'),'codex'],{cwd:f.root,input:JSON.stringify(info),encoding:'utf8'});
     expect(accepted.status).toBe(0);
     expect(installedProfilePlugin({...info,install:null},f.profile,'codex')).toBe(false);
     expect(installedProfilePlugin({...info,plugin:{...info.plugin,status:'disabled'}},f.profile,'codex')).toBe(false);
-    expect(installedProfilePlugin({...info,plugin:{...info.plugin,version:'2026.9.6'}},f.profile,'codex')).toBe(false);
-    expect(installedProfilePlugin({...info,install:{...info.install,spec:'clawhub:@openclaw/codex@2026.9.6'}},f.profile,'codex')).toBe(false);
+    expect(installedProfilePlugin({...info,plugin:{...info.plugin,version:'2026.9.5'}},f.profile,'codex')).toBe(false);
+    expect(installedProfilePlugin({...info,install:{...info.install,spec:'clawhub:@openclaw/codex@2026.9.5'}},f.profile,'codex')).toBe(false);
     const foreign=realpathSync(mkdtempSync(join(tmpdir(),'loops-foreign-plugin-')));roots.push(foreign);
     expect(installedProfilePlugin({...info,install:{installPath:foreign}},f.profile,'codex')).toBe(false);
     delete config.plugins.entries.codex;writeFileSync(file,JSON.stringify(config));
@@ -352,7 +352,7 @@ describe('isolated runtime admission',()=>{
     const f=await fixture(),archive=join(f.root,'candidate.tgz');writeFileSync(archive,'fixture');
     expect(admitOpenClawArgs(f.root,['plugins','build'])).toBe('build');
     expect(admitOpenClawArgs(f.root,['plugins','install','npm-pack:'+archive,'--force','--accept-capabilities'])).toBe('runtime');
-    expect(admitOpenClawArgs(f.root,['plugins','install','@openclaw/codex@2026.9.5','--accept-capabilities'])).toBe('codex-install');
+    expect(admitOpenClawArgs(f.root,['plugins','install','@openclaw/codex@2026.9.6','--accept-capabilities'])).toBe('codex-install');
     expect(admitOpenClawArgs(f.root,['gateway','call','plugins.sessionAction','--params','{}','--json','--timeout','60000'])).toBe('gateway-call');
     expect(admitOpenClawArgs(f.root,['agent','--agent','main','--session-key','synthetic','--message','hello','--json'])).toBe('agent');
     for(const args of [
@@ -361,7 +361,7 @@ describe('isolated runtime admission',()=>{
       ['gateway','call','config.set','--params','{}','--json'],
       ['plugins','install','npm-pack:/private/foreign.tgz'],
       ['plugins','install','@openclaw/codex','--accept-capabilities'],
-      ['plugins','install','@openclaw/codex@2026.9.6','--accept-capabilities'],
+      ['plugins','install','@openclaw/codex@2026.9.5','--accept-capabilities'],
     ])expect(()=>admitOpenClawArgs(f.root,args)).toThrow();
     expect(admitOllamaArgs(['serve'])).toBe('serve');
     expect(admitOllamaArgs(['pull','qwen3.5:4b'])).toBe('pull');
@@ -382,6 +382,30 @@ describe('isolated runtime admission',()=>{
     }
     writeFileSync(file,JSON.stringify(original));
     expect(profileEnvironment(f.root).env.OPENCLAW_HOME).toBe(join(f.profile,'home'));
+  });
+  it('admits only the selected provider for 9.6 Decision defaults and entries before host dispatch',async()=>{
+    for(const name of ['ollama','codex-test']){
+      const f=await fixture(name),file=join(f.profile,'openclaw.json'),safe=JSON.parse(readFileSync(file));
+      const approved=name==='ollama'?'ollama/decision:latest':'openai/gpt-6-astra';
+      const foreign=name==='ollama'?'openai/gpt-6-astra':'ollama/decision:latest';
+      safe.agents.defaults.decisionModel=approved;
+      safe.agents.entries={main:{decisionModel:approved}};
+      writeFileSync(file,JSON.stringify(safe));
+      await runOpenClaw(f.root,['config','validate'],{LOOPS_PROFILE:name});
+      safe.agents.entries.main.decisionModel='';
+      writeFileSync(file,JSON.stringify(safe));
+      expect(()=>profileEnvironment(f.root,name,{LOOPS_PROFILE:name})).not.toThrow();
+      for(const edit of [
+        config=>{config.agents.defaults.decisionModel=foreign;},
+        config=>{config.agents.entries.main.decisionModel=foreign;},
+        config=>{config.agents.entries.main.decisionModel=42;},
+      ]){
+        const changed=structuredClone(safe);edit(changed);writeFileSync(file,JSON.stringify(changed));
+        rmSync(f.output,{force:true});
+        await expect(runOpenClaw(f.root,['config','validate'],{LOOPS_PROFILE:name})).rejects.toThrow(/Decision model/);
+        expect(existsSync(f.output)).toBe(false);
+      }
+    }
   });
   it('rejects symlinked XDG and service-home directories',async()=>{
     const f=await fixture(),foreign=realpathSync(mkdtempSync(join(tmpdir(),'loops-foreign-')));roots.push(foreign);

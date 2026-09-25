@@ -47,7 +47,13 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   (options?.plugin??plugin).register(api);
   if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
   const toolContext:OpenClawPluginToolContext={agentId,sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
-  const tools=registered.flatMap(t=>{const value=typeof t==='function'?t(toolContext):t;return Array.isArray(value)?value:value?[value]:[];});
+  const tools=registered.flatMap(t=>{
+    // The 9.6 SDK also permits a v2 factory whose context carries a live
+    // final-effect authority callback. This v1 fixture cannot forge it.
+    if(typeof t==='object'&&'contextVersion' in t)throw new Error('v2 tool factories require host-issued invocation authority');
+    const value=typeof t==='function'?t(toolContext):t;
+    return Array.isArray(value)?value:value?[value]:[];
+  });
   const commandContext={agentId,sessionKey:key,sessionId,senderId:'host-sender',channel:'webchat',isAuthorizedSender:true,gatewayClientScopes:['operator.admin','operator.write'],config} as unknown as PluginCommandContext;
   const action=(id:string,payload:Record<string,unknown>,scopes=['operator.admin','operator.write','operator.read'])=>actions.get(id)!.handler({pluginId:'loops-poc',actionId:id,agentId,sessionKey:key,payload:payload as never,client:{connId:'human',scopes}});
   return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,agentId,services,sessions};
@@ -304,7 +310,18 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       else if(surface==='command')expect((await s.commands.get('loops')!.handler({...s.commandContext,args:`retry ${JSON.stringify(recovery)}`})).text).toContain('physical execution cleanup');
       else expect(await invoke('retry',recovery)).toMatchObject({kind:'loops-error',error:{message:expect.stringContaining('physical execution cleanup')}});
       expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'queued',executions:0,trace:[]});expect(entered).toHaveLength(1);
-      release();await vi.waitFor(async()=>expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'completed',result:'An actual adapter result.'}));
+      const releasedAt=performance.now();
+      release();
+      try{
+        await vi.waitFor(async()=>expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'completed',result:'An actual adapter result.'}),{timeout:5000});
+      }catch(error){
+        let nextState='readback-unavailable',firstCleanupPending:boolean|null=null;
+        try{
+          const [observedNext,observedFirst]=await Promise.all([invoke('inspect',{runId:next.id}),invoke('inspect',{runId:first.id})]) as [Run,Run];
+          nextState=observedNext.state;firstCleanupPending=observedFirst.cleanupPending??null;
+        }catch{/* Keep the original wait error and bounded state counters. */}
+        throw new Error('Queued run did not complete after release: '+JSON.stringify({elapsedMs:Math.round(performance.now()-releasedAt),nextState,firstCleanupPending,entered:entered.length,physical,maximum}),{cause:error});
+      }
       await vi.waitFor(async()=>expect((await invoke('inspect',{runId:first.id}) as Run).cleanupPending).not.toBe(true));
       expect(entered).toHaveLength(2);expect(maximum).toBe(1);expect(physical).toBe(0);
       const completed=await Promise.all([first.id,cancelled.id,next.id].map(runId=>invoke('inspect',{runId}))) as Run[];
