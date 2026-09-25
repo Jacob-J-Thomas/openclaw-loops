@@ -268,7 +268,7 @@ export class DocumentStore {
         else if (lifetime.readers.length) protection = 'readers';
         else if (lifetime.links.runs.some(id => references.runs.has(id)) || lifetime.links.loops.some(id => references.loops.has(id))) protection = 'referenced';
       }
-      if (!protection && entry.kind === 'document' && linked.has(entry.id)) protection = 'referenced';
+      if (!protection && entry.kind === 'document' && (linked.has(entry.id) || references.documents.has(entry.id))) protection = 'referenced';
       if (!protection && (index < (policy.keepLatest ?? 0) || policy.olderThanDays !== undefined && Date.parse(entry.updatedAt) >= at - policy.olderThanDays * 86400000)) protection = 'recent';
       if (protection) { protectedCounts[protection]++; return false; } return true;
     });

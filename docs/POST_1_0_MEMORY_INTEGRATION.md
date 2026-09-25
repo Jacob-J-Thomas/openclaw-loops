@@ -12,15 +12,34 @@ prefixes select a versioned recursive JSON schema and retention duration.
 Schemas are immutable once saved; changing validation rules requires a new
 schema version. The engine obtains owner, loop revision, run, node and grant
 generation from the current saved admission. Imported JSON and public calls
-cannot supply those values. Every operation checks current host and loop
-authority, and commits use a synchronous compare-and-swap through one SQLite
+cannot supply those values. Every operation checks the current session and
+Loops grant, and commits use a synchronous compare-and-swap through one SQLite
 worker. A different agent or conversation has a different owner scope.
 An operator with read-only access to the same conversation may inspect its
 authorized run history and authored memory query results. A Memory write,
-update, forget or removal apply additionally requires a current agent tool or
-operator write authority, checked again immediately before the synchronous
-storage commit. A read-only invocation of a saved write loop fails without a
-memory mutation.
+update, forget or removal apply requires an exact plugin-owned run grant
+issued when a host-admitted agent tool or operator-write action starts the
+saved loop. The grant pins the run ID, conversation owner, loop revision,
+grant generation and authored policy digest. The engine rechecks that grant,
+the current session, plugin enablement and Loops publication before the final
+synchronous storage commit. Read-only admission cannot mint the grant.
+
+Native tools use the public version 2 invocation assertion at each write and
+stay awaited through queued execution and physical settlement. An owner
+command uses the host's current-owner assertion when provided. The Control UI
+keeps its inspectable running handle after ten seconds while a separate host
+session work admission stays awaited through plugin-observable settlement;
+later plugin-owned memory effects use the exact admitted run grant and current
+Loops/session checks. That grant is authority for this plugin's own memory only. The
+released session-action context cannot recheck the original operator's host
+profile permission after the action returns, so the plugin does not claim
+later effects are still authorized by that person or by a durable host grant.
+Gateway-scoped commands are admitted by the host's registered write scope and
+remain awaited for effects, but the released command context supplies no
+separate profile-revocation callback for those clients.
+Parked runs stop physical work; Continue is a fresh host admission.
+Settlement here means the plugin's worker and host-call promise have finished;
+it does not prove that a remote model provider has stopped processing.
 
 The Memory node supports consume, search, inspect, write, update, forget,
 mutation receipt lookup, retention preview/apply and reset preview/apply.
