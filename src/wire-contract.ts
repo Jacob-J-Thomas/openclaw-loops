@@ -42,7 +42,7 @@ export function factorStrictToolInput<T extends TSchema>(input:T):T{
   const data=result.$defs?.loops_data_schema;
   if(data)result.$defs!.loops_data_schema=factorClosedUnion(data,'type',['object','array','string','number','integer','boolean','null','json']);
   const context=result.$defs?.loops_context_node;
-  if(context?.type==='object'&&context.unevaluatedProperties===false&&context.allOf?.length===1&&schemaObject(context.allOf[0])&&exactKeys(context.allOf[0],['anyOf'])&&Array.isArray(context.allOf[0].anyOf)&&context.allOf[0].anyOf!.every(variant=>schemaObject(variant)&&variant.type==='object')){
+  if(context?.type==='object'&&context.unevaluatedProperties===false&&!Object.hasOwn(context,'anyOf')&&context.allOf?.length===1&&schemaObject(context.allOf[0])&&exactKeys(context.allOf[0],['anyOf'])&&Array.isArray(context.allOf[0].anyOf)&&context.allOf[0].anyOf!.every(variant=>schemaObject(variant)&&variant.type==='object')){
     context.anyOf=context.allOf[0]!.anyOf!.map(variant=>{const copy=structuredClone(variant);delete copy.type;return copy;});
     delete context.allOf;
   }

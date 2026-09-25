@@ -236,6 +236,25 @@ describe('strict public tool wire factoring',()=>{
     const unexpected=structuredClone(old) as TSchema&{$defs:{loops_context_node:{allOf:Array<Record<string,unknown>>}}};
     unexpected.$defs.loops_context_node.allOf[0]!.description='unrecognized';
     expect(factorStrictToolInput(unexpected).$defs.loops_context_node).toEqual(unexpected.$defs.loops_context_node);
+
+    const independent=structuredClone(old);
+    (independent.$defs.loops_context_node as Record<string,unknown>).anyOf=[
+      {properties:{id:{const:'one'}},required:['id']},
+      {properties:{id:{const:'two'}},required:['id']},
+    ];
+    const preserved=factorStrictToolInput(independent);
+    expect(preserved.$defs.loops_context_node).toEqual(independent.$defs.loops_context_node);
+    for(const [value,expected] of [
+      [{node:{id:'one',kind:'input'}},true],
+      [{node:{id:'two',kind:'return',value:'done'}},true],
+      [{node:{id:'three',kind:'input'}},false],
+      [{node:{id:'one',kind:'return'}},false],
+    ] as const){
+      expect(Value.Check(independent,value)).toBe(expected);
+      expect(Value.Check(preserved,value)).toBe(expected);
+      expect(validateJsonSchemaValue({schema:independent,cacheKey:'issue296-independent-old',value}).ok).toBe(expected);
+      expect(validateJsonSchemaValue({schema:preserved,cacheKey:'issue296-independent-new',value}).ok).toBe(expected);
+    }
   });
 
   it('leaves same-schema fields in their variants when requiredness differs',()=>{
