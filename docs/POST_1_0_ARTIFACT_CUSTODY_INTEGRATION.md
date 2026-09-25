@@ -97,16 +97,24 @@ value changes. Tampering with a receipt or current link blocks cold writable
 admission. This preserves old data without allowing a lookalike value to
 claim published artifact bytes.
 
-Schema-4 Run checkpoints receive separate immutable origin receipts for
-artifact-shaped ordinary JSON. New Run admission requires strict custody for
+Run checkpoints from every supported pre-custody schema (1 through 4) receive
+separate immutable origin receipts for artifact-shaped ordinary JSON, including
+their exact source schema version. Schema 1 has no retired-admission table;
+the migration adds it without rewriting the original Run JSON. New Run
+admission requires strict custody for
 all input references. A run may carry a canonical-JSON-identical legacy
 subtree through authored Memory consume/search outputs, return results and
 context; the SQL worker verifies the exact owner, loop, Memory row version,
 value hash and original receipt before recording that run's opaque origin.
 Explicit retry admissions inherit only the same verified origin IDs from
-their parent when the exact canonical subtree is still resident in the new
-retry state. Inheritance occurs at admission, not at later checkpoints, and
-the origin persists independently when historical runs are retired. Changed
+their parent when the exact canonical subtree is still resident in both
+parent and new retry state. Cold validation follows the same-owner, pinned
+definition and input ancestry to the immutable migration or authored Memory
+origin, rejecting a switched origin or a cycle. The current retention policy
+keeps the parent Run while its child exists; permitting earlier parent
+retirement would need a separate immutable ancestry receipt. Inheritance
+occurs at admission, not at later checkpoints, and the origin persists
+independently when historical runs are retired. Changed
 IDs, owners or digests lose the exemption. This provenance
 never constitutes an artifact publication or permission to read file bytes.
 Current Engine retention keeps a retry parent while its child remains, then
@@ -117,6 +125,16 @@ an available public retention transition today.
 The current proof collector covers the v5 root node vocabulary on this
 candidate; #234/#254 nested frame output paths require a coordinated extension
 when those products are integrated.
+Migration origins and the original Memory receipts are created once from the
+finite pre-upgrade database and are not silently deleted or charged against a
+new lower limit. Newly derived Memory/retry Run proofs have a per-owner
+retained-state cap of 4,096 rows and 4 MiB of identity/proof metadata.
+Admission checks this inside the Run transaction: a quota refusal commits no
+Run, link or proof change. Normal Run retention removes its derived proof rows
+and restores capacity; immutable migration origins remain available for later
+authorized consumes. A cold v5 store with derived rows beyond the cap is
+rejected before writable admission. The error directs the owner to retire
+settled Run history; no proof is recycled automatically.
 
 The older uncoordinated `put`, `import`, `previewCleanup` and `applyCleanup`
 remain preparatory core primitives for focused tests; the installed engine

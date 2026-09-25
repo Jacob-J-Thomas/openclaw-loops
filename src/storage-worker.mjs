@@ -147,7 +147,8 @@ try{database.exec(`
   `);
 // Legacy schema 4 had no artifact authority. Its preexisting JSON stays
 // byte-identical and is explicitly opaque until a fresh v5 Memory write.
-if(schemaVersion===4){markLegacyMemoryOpaque(database);markLegacyRunsOpaque(database);}
+if(schemaVersion===4)markLegacyMemoryOpaque(database);
+if(schemaVersion>0&&schemaVersion<5)markLegacyRunsOpaque(database,schemaVersion);
 database.exec(`
   PRAGMA user_version=${currentSchemaVersion};
 `);

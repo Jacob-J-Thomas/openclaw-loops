@@ -18,7 +18,7 @@ const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 // charged at admission, so settling an admitted publication or GC lease does
 // not depend on room being available after filesystem work has happened.
 const limits=Object.freeze({operations:4096,operationBytes:1024*1024,items:16384,live:256,referenceBytes:4096,itemBytes:64*1024*1024,
-  links:65536,linkBytes:64*1024*1024,receipts:21504,receiptBytes:64*1024*1024,
+  links:65536,linkBytes:64*1024*1024,derivedProofs:4096,derivedProofBytes:4*1024*1024,receipts:21504,receiptBytes:64*1024*1024,
   publicationReservePerItem:8192,cleanupReserveBytes:4*1024*1024,cleanupReserveRows:1024});
 const bytes=value=>Buffer.byteLength(value,'utf8');
 function metadataUsage(database,scope){
@@ -29,9 +29,19 @@ function metadataUsage(database,scope){
   const runLinks=database.prepare("SELECT count(*) AS n,coalesce(sum(length(CAST(run_id AS BLOB))+length(CAST(node_id AS BLOB))+length(CAST(artifact_id AS BLOB))),0) AS b FROM artifact_links WHERE scope=?").get(scope);
   const memoryLinks=database.prepare("SELECT count(*) AS n,coalesce(sum(length(CAST(loop_id AS BLOB))+length(CAST(memory_key AS BLOB))+length(CAST(artifact_id AS BLOB))),0) AS b FROM artifact_memory_links WHERE scope=?").get(scope);
   const links={n:runLinks.n+memoryLinks.n,b:runLinks.b+memoryLinks.b};
+  // Migration roots and original Memory receipts are finite copies of the
+  // preexisting database. Only newly derived run proofs need a runtime cap.
+  const derivedProofs=database.prepare(`SELECT count(*) AS n,coalesce(sum(length(CAST(refs.run_id AS BLOB))+length(CAST(refs.origin_id AS BLOB))+
+    length(CAST(refs.proof_kind AS BLOB))+length(CAST(refs.proof_source AS BLOB))),0) AS b
+    FROM artifact_legacy_run_refs AS refs JOIN artifact_legacy_origins AS origins ON origins.origin_id=refs.origin_id
+    WHERE origins.scope=? AND refs.proof_kind IN ('memory','retry')`).get(scope);
   const audit=database.prepare(`SELECT count(*) AS n,coalesce(sum(length(CAST(record AS BLOB))),0) AS b FROM (
     SELECT record FROM artifact_gc_receipts WHERE scope=? UNION ALL SELECT record FROM artifact_recovery_receipts WHERE scope=?)`).get(scope,scope);
-  return {operations,items,live,pending,links,audit};
+  return {operations,items,live,pending,links,derivedProofs,audit};
+}
+function requireDerivedProofRoom(database,scope){
+  const u=metadataUsage(database,scope).derivedProofs;
+  if(u.n>limits.derivedProofs||u.b>limits.derivedProofBytes)throw quota('retained legacy provenance; retire settled run history');
 }
 function requireAdmissible(database,scope){
   const u=metadataUsage(database,scope);
@@ -54,9 +64,9 @@ export const artifactSchema=`
   CREATE TABLE IF NOT EXISTS artifact_memory_links(scope TEXT NOT NULL,loop_id TEXT NOT NULL,memory_key TEXT NOT NULL,artifact_id TEXT NOT NULL,PRIMARY KEY(scope,loop_id,memory_key,artifact_id),FOREIGN KEY(scope,loop_id,memory_key) REFERENCES memory_records(scope,loop_id,key) ON DELETE RESTRICT,FOREIGN KEY(artifact_id) REFERENCES artifact_items(id) ON DELETE RESTRICT);
   CREATE INDEX IF NOT EXISTS artifact_memory_links_item ON artifact_memory_links(artifact_id);
   CREATE TABLE IF NOT EXISTS artifact_memory_opaque(scope TEXT NOT NULL,loop_id TEXT NOT NULL,memory_key TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),value_sha256 TEXT NOT NULL,record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,loop_id,memory_key));
-  CREATE TABLE IF NOT EXISTS artifact_legacy_origins(origin_id TEXT PRIMARY KEY,scope TEXT NOT NULL,ref_hash TEXT NOT NULL,ref_record TEXT NOT NULL CHECK(json_valid(ref_record)),source_kind TEXT NOT NULL CHECK(source_kind IN ('v4-run','v4-memory')),source_record TEXT NOT NULL CHECK(json_valid(source_record)));
+  CREATE TABLE IF NOT EXISTS artifact_legacy_origins(origin_id TEXT PRIMARY KEY,scope TEXT NOT NULL,ref_hash TEXT NOT NULL,ref_record TEXT NOT NULL CHECK(json_valid(ref_record)),source_kind TEXT NOT NULL CHECK(source_kind IN ('pre-v5-run','v4-memory')),source_record TEXT NOT NULL CHECK(json_valid(source_record)));
   CREATE INDEX IF NOT EXISTS artifact_legacy_origins_source ON artifact_legacy_origins(scope,source_kind,source_record);
-  CREATE TABLE IF NOT EXISTS artifact_legacy_run_refs(run_id TEXT NOT NULL,origin_id TEXT NOT NULL,input_allowed INTEGER NOT NULL CHECK(input_allowed IN (0,1)),proof_kind TEXT NOT NULL CHECK(proof_kind IN ('v4-run','memory','retry')),proof_source TEXT NOT NULL,PRIMARY KEY(run_id,origin_id),FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE RESTRICT,FOREIGN KEY(origin_id) REFERENCES artifact_legacy_origins(origin_id) ON DELETE RESTRICT);
+  CREATE TABLE IF NOT EXISTS artifact_legacy_run_refs(run_id TEXT NOT NULL,origin_id TEXT NOT NULL,input_allowed INTEGER NOT NULL CHECK(input_allowed IN (0,1)),proof_kind TEXT NOT NULL CHECK(proof_kind IN ('pre-v5-run','memory','retry')),proof_source TEXT NOT NULL,PRIMARY KEY(run_id,origin_id),FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE RESTRICT,FOREIGN KEY(origin_id) REFERENCES artifact_legacy_origins(origin_id) ON DELETE RESTRICT);
   CREATE INDEX IF NOT EXISTS artifact_legacy_run_refs_origin ON artifact_legacy_run_refs(origin_id);
   CREATE TABLE IF NOT EXISTS artifact_gc(scope TEXT PRIMARY KEY,token TEXT NOT NULL,started_at TEXT NOT NULL,plan TEXT NOT NULL CHECK(json_valid(plan)));
   CREATE TABLE IF NOT EXISTS artifact_gc_receipts(scope TEXT NOT NULL,token TEXT NOT NULL,record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,token));
@@ -136,6 +146,10 @@ function legacyShapes(value){
   }
   return found;
 }
+function runLegacyShapes(run){
+  return new Map([...legacyShapes(run.input),...legacyShapes(run.context),
+    ...Object.values(run.outputs??{}).flatMap(value=>[...legacyShapes(value)]),...legacyShapes(run.result)]);
+}
 function legacyOrigin(database,scope,sourceKind,source,ref){
   const sourceRecord=JSON.stringify(source),refHash=canonicalHash(ref),originId=canonicalHash({scope,sourceKind,source,refHash});
   database.prepare('INSERT OR IGNORE INTO artifact_legacy_origins(origin_id,scope,ref_hash,ref_record,source_kind,source_record) VALUES (?,?,?,?,?,?)').run(originId,scope,refHash,JSON.stringify(ref),sourceKind,sourceRecord);
@@ -188,16 +202,16 @@ export function markLegacyMemoryOpaque(database){
       {scope:row.scope,loopId:row.loop_id,key:row.key,version:record.version,valueSha256:record.valueSha256},ref);
   }
 }
-export function markLegacyRunsOpaque(database){
+export function markLegacyRunsOpaque(database,sourceSchemaVersion){
   for(const row of database.prepare('SELECT id,owner_key,record FROM runs').iterate()){
     const run=JSON.parse(row.record),scope=checkOwner(run.owner);
     if(row.owner_key!==JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]))throw corrupt('legacy run owner');
-    const source={runId:row.id,ownerScope:scope,recordHash:canonicalHash(run)};
+    const source={runId:row.id,ownerScope:scope,recordHash:canonicalHash(run),schemaVersion:sourceSchemaVersion};
     const input=new Set(legacyShapes(run.input).keys());
-    const all=new Map([...legacyShapes(run.input),...legacyShapes(run.context),...Object.values(run.outputs??{}).flatMap(value=>[...legacyShapes(value)]),...legacyShapes(run.result)]);
+    const all=runLegacyShapes(run);
     for(const [hash,ref] of all){
-      const originId=legacyOrigin(database,scope,'v4-run',source,ref);
-      database.prepare("INSERT INTO artifact_legacy_run_refs(run_id,origin_id,input_allowed,proof_kind,proof_source) VALUES (?,?,?,'v4-run',?)").run(row.id,originId,Number(input.has(hash)),row.id);
+      const originId=legacyOrigin(database,scope,'pre-v5-run',source,ref);
+      database.prepare("INSERT INTO artifact_legacy_run_refs(run_id,origin_id,input_allowed,proof_kind,proof_source) VALUES (?,?,?,'pre-v5-run',?)").run(row.id,originId,Number(input.has(hash)),row.id);
     }
   }
 }
@@ -211,6 +225,34 @@ function committedMemoryRecords(run,node){
   if(!committed)return [];
   return node.memory.operation==='consume'?[output]:Array.isArray(output?.items)?output.items:[];
 }
+function assertRetryProofChain(database,run,originId,refHash,verified){
+  const seen=new Set(),pending=[];
+  let child=run;
+  while(true){
+    if(seen.has(child.id))throw corrupt('legacy retry cycle');
+    seen.add(child.id);
+    const key=`${originId}\0${child.id}`;
+    if(verified.has(key))break;
+    pending.push(key);
+    const proof=database.prepare('SELECT proof_kind,proof_source,input_allowed FROM artifact_legacy_run_refs WHERE run_id=? AND origin_id=?').get(child.id,originId);
+    if(!proof)throw corrupt('legacy retry origin missing');
+    if(proof.proof_kind!=='retry')break;
+    const parentId=child.parentRunId;
+    if(!parentId||parentId===child.id||parentId!==proof.proof_source||child.requestFingerprintVersion!==2)throw corrupt('legacy retry lineage');
+    const row=database.prepare('SELECT owner_key,record FROM runs WHERE id=?').get(parentId);
+    // Current retention keeps a retry parent while the child exists. A future
+    // policy allowing earlier retirement needs a separate immutable ancestry
+    // receipt; an absent parent cannot be inferred from this proof alone.
+    if(!row)throw corrupt('legacy retry parent missing');
+    const parent=JSON.parse(row.record),owner=JSON.stringify([child.owner.agentId,child.owner.sessionKey,child.owner.sessionId]);
+    const parentProof=database.prepare('SELECT input_allowed FROM artifact_legacy_run_refs WHERE run_id=? AND origin_id=?').get(parentId,originId);
+    if(row.owner_key!==owner||scopeFor(parent.owner)!==scopeFor(child.owner)||parent.definition.id!==child.definition.id||
+      parent.definition.revision!==child.definition.revision||canonicalHash(parent.input)!==canonicalHash(child.input)||
+      !parentProof||proof.input_allowed>parentProof.input_allowed||!runLegacyShapes(parent).has(refHash))throw corrupt('legacy retry parent proof');
+    child=parent;
+  }
+  for(const key of pending)verified.add(key);
+}
 function proveRunOpaque(database,run,scope,newRun){
   // A fresh admission cannot turn its caller-supplied input into opaque data
   // merely by carrying a later Memory output with the same shape.
@@ -219,10 +261,9 @@ function proveRunOpaque(database,run,scope,newRun){
     if(parent){
       const prior=JSON.parse(parent.record),owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
       if(parent.owner_key!==owner||prior.definition.id!==run.definition.id||prior.definition.revision!==run.definition.revision||canonicalHash(prior.input)!==canonicalHash(run.input))throw conflict('Legacy retry ancestry changed.');
-      const carried=new Set([...legacyShapes(run.input).keys(),...legacyShapes(run.context).keys(),
-        ...Object.values(run.outputs??{}).flatMap(value=>[...legacyShapes(value).keys()]),...legacyShapes(run.result).keys()]);
+      const carried=new Set(runLegacyShapes(run).keys()),parentCarried=new Set(runLegacyShapes(prior).keys());
       for(const proof of database.prepare('SELECT refs.origin_id,refs.input_allowed,origins.ref_hash FROM artifact_legacy_run_refs AS refs JOIN artifact_legacy_origins AS origins ON origins.origin_id=refs.origin_id WHERE refs.run_id=?').all(run.parentRunId)){
-        if(!carried.has(proof.ref_hash))continue;
+        if(!carried.has(proof.ref_hash)||!parentCarried.has(proof.ref_hash))continue;
         database.prepare("INSERT INTO artifact_legacy_run_refs(run_id,origin_id,input_allowed,proof_kind,proof_source) VALUES (?,?,?,'retry',?) ON CONFLICT(run_id,origin_id) DO UPDATE SET input_allowed=max(input_allowed,excluded.input_allowed)").run(run.id,proof.origin_id,proof.input_allowed,run.parentRunId);
       }
     }
@@ -432,6 +473,7 @@ export function artifactStore(database){
       }
       const links=metadataUsage(database,scope).links;
       if(links.n>limits.links||links.b>limits.linkBytes)throw quota('immutable run-link history');
+      requireDerivedProofRoom(database,scope);
     },
     reconcileMemory:(record)=>{
       const {scope,loopId,key}=record;
@@ -532,24 +574,25 @@ export function validateArtifactStore(database){
       if(!saved){throw corrupt('legacy memory origin receipt');}
       const record=JSON.parse(saved.record);
       if(record.version!==source.version||record.valueSha256!==source.valueSha256||!legacyShapes(record.value).has(origin.ref_hash))throw corrupt('legacy memory origin value');
-    }else if(origin.source_kind==='v4-run'){
-      if(!exact(source,['runId','ownerScope','recordHash'])||source.ownerScope!==origin.scope||typeof source.runId!=='string'||!source.runId||!digest.test(source.recordHash))throw corrupt('legacy run origin');
+    }else if(origin.source_kind==='pre-v5-run'){
+      if(!exact(source,['runId','ownerScope','recordHash','schemaVersion'])||source.ownerScope!==origin.scope||typeof source.runId!=='string'||!source.runId||!digest.test(source.recordHash)||!Number.isSafeInteger(source.schemaVersion)||source.schemaVersion<1||source.schemaVersion>4)throw corrupt('legacy run origin');
     }else throw corrupt('legacy origin kind');
   }
-  for(const proof of database.prepare('SELECT refs.run_id,refs.input_allowed,refs.proof_kind,refs.proof_source,origins.scope,origins.ref_hash,origins.source_kind,origins.source_record FROM artifact_legacy_run_refs AS refs JOIN artifact_legacy_origins AS origins ON origins.origin_id=refs.origin_id').iterate()){
+  const verifiedRetryProofs=new Set();
+  for(const proof of database.prepare('SELECT refs.run_id,refs.origin_id,refs.input_allowed,refs.proof_kind,refs.proof_source,origins.scope,origins.ref_hash,origins.source_kind,origins.source_record FROM artifact_legacy_run_refs AS refs JOIN artifact_legacy_origins AS origins ON origins.origin_id=refs.origin_id').iterate()){
     const row=database.prepare('SELECT owner_key,record FROM runs WHERE id=?').get(proof.run_id);
     if(!row||![0,1].includes(proof.input_allowed))throw corrupt('legacy run proof');
     const run=JSON.parse(row.record);
     if(proof.scope!==scopeFor(run.owner)||proof.input_allowed===1&&!legacyShapes(run.input).has(proof.ref_hash))throw corrupt('legacy run proof');
-    if(proof.proof_kind==='v4-run'){
-      if(proof.source_kind!=='v4-run'||proof.proof_source!==proof.run_id||JSON.parse(proof.source_record).runId!==proof.run_id)throw corrupt('legacy run migration proof');
+    if(proof.proof_kind==='pre-v5-run'){
+      if(proof.source_kind!=='pre-v5-run'||proof.proof_source!==proof.run_id||JSON.parse(proof.source_record).runId!==proof.run_id)throw corrupt('legacy run migration proof');
     }else if(proof.proof_kind==='memory'){
       if(proof.source_kind!=='v4-memory'||proof.input_allowed!==0)throw corrupt('legacy Memory run proof');
       const node=run.definition.nodes.find(item=>item.id===proof.proof_source),source=JSON.parse(proof.source_record);
       const original=database.prepare('SELECT record FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=? AND version=?').get(source.scope,source.loopId,source.key,source.version);
       if(!node||!original||!committedMemoryRecords(run,node).some(record=>canonicalHash(record)===canonicalHash(JSON.parse(original.record))))throw corrupt('legacy Memory authored proof');
     }else if(proof.proof_kind==='retry'){
-      if(proof.proof_source!==run.parentRunId||run.requestFingerprintVersion!==2)throw corrupt('legacy retry proof');
+      assertRetryProofChain(database,run,proof.origin_id,proof.ref_hash,verifiedRetryProofs);
     }else throw corrupt('legacy run proof kind');
   }
   for(const lease of database.prepare('SELECT scope,token,started_at,plan FROM artifact_gc').iterate())if(!digest.test(lease.scope)||!uuid.test(lease.token)||!iso(lease.started_at)||!validPlan(JSON.parse(lease.plan),lease.scope))throw corrupt('cleanup lease');
@@ -577,6 +620,7 @@ export function validateArtifactStore(database){
     UNION SELECT scope FROM artifact_recovery_receipts UNION SELECT scope FROM artifact_links UNION SELECT scope FROM artifact_memory_links UNION SELECT scope FROM artifact_legacy_origins`).iterate()){
     const u=metadataUsage(database,scope);
     if(u.operations.n>limits.operations||u.operations.b>limits.operationBytes||u.items.n>limits.items||u.items.b>limits.itemBytes||u.live>limits.live||
-      u.links.n>limits.links||u.links.b>limits.linkBytes||u.audit.n>limits.receipts||u.audit.b>limits.receiptBytes)throw corrupt('metadata quota');
+      u.links.n>limits.links||u.links.b>limits.linkBytes||u.derivedProofs.n>limits.derivedProofs||u.derivedProofs.b>limits.derivedProofBytes||
+      u.audit.n>limits.receipts||u.audit.b>limits.receiptBytes)throw corrupt('metadata quota');
   }
 }
