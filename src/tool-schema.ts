@@ -70,6 +70,6 @@ export function compactToolInput<T>(schema:T):T{
   };
   const definitions=Object.fromEntries(selected.map(([key,entry])=>[names.get(key)!,rewrite(entry.value,key)]));
   const compacted=rewrite(result) as JsonObject;
-  compacted.$defs=definitions;
+  compacted.$defs={...(object(compacted.$defs)?compacted.$defs:{}),...definitions};
   return compacted as T;
 }

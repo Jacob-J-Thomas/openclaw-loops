@@ -15,6 +15,7 @@ import {type DocumentLinks, type MaintenancePolicy, type TransportRelease, empty
 import {fingerprintJson} from './fingerprint.js';
 import {applyContextPatch,assertContextState,contextBytes,initialContext,projectContext,type ContextState} from './context.js';
 import {EvaluationFailure,commitEvaluation,evaluate as evaluateDeterministically,isCommittedEvaluation,type Evaluator} from './evaluation.js';
+import {validateDataValue} from './data-schema.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
@@ -350,10 +351,10 @@ export class Engine{
     }
     return agentModels;
   }
-  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);this.releaseParked(r,'next',{});return this.dispatch(actor,r);}
+  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);if(!this.releaseParked(r,'next',{}))return this.status(actor,id);return this.dispatch(actor,r);}
   async review(actor:Actor,id:string,decision:'approve'|'reject'){
     this.ensureHuman(actor);const r=this.own(actor,id);if(r.state!=='review')throw requestError('Run is not awaiting human review.');this.allowedRun(actor,r);
-    this.releaseParked(r,decision,{decision},{decision,at:now(),requester:actor.requester??'authenticated-operator'});return this.dispatch(actor,r);
+    if(!this.releaseParked(r,decision,{decision},{decision,at:now(),requester:actor.requester??'authenticated-operator'}))return this.status(actor,id);return this.dispatch(actor,r);
   }
   cancel(actor:Actor,id:string){const r=this.own(actor,id);if(terminal(r))return this.status(actor,id);r.state='cancelled';this.dropQueued(id);r.updatedAt=now();delete r.pending;if(this.active.has(id))r.uncertainty='Cancellation requested during execution; a dispatched host call may have completed.';this.active.get(id)?.controller.abort(new Error('Run cancelled.'));for(const t of r.trace)if(['running','waiting','review'].includes(t.state)){t.state='cancelled';t.endedAt=now();}this.persist(r);return this.status(actor,id);}
   async close(){
@@ -367,8 +368,14 @@ export class Engine{
     }
   }
   private next(r:Run,id:string,port:string){const next=r.definition.edges.find(e=>e.source===id&&e.port===port)?.target;if(!next)throw executionError(`Missing ${port} edge from ${id}.`,'LOOPS_INVALID_GRAPH');return next;}
-  private releaseParked(r:Run,port:string,output:Json,review?:NonNullable<Run['review']>){
+  private releaseParked(r:Run,port:string,output:Json,review?:NonNullable<Run['review']>):boolean{
     const node=r.definition.nodes.find(node=>node.id===r.cursor);if(!node)throw executionError('Execution cursor is invalid.','LOOPS_INVALID_GRAPH');
+    try{this.validateOutput(node,output);}catch(error){
+      r.state='failed';r.errorDetail=errorDetail(error,{phase:'execution',nodeId:node.id});r.error=r.errorDetail.message;delete r.pending;
+      const checkpoint=r.trace.findLast(item=>item.nodeId===node.id&&(item.state==='waiting'||item.state==='review'));
+      if(checkpoint){checkpoint.state='failed';checkpoint.error=r.error;checkpoint.endedAt=now();}
+      this.persist(r);return false;
+    }
     let context:ContextState|undefined;
     if(r.context){
       const projected=projectContext(r.context,node.context),bindings:BindingContext={input:r.input,nodes:r.outputs,...projected?{context:projected}:{}};
@@ -378,9 +385,16 @@ export class Engine{
     }
     const cursor=this.next(r,node.id,port),checkpoint=r.trace.at(-1);
     if(checkpoint){checkpoint.state='completed';checkpoint.endedAt=now();}
-    r.state='running';delete r.pending;r.outputs[node.id]=output;if(context)r.context=context;if(review)r.review=review;r.cursor=cursor;this.persist(r);
+    r.state='running';delete r.pending;r.outputs[node.id]=output;if(context)r.context=context;if(review)r.review=review;r.cursor=cursor;this.persist(r);return true;
   }
   private checkpoint(r:Run){r.updatedAt=now();this.persist(r);}
+  private validateOutput(node:GraphNode,output:Json):Json{
+    if(node.outputSchema===undefined)return output;
+    const value=node.kind==='inference'&&node.output==='json'&&output&&typeof output==='object'&&!Array.isArray(output)?output.value:output;
+    const diagnostics=validateDataValue(node.outputSchema,value);
+    if(diagnostics.length)throw executionError(`Output ${node.id}${diagnostics[0].instancePath||'/'}: ${diagnostics[0].message}`,'LOOPS_OUTPUT_SCHEMA_INVALID','Correct the node output schema or the producing node, then explicitly retry the failed node.');
+    return output;
+  }
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}
   private dropQueued(id:string){const actor=this.queued.get(id);this.queued.delete(id);if(actor)this.options.releaseActor?.(actor);}
   private clearQueued(){for(const id of this.queued.keys())this.dropQueued(id);}
@@ -428,16 +442,17 @@ export class Engine{
         const next=applyContextPatch(r.context,node.id,node.context,output,value=>bind(value,contextFor(node)),hash);
         assertContextState(next);assertBudget(next,r.outputs);r.context=next;
       };
+      const validateOutput=(node:GraphNode,output:Json):Json=>this.validateOutput(node,output);
       const execution:NodeExecutionContext={
         signal,input:r.input,bind:(template,node=n)=>bind(template,contextFor(node)),compare:(predicate,node=n,iteration)=>compare(predicate,contextFor(node,iteration),r.definition.schemaVersion),
         infer:(node,iteration)=>this.infer(actor,r,node,contextFor(node,iteration),signal),evaluate:async(value:Json,evaluator:Evaluator,nodeId:string)=>{try{return commitEvaluation(await evaluateDeterministically(value,evaluator,{signal,...this.options.evaluationWorkerUrl?{workerUrl:this.options.evaluationWorkerUrl}:{}}),nodeId);}catch(error){throw error instanceof EvaluationFailure?evaluationExecutionError(error.detail.code):error;}},modelInfo:()=>this.host.modelInfo(actor),readOutput:id=>{const output=r.outputs[id];if(n.kind==='gate'&&!isCommittedEvaluation(output,n.evaluationId))throw executionError('Evidence gate requires an intact committed evaluation result from this run.','LOOPS_EVIDENCE_UNAVAILABLE');return output;},
         requireCapability:capability=>this.host.check(actor,capability),checkAuthority:()=>this.allowedRun(actor,r),
         begin:(node,iteration)=>{this.begin(r,node,iteration);return r.trace.length-1;},
-        finish:(sequence,output)=>this.finish(r,r.trace[sequence],output),setOutput:(id,output)=>{assertBudget(r.context,{...r.outputs,[id]:output});r.outputs[id]=output;},commitContext,
+        finish:(sequence,output)=>this.finish(r,r.trace[sequence],output),setOutput:(id,output)=>{assertBudget(r.context,{...r.outputs,[id]:output});r.outputs[id]=output;},validateOutput,commitContext,
       };
       const dispatched=nodeContract(n.kind).execute(n,execution);
       const outcome=dispatched instanceof Promise?await dispatched:dispatched;
-      const result=outcome.output,port=outcome.port??'next';
+      const result=outcome.park?outcome.output:validateOutput(n,outcome.output),port=outcome.port??'next';
       if(outcome.park){
         this.finish(r,evidence,outcome.park.value);r.state=outcome.park.state;r.pending=evidence.output;evidence.state=outcome.park.state;
         // v1/v2 runs historically expose the parked node's empty output. v3
@@ -471,7 +486,12 @@ export class Engine{
     const model=n.model??agentModel??actor.model;
     try{
     this.allowedRun(actor,r);this.host.check(actor,'llm');
-    const prompt=display(bind(n.prompt,ctx));if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw executionError('Rendered prompt exceeds the transport budget.','LOOPS_PROMPT_LIMIT');
+    const authoredPrompt=display(bind(n.prompt,ctx));
+    // The selected public isolated-agent runtime has no constrained-output
+    // parameter. Give explicit format guidance, then validate the returned
+    // parsed value locally before any node checkpoint or context commit.
+    const prompt=n.outputSchema===undefined?authoredPrompt:`${authoredPrompt}\n\nReturn only one JSON value matching this required data schema. Do not add prose or code fences.\n${JSON.stringify(n.outputSchema)}`;
+    if(Buffer.byteLength(prompt)>(r.definition.schemaVersion===1?legacyBudgets.promptBytes:this.budgets.promptBytes))throw executionError('Rendered prompt exceeds the transport budget.','LOOPS_PROMPT_LIMIT');
     const settings:InferenceSettings={...model?{model}:{},...n.agentId?{agentId:n.agentId}:{},...n.reasoning?{reasoning:n.reasoning}:{},...n.advanced?{advanced:n.advanced}:{}};
     const issues=validateAdvanced(n.advanced,this.capabilities(actor,settings).parameters);if(issues.length)throw executionError(issues.join(' '),'UNSUPPORTED_INFERENCE_SETTINGS');
     const deadline=this.deadlines.get(r.id);
