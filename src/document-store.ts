@@ -8,6 +8,7 @@ import type {DocumentReference, UploadReference} from './wire-contract.js';
 import {LoopError, requestError, storageError} from './errors.js';
 import {uploadChunkCharacters, uploadEncodedLength, type UploadChunkInput} from './upload-input.js';
 import {documentLinks} from './document-links.js';
+import type {Json} from './node-values.js';
 import {DocumentLinksSchema, MaintenancePolicySchema, TransportReleaseSchema, emptyDocumentLinks, maintenancePreviewPlanId, mergeDocumentLinks, validLifetime, validUploadLifetime,
   type DocumentLifetime, type DocumentLinks, type UploadLifetime, type MaintenancePolicy, type MaintenanceResult, type MaintenanceFile, type ReferenceInventory, type TransportRelease} from './document-maintenance.js';
 
@@ -174,6 +175,11 @@ export class DocumentStore {
     try { return JSON.parse(text); }
     catch (error) { throw corrupt(error); }
   }
+  contextValue(actor: Actor, documentId: string): Json {
+    const text=this.document(actor,documentId).text;
+    try { return JSON.parse(text) as Json; }
+    catch (error) { throw corrupt(error); }
+  }
   upload(actor: Actor, input: UploadChunkInput) {
     actor.check();
     const text = uploadText(input), chunk = Array.from(text);
@@ -262,7 +268,7 @@ export class DocumentStore {
         else if (lifetime.readers.length) protection = 'readers';
         else if (lifetime.links.runs.some(id => references.runs.has(id)) || lifetime.links.loops.some(id => references.loops.has(id))) protection = 'referenced';
       }
-      if (!protection && entry.kind === 'document' && linked.has(entry.id)) protection = 'referenced';
+      if (!protection && entry.kind === 'document' && (linked.has(entry.id) || references.documents.has(entry.id))) protection = 'referenced';
       if (!protection && (index < (policy.keepLatest ?? 0) || policy.olderThanDays !== undefined && Date.parse(entry.updatedAt) >= at - policy.olderThanDays * 86400000)) protection = 'recent';
       if (protection) { protectedCounts[protection]++; return false; } return true;
     });

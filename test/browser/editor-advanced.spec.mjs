@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {createServer} from 'node:http';
-import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -392,6 +392,143 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
     await page.getByRole('button',{name:'Remove selected node'}).click();
     await fillLoopName('QA unmount original'); await page.waitForFunction(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('QA unmount original'))return true;return false;}); await page.evaluate(()=>globalThis.__editorRegression.deferNextDraft()); await page.getByRole('button',{name:'Save draft'}).click(); await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===1); await page.evaluate(()=>globalThis.__editorRegression.unmount()); await page.evaluate(()=>globalThis.__editorRegression.resolveNextDraft()); await page.waitForFunction(()=>globalThis.__editorRegression.deferredDraftCount()===0&&globalThis.__editorRegression.calls.some(call=>call.mode==='draft'&&call.definition.name==='QA unmount original')); assert.equal(await page.evaluate(()=>{for(let index=0;index<globalThis.localStorage.length;index++)if(globalThis.localStorage.getItem(globalThis.localStorage.key(index))?.includes('QA unmount original'))return true;return false;}),true); receipt.checks.push('late save after unmount preserves the recoverable snapshot');
     await verifyEvaluationDraftRaces(browser,url,receipt.checks);
+    {
+      const lifecyclePage=await browser.newPage();await lifecyclePage.goto(url);await waitFor(lifecyclePage,'select[aria-label="Load an example"]');
+      await lifecyclePage.selectOption('select[aria-label="Load an example"]','summarize-text');
+      await lifecyclePage.selectOption('select[aria-label="Node family"]','context-lifecycle');await lifecyclePage.getByRole('button',{name:'+ Add node'}).click();
+      await lifecyclePage.getByLabel('Lifecycle write target').fill('/working');
+      await lifecyclePage.getByLabel('Lifecycle selected paths').fill('/input/text');
+      const lifecycleControls=lifecyclePage.locator('section[aria-label="Context lifecycle settings"]');
+      await lifecycleControls.locator('.lp-value-editor select').first().selectOption('json');
+      await lifecycleControls.locator('.lp-value-editor textarea').first().fill('0');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 1 saved as a draft').waitFor();
+      let savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedLifecycle.schemaVersion,3);assert.deepEqual(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle,{operation:'inject',target:'/working',paths:['/input/text'],value:{literalJson:'0'}});
+      await lifecyclePage.evaluate(()=>globalThis.__editorRegression.refresh());await lifecyclePage.getByLabel('Lifecycle write target').waitFor();assert.equal(await lifecyclePage.getByLabel('Lifecycle write target').inputValue(),'/working');
+      await lifecycleControls.locator('select').first().selectOption('compact');await lifecyclePage.getByLabel('Lifecycle selected paths').fill('/working');
+      await lifecycleControls.locator('.lp-value-editor textarea').first().fill('Keep selected facts.');await lifecycleControls.locator('textarea').last().fill('Reduce selected working data.');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 2 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.operation,'compact');
+      assert.equal(Object.hasOwn(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle,'value'),false);
+      await lifecycleControls.locator('select').first().selectOption('retrieve');await lifecyclePage.getByLabel('Lifecycle source',{exact:true}).selectOption('retained');
+      await lifecyclePage.getByLabel('Retained source ID',{exact:true}).fill('a'.repeat(64));await lifecycleControls.locator('select').nth(2).selectOption('document');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 3 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.deepEqual(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.source,{kind:'retained',sourceId:'a'.repeat(64),format:'document'});
+      await lifecycleControls.locator('select').first().selectOption('reset');await lifecyclePage.getByLabel('Lifecycle source',{exact:true}).selectOption('initial');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 4 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.deepEqual(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.source,{kind:'initial'});
+      await lifecycleControls.locator('select').first().selectOption('summarize');await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 5 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.operation,'summarize');
+      assert.equal(Object.hasOwn(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle,'source'),false);
+      const lifecycleId=savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').id;
+      await lifecyclePage.selectOption('select[aria-label="Connection source node"]','summary');
+      await lifecyclePage.selectOption('select[aria-label="Connection target node"]',lifecycleId);
+      await lifecyclePage.getByRole('button',{name:'Add connection'}).click();
+      await lifecyclePage.selectOption('select[aria-label="Connection source node"]',lifecycleId);
+      await lifecyclePage.selectOption('select[aria-label="Connection target node"]','return');
+      await lifecyclePage.getByRole('button',{name:'Add connection'}).click();
+      await lifecyclePage.selectOption('select[aria-label="Select node to edit"]',lifecycleId);
+      await lifecycleControls.locator('select').first().selectOption('inject');
+      assert.equal(await lifecycleControls.locator('.lp-value-editor textarea').first().inputValue(),'null');
+      assert.equal(await lifecyclePage.getByRole('button',{name:'Save draft'}).isDisabled(),false);
+      await lifecyclePage.getByLabel('Lifecycle source',{exact:true}).selectOption('retained');
+      await lifecyclePage.getByLabel('Retained source ID',{exact:true}).fill('not-a-digest');
+      await lifecyclePage.getByLabel('Run target').selectOption('draft');
+      assert.equal(await lifecyclePage.getByRole('button',{name:'Save & publish'}).isDisabled(),true);
+      assert.equal(await lifecyclePage.getByRole('button',{name:'Test current draft'}).isDisabled(),true);
+      assert.equal(await lifecyclePage.getByLabel('Retained source ID',{exact:true}).inputValue(),'not-a-digest');
+      await lifecyclePage.getByLabel('Lifecycle source',{exact:true}).selectOption('');
+      assert.equal(await lifecycleControls.locator('.lp-value-editor textarea').first().inputValue(),'null');
+      await lifecyclePage.getByRole('button',{name:'Save draft'}).click();await lifecyclePage.getByText('Revision 6 saved as a draft').waitFor();
+      savedLifecycle=await lifecyclePage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.deepEqual(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.value,{literalJson:'null'});
+      assert.equal(Object.hasOwn(savedLifecycle.nodes.find(node=>node.kind==='context-lifecycle').lifecycle,'source'),false);
+      const downloadPromise=lifecyclePage.waitForEvent('download');await lifecyclePage.getByRole('button',{name:'Export',exact:true}).click();
+      const download=await downloadPromise,exported=JSON.parse(await readFile(await download.path(),'utf8'));
+      assert.deepEqual(exported.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.value,{literalJson:'null'});
+      await lifecyclePage.getByLabel('Run target').selectOption('draft');
+      assert.equal(await lifecyclePage.getByRole('button',{name:'Test current draft'}).isDisabled(),false,JSON.stringify(await lifecyclePage.locator('.lp-node-error').allTextContents()));
+      await lifecyclePage.getByRole('button',{name:'Test current draft'}).click();
+      await lifecyclePage.waitForFunction(()=>globalThis.__editorRegression.calls.some(call=>call.id==='test'));
+      const tested=await lifecyclePage.evaluate(()=>globalThis.__editorRegression.calls.findLast(call=>call.id==='test').payload.definition);
+      assert.deepEqual(tested.nodes.find(node=>node.kind==='context-lifecycle').lifecycle.value,{literalJson:'null'});
+      receipt.checks.push('synthetic browser: all five lifecycle operations author and save without stale source or value');
+      receipt.checks.push('synthetic browser: summary and retained-source transitions materialize authored null for Save, Export, and draft Test while invalid source text blocks dispatch');await lifecyclePage.close();
+    }
+    {
+      // F1: the mounted editor must reject every way a Summary write can
+      // replace its own selected live values, while keeping the draft editable.
+      const overlapPage=await browser.newPage();overlapPage.setDefaultTimeout(10_000);
+      overlapPage.on('pageerror',error=>receipt.errors.push(error.message));
+      let expectedReload=false;
+      overlapPage.on('dialog',dialog=>{if(expectedReload&&dialog.type()==='beforeunload')void dialog.accept();else{receipt.errors.push(`Unexpected overlap dialog: ${dialog.type()}`);void dialog.dismiss();}});
+      const fixture={schemaVersion:3,id:'lifecycle-overlap-mounted',slug:'lifecycle-overlap-mounted',name:'Lifecycle overlap mounted',description:'Disposable F1 authoring regression.',revision:0,
+        inputSchema:[{name:'data',label:'Data',type:'json',required:true}],capabilities:[],limits:{maxExecutions:4,maxOutputBytes:16384},
+        nodes:[{id:'input',kind:'input',label:'Input'},{id:'step',kind:'context-lifecycle',label:'Lifecycle',lifecycle:{operation:'inject',target:'/summary',paths:['/working'],value:{literalJson:'null'}}},{id:'return',kind:'return',label:'Return',value:'{{nodes.step.contextVersion}}'}],
+        edges:[{id:'input-step',source:'input',target:'step',port:'next'},{id:'step-return',source:'step',target:'return',port:'next'}],layout:{}};
+      const fixturePath=join(importDirectory,'lifecycle-overlap.json');await writeFile(fixturePath,JSON.stringify(fixture));
+      await overlapPage.goto(url);await waitFor(overlapPage,'select[aria-label="Load an example"]');
+      const chooser=overlapPage.waitForEvent('filechooser');await overlapPage.getByRole('button',{name:'Import',exact:true}).click();await (await chooser).setFiles(fixturePath);
+      await overlapPage.locator('.lp-canvas-heading h2').getByText(fixture.name,{exact:true}).waitFor();
+      await overlapPage.getByLabel('Select node to edit',{exact:true}).selectOption('step');
+      const lifecycle=overlapPage.locator('section[aria-label="Context lifecycle settings"]');
+      await lifecycle.getByRole('combobox',{name:'Operation',exact:true}).selectOption('summarize');
+      await lifecycle.locator('.lp-value-editor textarea').first().fill('Summarize only the selected facts.');
+      const target=overlapPage.getByLabel('Lifecycle write target',{exact:true}),paths=overlapPage.getByLabel('Lifecycle selected paths',{exact:true});
+      let conflict;
+      for(const scenario of [
+        {name:'equal',target:'/working',paths:'/working'},
+        {name:'ancestor',target:'/working',paths:'/working/fact'},
+        {name:'descendant',target:'/working/fact',paths:'/working'},
+      ]){
+        await target.fill(scenario.target);await paths.fill(scenario.paths);
+        assert.equal(await target.inputValue(),scenario.target);assert.equal(await paths.inputValue(),scenario.paths);
+        const exportedPromise=overlapPage.waitForEvent('download');await overlapPage.getByRole('button',{name:'Export',exact:true}).click();
+        const exported=JSON.parse(await readFile(await (await exportedPromise).path(),'utf8'));
+        const authored=exported.nodes.find(node=>node.id==='step').lifecycle;
+        assert.equal(authored.operation,'summarize');assert.equal(authored.target,scenario.target);assert.deepEqual(authored.paths,[scenario.paths]);
+        const issue=overlapPage.locator('.lp-issues button').filter({hasText:/Summarize.*target.*selected path/i});
+        await issue.waitFor();const message=await issue.innerText();
+        assert.match(message,/disjoint target/i);if(conflict)assert.equal(message,conflict);else conflict=message;
+        assert.equal(await overlapPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+        assert.equal(await overlapPage.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),true);
+        receipt.checks.push(`synthetic browser: Summary ${scenario.name} target overlap explains the conflict and blocks Test/Publish`);
+      }
+      await target.fill('/working');await paths.fill('/working');
+      await overlapPage.waitForFunction(name=>{
+        for(let index=0;index<globalThis.localStorage.length;index++){
+          const key=globalThis.localStorage.key(index);if(!key?.startsWith('loops-editor:v2:'))continue;
+          try{const draft=JSON.parse(globalThis.localStorage.getItem(key));if(draft.definition?.name===name&&draft.definition.nodes?.find(node=>node.id==='step')?.lifecycle?.target==='/working')return true;}catch{ /* Skip unrelated malformed local drafts. */ }
+        }
+        return false;
+      },fixture.name);
+      expectedReload=true;await overlapPage.reload();expectedReload=false;await waitFor(overlapPage,'select[aria-label="Load an example"]');
+      const drafts=overlapPage.locator('.lp-local-drafts');await drafts.locator('summary').waitFor();
+      if(!await drafts.evaluate(element=>element.open))await drafts.locator('summary').click();
+      await drafts.getByRole('button',{name:/^Recover Lifecycle overlap mounted draft/}).first().click();
+      await overlapPage.getByLabel('Select node to edit',{exact:true}).selectOption('step');
+      assert.equal(await overlapPage.getByLabel('Lifecycle write target',{exact:true}).inputValue(),'/working');
+      assert.equal(await overlapPage.getByLabel('Lifecycle selected paths',{exact:true}).inputValue(),'/working');
+      await overlapPage.locator('.lp-issues button').filter({hasText:conflict}).waitFor();
+      assert.equal(await overlapPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),true);
+      await overlapPage.getByLabel('Lifecycle write target',{exact:true}).fill('/summary');
+      await overlapPage.locator('.lp-issues button').filter({hasText:conflict}).waitFor({state:'detached'});
+      assert.equal(await overlapPage.getByRole('button',{name:'Test current draft',exact:true}).isDisabled(),false);
+      assert.equal(await overlapPage.getByRole('button',{name:'Save & publish',exact:true}).isDisabled(),false);
+      await overlapPage.getByRole('button',{name:'Save draft',exact:true}).click();
+      await overlapPage.getByText('Revision 1 saved as a draft').waitFor();
+      const saved=await overlapPage.evaluate(()=>[...globalThis.__editorRegression.records.values()].at(-1).definition);
+      assert.equal(saved.nodes.find(node=>node.id==='step').lifecycle.operation,'summarize');
+      assert.equal(saved.nodes.find(node=>node.id==='step').lifecycle.target,'/summary');
+      assert.deepEqual(saved.nodes.find(node=>node.id==='step').lifecycle.paths,['/working']);
+      assert.equal((await overlapPage.evaluate(()=>globalThis.__editorRegression.calls.filter(call=>call.id==='test').length)),0);
+      receipt.checks.push('synthetic browser: invalid Summary overlap survives local recovery and disjoint repair restores valid authoring');
+      await overlapPage.close();
+    }
     receipt.definitions=state.records.map(([id,item])=>({id,revision:item.definition.revision,enabledRevision:item.enabledRevision,publishedRevision:item.publishedRevision,advanced:advanced(item.definition)}));
     receipt.operations=state.calls.filter(call=>call.mode||call.id).map(call=>call.mode??call.id); receipt.passed=true;
   } catch(error){receipt.failure=error.message;if(receiptPath)await writeFile(receiptPath,JSON.stringify(receipt,null,2)+'\n');throw error;} finally { await browser?.close(); if(importDirectory)await rm(importDirectory,{recursive:true,force:true}); await new Promise(resolve=>server.close(resolve)); }

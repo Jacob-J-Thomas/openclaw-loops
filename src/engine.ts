@@ -16,6 +16,7 @@ import {fingerprintJson} from './fingerprint.js';
 import {applyContextPatch,assertContextState,contextBytes,initialContext,projectContext,type ContextState} from './context.js';
 import {EvaluationFailure,commitEvaluation,evaluate as evaluateDeterministically,isCommittedEvaluation,type Evaluator} from './evaluation.js';
 import {validateDataValue,type DataSchema} from './data-schema.js';
+import {lifecycleMutation,lifecycleValue,selected,selectedIfPresent,selectRetainedSource,validateLifecycle,type ContextLifecycle} from './context-lifecycle.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
@@ -153,12 +154,34 @@ export class Engine{
   documentFinishUse(actor:Actor,id:string,readerId:string|undefined,links:DocumentLinks){return this.documentStore(actor).finishUse(actor,id,readerId,links);}
   maintenance(actor:Actor,policy:MaintenancePolicy,applyPlanId?:string){
     this.ensureAuthor(actor);
-    const runs=this.storage.indexed?.runMetadata()??Object.values(this.state.runs);
-    return this.documentStore(actor).maintenance(actor,policy,{runs:new Set(runs.map(run=>run.id)),loops:new Set(Object.keys(this.state.loops))},applyPlanId);
+    const owner=ownerKey(actor),metadata=(this.storage.indexed?.runMetadata()??Object.values(this.state.runs)).filter(run=>ownerKey(run.owner)===owner);
+    const documents=new Set<string>();
+    const fromDefinition=(definition:Definition)=>{
+      for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)]))
+        if(node.kind==='context-lifecycle'&&node.lifecycle.source?.kind==='retained')documents.add(node.lifecycle.source.sourceId);
+    };
+    for(const record of Object.values(this.state.loops)){
+      fromDefinition(record.definition);
+      for(const revision of Object.values(record.revisions??{}))fromDefinition(revision);
+    }
+    const fromRun=(run:Run)=>{
+      fromDefinition(run.definition);
+      for(const source of run.context?.sources??[])documents.add(source.documentId);
+    };
+    for(const item of metadata){
+      const run=this.storage.indexed?.readRun(item.id,owner)??this.state.runs[item.id];
+      if(!run)throw requestError('Saved run reference inventory is unavailable. Transport cleanup was not applied.','LOOPS_STORAGE_UNAVAILABLE');
+      fromRun(run);
+    }
+    // An in-flight run can carry a newer source until its checkpoint finishes.
+    // Including that source is conservative; cold SQLite rows are read above.
+    for(const run of Object.values(this.state.runs))if(ownerKey(run.owner)===owner)fromRun(run);
+    return this.documentStore(actor).maintenance(actor,policy,{runs:new Set(metadata.map(run=>run.id)),loops:new Set(Object.keys(this.state.loops)),documents},applyPlanId);
   }
   transportRelease(actor:Actor,input:TransportRelease){this.ensureAuthor(actor);return this.documentStore(actor).release(actor,input);}
   documentUpload(actor:Actor,input:Parameters<DocumentStore['upload']>[1]){return this.documentStore(actor).upload(actor,input);}
   documentResolve(actor:Actor,reference:Parameters<DocumentStore['resolve']>[1]){return this.documentStore(actor).resolve(actor,reference);}
+  documentContextValue(actor:Actor,id:string){return this.documentStore(actor).contextValue(actor,id);}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}
   private own(actor:Actor,id:string){
     actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');
@@ -347,8 +370,10 @@ export class Engine{
   }
   private pinAgentModels(actor:Actor,definition:Definition){
     const agentModels:Record<string,string>=Object.create(null);
-    for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)]))if(node.kind==='inference'&&node.agentId&&!node.model&&node.agentId!==actor.agentId&&!Object.hasOwn(agentModels,node.agentId)){
-      const model=this.capabilities(actor,{agentId:node.agentId}).model;if(model)agentModels[node.agentId]=model;
+    for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)])){
+      const settings=node.kind==='inference'?node:node.kind==='context-lifecycle'&&['summarize','compact'].includes(node.lifecycle.operation)?node.lifecycle:undefined;
+      if(!settings?.agentId||settings.model||settings.agentId===actor.agentId||Object.hasOwn(agentModels,settings.agentId))continue;
+      const model=this.capabilities(actor,{agentId:settings.agentId}).model;if(model)agentModels[settings.agentId]=model;
     }
     return agentModels;
   }
@@ -464,6 +489,7 @@ export class Engine{
         requireCapability:capability=>this.host.check(actor,capability),checkAuthority:()=>this.allowedRun(actor,r),
         begin:(node,iteration)=>{this.begin(r,node,iteration);return r.trace.length-1;},
         finish:(sequence,output)=>this.finish(r,r.trace[sequence],output),setOutput:(id,output)=>{assertBudget(r.context,{...r.outputs,[id]:output});r.outputs[id]=output;},validateOutput,commitContext,
+        lifecycle:node=>this.lifecycle(actor,r,node,contextFor(node),signal,assertBudget),
       };
       const dispatched=nodeContract(n.kind).execute(n,execution);
       const outcome=dispatched instanceof Promise?await dispatched:dispatched;
@@ -479,10 +505,12 @@ export class Engine{
       if(outcome.returned){r.result=result;r.state='completed';}
       signal.throwIfAborted();if(terminal(r)&&r.state!=='completed')break;
       this.allowedRun(actor,r);
-      if(evidence.state==='running')this.finish(r,evidence,result);else evidence.endedAt=now();
-      const nextContext=r.context?applyContextPatch(r.context,n.id,n.context,result,value=>bind(value,contextFor(n)),hash):undefined;
+      const lifecycleContext=outcome.context;
+      const contextBase=lifecycleContext??r.context;
+      const nextContext=contextBase?applyContextPatch(contextBase,n.id,n.context,result,value=>bind(value,contextFor(n)),hash):undefined;
       if(nextContext)assertContextState(nextContext);
-      assertBudget(nextContext??r.context,{...r.outputs,[n.id]:result});
+      assertBudget(nextContext??contextBase,{...r.outputs,[n.id]:result});
+      if(evidence.state==='running')this.finish(r,evidence,result);else evidence.endedAt=now();
       r.outputs[n.id]=result;if(nextContext)r.context=nextContext;
       if(r.state==='running')r.cursor=this.next(r,n.id,port);
       this.checkpoint(r);
@@ -497,12 +525,56 @@ export class Engine{
   }
   private begin(r:Run,n:{id:string;kind:string},iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{}};r.trace.push(e);this.checkpoint(r);return e;}
   private finish(r:Run,e:NodeEvidence,result:Json){const output=display(result);if(Buffer.byteLength(output)>r.definition.limits.maxOutputBytes)throw executionError(`Output-size limit exceeded at ${e.nodeId}.`,'LOOPS_OUTPUT_LIMIT');if(r.definition.schemaVersion===1&&r.trace.reduce((size,t)=>size+Buffer.byteLength(t.output??''),0)+Buffer.byteLength(output)>48000)throw executionError('Run evidence output budget exceeded.','LOOPS_OUTPUT_LIMIT');e.output=output;e.state='completed';e.endedAt=now();}
-  private async infer(actor:Actor,r:Run,n:Extract<GraphNode,{kind:'inference'}>,ctx:BindingContext,signal:AbortSignal):Promise<Json>{
+  private async lifecycle(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'context-lifecycle'}>,ctx:BindingContext,signal:AbortSignal,assertBudget:(context:ContextState|undefined,outputs:Record<string,Json>)=>void):Promise<{output:Json;context:ContextState}>{
+    if(!r.context)throw executionError('Context lifecycle requires a version 3 run context.','LOOPS_CONTEXT_UNAVAILABLE');
+    const config:ContextLifecycle=node.lifecycle;validateLifecycle(config);signal.throwIfAborted();
+    // Source paths need not exist in the current context for retrieval/reset.
+    // Retain every selected current value plus the target's exact before-state;
+    // absent paths stay explicit evidence rather than fabricated JSON nulls.
+    const before=selectedIfPresent(r.context,[...config.paths,config.target]);
+    const projection=['summarize','compact'].includes(config.operation)?selected(r.context,config.paths):undefined;
+    // The run link retains this custody record. An unread transport reader
+    // would pin it forever and defeat normal run-linked retention cleanup.
+    const document=this.documentStore(actor).snapshot(actor,before.values,{...emptyDocumentLinks(),runs:[r.id]},false);
+    let value:Json,model:Json|undefined,modelRequest:Json|undefined;
+    if(config.operation==='retrieve'||config.operation==='reset'||config.source){
+      const source=config.source!;
+      if(source.kind==='initial')value=lifecycleValue(selected(initialContext(r.input),config.paths));
+      else {
+        // DocumentStore verifies the immutable ID, integrity and exact owner
+        // session before selecting any path. Snapshot and ordinary document
+        // layouts are explicit so a source cannot expose undeclared paths.
+        const raw=this.documentContextValue(actor,source.sourceId);
+        value=lifecycleValue(selectRetainedSource(raw,config.paths,source.format??'snapshot'));
+      }
+    }else if(config.operation==='inject')value=lifecycleValue(bind(config.value!,ctx));
+    else {
+      const instructions=bind(config.instructions!,ctx);
+      const prompt=JSON.stringify({instructions,context:projection});
+      modelRequest={prompt,settings:{model:config.model??null,agentId:config.agentId??null,reasoning:config.reasoning??null,advanced:config.advanced??null}};
+      const inference={id:node.id,kind:'inference',label:node.label,prompt,output:'text' as const,
+        ...config.model?{model:config.model}:{},...config.agentId?{agentId:config.agentId}:{},...config.reasoning?{reasoning:config.reasoning}:{},...config.advanced?{advanced:config.advanced}:{}} as Extract<GraphNode,{kind:'inference'}>;
+      // The prompt already contains bound instructions and an exact JSON
+      // projection. Parsing it as a template again would expand binding-like
+      // text inside selected user data or instructions a second time.
+      const response=await this.infer(actor,r,inference,ctx,signal,true);signal.throwIfAborted();
+      if(!response||typeof response!=='object'||Array.isArray(response)||typeof response.text!=='string')throw executionError('Lifecycle summary returned no text.','LOOPS_OUTPUT_INVALID');
+      value=response.text;model=response;
+    }
+    signal.throwIfAborted();
+    const next=lifecycleMutation(r.context,config.target,value,config.operation==='compact'?config.paths:[],{
+      id:document.documentId,operation:config.operation,documentId:document.documentId,sha256:document.sha256,bytes:document.bytes,paths:structuredClone(config.paths),removedPaths:config.operation==='compact'?structuredClone(config.paths):[],...before.absentPaths.length?{absentPaths:before.absentPaths}: {},reason:config.reason??'',sourceVersion:r.context.version,createdAt:now(),...modelRequest?{modelRequest}:{},...model?{model}:{},
+    });
+    assertContextState(next);assertBudget(next,r.outputs);
+    const source=next.sources!.at(-1)!;
+    return {output:{operation:config.operation,sourceId:source.id,contextVersion:next.version,lossy:config.operation==='compact'||config.operation==='reset',source:{documentId:document.documentId,sha256:document.sha256,bytes:document.bytes}},context:next};
+  }
+  private async infer(actor:Actor,r:Run,n:Extract<GraphNode,{kind:'inference'}>,ctx:BindingContext,signal:AbortSignal,promptAlreadyRendered=false):Promise<Json>{
     const agentModels=r.executionSettings?.agentModels,agentModel=n.agentId&&agentModels&&Object.hasOwn(agentModels,n.agentId)?agentModels[n.agentId]:undefined;
     const model=n.model??agentModel??actor.model;
     try{
     this.allowedRun(actor,r);this.host.check(actor,'llm');
-    const authoredPrompt=display(bind(n.prompt,ctx));
+    const authoredPrompt=promptAlreadyRendered?n.prompt as string:display(bind(n.prompt,ctx));
     // The selected public isolated-agent runtime has no constrained-output
     // parameter. Give explicit format guidance, then validate the returned
     // parsed value locally before any node checkpoint or context commit.
@@ -529,5 +601,8 @@ export class Engine{
     }catch(error){throw new LoopError(errorDetail(error,{phase:'inference',nodeId:n.id,model}),{cause:error});}
   }
   capabilities(actor:Actor,settings:InferenceSettings={}){actor.check();const inference=this.host.capabilities?.(actor,settings)??{...(settings.model??actor.model)?{model:settings.model??actor.model}:{},configured:'unknown' as const,authorized:'unknown' as const,available:'unknown' as const,parameters:completionParameters(),notes:[]};return {...inference,budgets:{...this.budgets},concurrency:this.options.concurrency??1};}
-  validate(actor:Actor,value:unknown){actor.check();const definition=parseDefinition(value,this.budgets);const issues=validateGraph(definition);for(const node of definition.nodes.flatMap(n=>[n,...childNodes(n)]))if(node.kind==='inference')for(const message of validateAdvanced(node.advanced,this.capabilities(actor,node).parameters))issues.push({nodeId:node.id,message});return {valid:issues.length===0,issues};}
+  validate(actor:Actor,value:unknown){actor.check();const definition=parseDefinition(value,this.budgets);const issues=validateGraph(definition);for(const node of definition.nodes.flatMap(n=>[n,...childNodes(n)])){
+    if(node.kind==='inference')for(const message of validateAdvanced(node.advanced,this.capabilities(actor,node).parameters))issues.push({nodeId:node.id,message});
+    if(node.kind==='context-lifecycle')for(const message of validateAdvanced(node.lifecycle.advanced,this.capabilities(actor,{model:node.lifecycle.model,agentId:node.lifecycle.agentId}).parameters))issues.push({nodeId:node.id,message});
+  }return {valid:issues.length===0,issues};}
 }

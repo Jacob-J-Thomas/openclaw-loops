@@ -7,8 +7,31 @@ import {fitsFeatureJson, textPage} from './feature-json.js';
 
 const digest = async(text: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))).map(byte => byte.toString(16).padStart(2, '0')).join('');
 
-export function createLoopsClient(host: FeatureTransport): Pick<FeatureClient<typeof contract>, 'invoke' | 'on'> {
+export function createLoopsClient(host: FeatureTransport) {
   const wire = createFeatureClient(wireContract, host);
+  const readDocument = async(documentId:string,sha256:string,bytes:number,options?:Parameters<FeatureClient<typeof contract>['invoke']>[2])=>{
+    const acquired=await wire.invoke('document_acquire',{documentId},options);
+    if(Value.Check(OperationFailureSchema,acquired))throw new LoopError(acquired.error);
+    const {readerId}=acquired;
+    let text='',offset=0,completed=false;
+    try{
+      while(true){
+        const page=await wire.invoke('document',{documentId,readerId,offset},options);
+        if(Value.Check(OperationFailureSchema,page))throw new LoopError(page.error);
+        if(page.documentId!==documentId||page.sha256!==sha256||page.offset!==offset||page.nextOffset!==null&&page.nextOffset<=offset)throw new Error('Document page identity or sequence changed.');
+        text+=page.text;
+        if(page.nextOffset===null)break;
+        offset=page.nextOffset;
+      }
+      if(new TextEncoder().encode(text).byteLength!==bytes||await digest(text)!==sha256)throw new Error('Document integrity check failed.');
+      const value=JSON.parse(text) as unknown;
+      completed=true;
+      return value;
+    }finally{
+      // An incomplete or unverified read retains its reader for inspection.
+      if(completed)try{await wire.invoke('document_release',{documentId,readerId},options);}catch{/* An unacknowledged release remains inspectable. */}
+    }
+  };
   const invoke: FeatureClient<typeof contract>['invoke'] = async(operation, input, options) => {
     const payload = structuredClone(input) as Record<string, unknown>;
     if (!fitsFeatureJson(payload)) {
@@ -55,5 +78,5 @@ export function createLoopsClient(host: FeatureTransport): Pick<FeatureClient<ty
     }
     return result as FeatureOutput<typeof contract, typeof operation>;
   };
-  return {invoke, on: wire.on};
+  return {invoke, on: wire.on,readDocument};
 }
