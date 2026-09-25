@@ -26,7 +26,20 @@ export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type RouteTrace={port:string;caseId?:string;observed:string;truncated?:boolean;available?:true}|{port:string;caseId?:string;available:false};
 export type NodeEvidence={nodeId:string;kind:string;iteration?:number;memoryMutationId?:string;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:RouteTrace};
 export type ExecutionSettings=Pick<Actor,'model'|'reasoning'|'authProfileId'>&{agentModels?:Record<string,string>};
-export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;context?:ContextState;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
+export type MemoryWriteGrant={runId:string;ownerKey:string;loopId:string;revision:number;grantGeneration:string;policySha256:string};
+export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;memoryWriteGrant?:MemoryWriteGrant;definition:Definition;input:Record<string,Json>;context?:ContextState;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
+export function assertRunMemoryWriteGrant(run:Run){
+  const grant=run.memoryWriteGrant;
+  if(grant===undefined)return; // Historical same-run continuation cannot synthesize authority; an explicit new retry admission can.
+  if(run.testMode||run.requestFingerprintVersion!==2||!Number.isSafeInteger(run.definition.revision)||run.definition.revision<1||
+    !run.definition.nodes.flatMap(node=>[node,...childNodes(node)]).some(node=>node.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(node.memory.operation))||
+    typeof grant!=='object'||grant===null||Array.isArray(grant)||Object.keys(grant).sort().join(',')!=='grantGeneration,loopId,ownerKey,policySha256,revision,runId'||
+    typeof grant.grantGeneration!=='string'||grant.grantGeneration.length<1||grant.grantGeneration.length>64||
+    typeof grant.policySha256!=='string'||!/^[a-f0-9]{64}$/.test(grant.policySha256)||
+    grant.runId!==run.id||grant.ownerKey!==JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId])||grant.loopId!==run.definition.id||
+    grant.revision!==run.definition.revision||grant.grantGeneration!==(run.grantGeneration??'legacy')||
+    grant.policySha256!==fingerprintJson(run.definition.memoryPolicy??null))throw requestError('Saved memory write grant is invalid.','LOOPS_MEMORY_DENIED');
+}
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
 const legacyGrantGeneration='legacy';
 export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
@@ -73,6 +86,7 @@ export class Engine{
   private set state(value:State){this.cachedState=value;}
   readonly budgets:Budgets;
   private queued=new Map<string,Actor>();
+  private queuedAbort=new Map<string,()=>void>();
   private physical=new Map<string,Set<Promise<unknown>>>();
   private closing=false;
   private deadlines=new Map<string,number>();
@@ -88,7 +102,7 @@ export class Engine{
       // loop must not regain those grants when its publication is re-enabled.
       record.grantGeneration??=record.revoked?randomUUID():legacyGrantGeneration;
     }
-    for(const run of Object.values(this.state.runs)){const record=this.state.loops[run.definition.id];if(record&&!run.testMode)record.revisions![run.definition.revision]??=structuredClone(run.definition);}
+    for(const run of Object.values(this.state.runs)){assertRunMemoryWriteGrant(run);const record=this.state.loops[run.definition.id];if(record&&!run.testMode)record.revisions![run.definition.revision]??=structuredClone(run.definition);}
     for(const r of Object.values(this.state.runs)){
       const settling=r.cleanupPending===true;
       if(settling){
@@ -165,8 +179,23 @@ export class Engine{
   documentResolve(actor:Actor,reference:Parameters<DocumentStore['resolve']>[1]){return this.documentStore(actor).resolve(actor,reference);}
   documentContextValue(actor:Actor,id:string){return this.documentStore(actor).contextValue(actor,id);}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}
+  private memoryHasEffects(definition:Definition){return definition.nodes.flatMap(node=>[node,...childNodes(node)]).some(node=>node.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(node.memory.operation));}
+  private issueMemoryWriteGrant(actor:Actor,run:Run){
+    if(!this.memoryHasEffects(run.definition))return;
+    this.ensureAuthor(actor); // An actual host-admitted writer creates this exact plugin-owned run grant.
+    run.memoryWriteGrant={runId:run.id,ownerKey:ownerKey(run.owner),loopId:run.definition.id,revision:run.definition.revision,
+      grantGeneration:run.grantGeneration??legacyGrantGeneration,policySha256:fingerprintJson(run.definition.memoryPolicy??null)};
+  }
+  private assertMemoryWriteGrant(actor:Actor,run:Run){
+    this.allowedRun(actor,run);
+    assertRunMemoryWriteGrant(run);
+    const grant=run.memoryWriteGrant;
+    if(!grant||grant.runId!==run.id||grant.ownerKey!==ownerKey(run.owner)||grant.loopId!==run.definition.id||
+      grant.revision!==run.definition.revision||grant.grantGeneration!==(run.grantGeneration??legacyGrantGeneration)||
+      grant.policySha256!==fingerprintJson(run.definition.memoryPolicy??null))throw requestError('This run has no current plugin-owned memory write grant.','LOOPS_MEMORY_DENIED');
+  }
   private own(actor:Actor,id:string){
-    actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');
+    actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');assertRunMemoryWriteGrant(run);
     // Older full restarts copied a parent's decision into a fresh pending review.
     // Repair cold records on authorized access without scanning historical outputs.
     // Earlier review nodes can legitimately have decisions in a multi-review run.
@@ -328,6 +357,7 @@ export class Engine{
     const checkedInput=validateInput(definition,input,this.budgets),agentModels=this.pinAgentModels(actor,definition);
     const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,requestFingerprintVersion:2,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{},...Object.keys(agentModels).length?{agentModels}:{}},input:checkedInput,...definition.schemaVersion===3?{context:initialContext(checkedInput)}:{},state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
     if(draft)run.testMode=true;else run.grantGeneration=this.state.loops[definition.id].grantGeneration??legacyGrantGeneration;
+    if(!draft)this.issueMemoryWriteGrant(actor,run);
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
   async retry(actor:Actor,id:string,mode:'checkpoint'|'retry-node'|'restart',requestId:string){
@@ -342,6 +372,7 @@ export class Engine{
     if(mode==='checkpoint'&&(previous.uncertainty||previous.trace.some(t=>['running','interrupted','cancelled','failed'].includes(t.state))))throw requestError('The current attempt is not a committed checkpoint. Inspect its outcome, then explicitly retry the node or restart.');
     const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,requestFingerprintVersion:2,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
     if(!run.testMode)run.grantGeneration=this.state.loops[run.definition.id].grantGeneration??legacyGrantGeneration;
+    delete run.memoryWriteGrant;this.issueMemoryWriteGrant(actor,run);
     delete run.error;delete run.errorDetail;delete run.uncertainty;delete run.pending;delete run.result;delete run.cleanupPending;
     if(mode==='restart'){run.outputs={};delete run.review;run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;if(run.definition.schemaVersion===3)run.context=initialContext(run.input);}else delete run.outputs[run.cursor];
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
@@ -360,7 +391,7 @@ export class Engine{
     }
     return agentModels;
   }
-  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);if(!this.releaseParked(r,'next',{}))return this.status(actor,id);return this.dispatch(actor,r);}
+  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);if(r.memoryWriteGrant)this.ensureAuthor(actor);if(!this.releaseParked(r,'next',{}))return this.status(actor,id);return this.dispatch(actor,r);}
   async review(actor:Actor,id:string,decision:'approve'|'reject'){
     this.ensureHuman(actor);const r=this.own(actor,id);if(r.state!=='review')throw requestError('Run is not awaiting human review.');this.allowedRun(actor,r);
     if(!this.releaseParked(r,decision,{decision},{decision,at:now(),requester:actor.requester??'authenticated-operator'}))return this.status(actor,id);return this.dispatch(actor,r);
@@ -419,15 +450,26 @@ export class Engine{
     return output;
   }
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}
-  private dropQueued(id:string){const actor=this.queued.get(id);this.queued.delete(id);if(actor)this.options.releaseActor?.(actor);}
+  private dropQueued(id:string){const actor=this.queued.get(id),listener=this.queuedAbort.get(id);if(actor&&listener)actor.signal?.removeEventListener('abort',listener);this.queuedAbort.delete(id);this.queued.delete(id);if(actor)this.options.releaseActor?.(actor);}
   private clearQueued(){for(const id of this.queued.keys())this.dropQueued(id);}
-  private drain(){if(this.closing)return;for(const [id,actor] of this.queued){if(this.occupied()>=(this.options.concurrency??1))break;this.queued.delete(id);try{const run=this.state.runs[id];if(run?.state==='queued')void this.dispatch(actor,run).catch(()=>{});}finally{this.options.releaseActor?.(actor);}}}
+  private drain(){if(this.closing)return;for(const [id,actor] of this.queued){if(this.occupied()>=(this.options.concurrency??1))break;
+    const listener=this.queuedAbort.get(id);if(listener)actor.signal?.removeEventListener('abort',listener);this.queuedAbort.delete(id);this.queued.delete(id);
+    try{const run=this.state.runs[id];if(run?.state==='queued')void this.dispatch(actor,run).catch(()=>{});}finally{this.options.releaseActor?.(actor);}
+  }}
   private trackPhysical(id:string,promise:Promise<unknown>){const pending=this.physical.get(id)??new Set();pending.add(promise);this.physical.set(id,pending);const run=this.state.runs[id];const cleanup=()=>{pending.delete(promise);if(!pending.size){this.physical.delete(id);if(run.cleanupPending){run.cleanupPending=false;if(!this.closing)this.checkpoint(run);}this.drain();}};void promise.then(cleanup,cleanup).catch(()=>{});}
 
   private async dispatch(actor:Actor,r:Run):Promise<Run>{
     if(this.active.has(r.id))return structuredClone(r);
     if(this.closing)throw requestError('Loops service is stopping.','LOOPS_SERVICE_UNAVAILABLE');
-    if(this.occupied()>=(this.options.concurrency??1)){r.state='queued';this.queued.set(r.id,actor);this.options.retainActor?.(actor);try{this.checkpoint(r);}catch(error){this.dropQueued(r.id);throw error;}return structuredClone(r);}
+    if(this.occupied()>=(this.options.concurrency??1)){
+      r.state='queued';this.queued.set(r.id,actor);this.options.retainActor?.(actor);
+      try{this.checkpoint(r);}catch(error){this.dropQueued(r.id);throw error;}
+      const abort=()=>{if(this.queued.get(r.id)!==actor)return;this.dropQueued(r.id);r.state='cancelled';r.error='Invoking host work ended before queued execution began.';r.updatedAt=now();
+        try{this.checkpoint(r);}catch{/* persist() has already stopped execution on an unverifiable storage commit. */}
+      };
+      this.queuedAbort.set(r.id,abort);actor.signal?.addEventListener('abort',abort,{once:true});if(actor.signal?.aborted)abort();
+      return structuredClone(r);
+    }
     r.state='running';this.checkpoint(r);
     const {agentModels:_agentModels,...execution}=r.executionSettings??{};actor={...actor,...execution};
     const controller=new AbortController();const remaining=r.definition.limits.timeoutMs===undefined?undefined:r.definition.limits.timeoutMs-r.activeMs;
@@ -522,12 +564,12 @@ export class Engine{
   }
   private memoryInvocation(actor:Actor,r:Run,nodeId:string,signal?:AbortSignal,effect=false):MemoryInvocation{
     if(r.testMode)throw requestError('Memory requires a saved, enabled loop revision; unpublished tests cannot read or write memory.','LOOPS_MEMORY_DISABLED');
-    return {owner:r.owner,loopId:r.definition.id,loopRevision:r.definition.revision,runId:r.id,nodeId,grantGeneration:r.grantGeneration??legacyGrantGeneration,policy:r.definition.memoryPolicy,assertAuthorized:()=>{this.allowedRun(actor,r);if(effect)this.ensureAuthor(actor);},...signal?{signal}:{}};
+    return {owner:r.owner,loopId:r.definition.id,loopRevision:r.definition.revision,runId:r.id,nodeId,grantGeneration:r.grantGeneration??legacyGrantGeneration,policy:r.definition.memoryPolicy,assertAuthorized:()=>{if(effect)this.assertMemoryWriteGrant(actor,r);else this.allowedRun(actor,r);},...signal?{signal}:{}};
   }
   private memoryNode(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'memory'}>,ctx:BindingContext,signal:AbortSignal,mutationId:string):Json{
     const config=node.memory,key=bind(config.key,ctx);
     const effect=['write','update','forget','retention-apply','reset-apply'].includes(config.operation);
-    if(effect)this.ensureAuthor(actor);
+    if(effect)this.assertMemoryWriteGrant(actor,r);
     if(typeof key!=='string')throw requestError('Memory key must resolve to text.','LOOPS_MEMORY_KEY');
     const value=config.value===undefined?undefined:bind(config.value,ctx);
     const version=config.expectedVersion===undefined?undefined:bind(config.expectedVersion,ctx);

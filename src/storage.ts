@@ -2,7 +2,7 @@ import {MessageChannel,receiveMessageOnPort,Worker,type MessagePort} from 'node:
 import {copyFileSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync,chmodSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import type {Storage,State,Run,IndexedRunStorage,RunMetadata,RunSummary} from './engine.js';
+import {assertRunMemoryWriteGrant,type Storage,type State,type Run,type IndexedRunStorage,type RunMetadata,type RunSummary} from './engine.js';
 import {parseDefinition} from './graph.js';
 import {defaultBudgets} from './budgets.js';
 // Policy changes must never make already-saved version 2 evidence unreadable.
@@ -33,6 +33,7 @@ export function validateState(value:unknown):State{
     if(!Value.Check(outputs.completeRun,run))throw new Error(`Invalid saved run structure: ${id}`);
     parseDefinition(run.definition,persistedBudgets);
     if(id!==run.id||!run.owner?.agentId||!run.owner.sessionKey||!run.owner.sessionId||!Array.isArray(run.trace)||!run.outputs||!run.requestKey||!run.requestFingerprint||!['queued','running','completed','failed','waiting','review','cancelled','interrupted'].includes(run.state))throw new Error(`Invalid saved run: ${id}`);
+    assertRunMemoryWriteGrant(run);
     if(run.context!==undefined)assertContextState(run.context);
   }
   if(state.retiredAdmissions!==undefined){

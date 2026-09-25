@@ -15,6 +15,22 @@ const validTime=value=>typeof value==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d
 const validKey=value=>typeof value==='string'&&memoryKey.test(value)&&!value.split('.').some(part=>!part||['__proto__','prototype','constructor'].includes(part));
 const isJson=(value,depth=0)=>depth<=100&&(value===null||typeof value==='string'||typeof value==='boolean'||typeof value==='number'&&Number.isFinite(value)||Array.isArray(value)&&value.every(item=>isJson(item,depth+1))||value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype&&Object.entries(value).every(([key,item])=>!['__proto__','constructor','prototype'].includes(key)&&isJson(item,depth+1)));
 const memoryFingerprint=value=>createHash('sha256').update(JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0)):item)).digest('hex');
+const hasMemoryEffects=definition=>Array.isArray(definition?.nodes)&&definition.nodes.some(node=>
+  [node,...(node?.kind==='repeat'&&Array.isArray(node.body)?node.body:[])].some(child=>child?.kind==='memory'&&
+    ['write','update','forget','retention-apply','reset-apply'].includes(child.memory?.operation)));
+function validateRunMemoryWriteGrant(run,id,ownerKey){
+  const grant=run?.memoryWriteGrant;
+  if(grant===undefined)return;
+  const owner=run?.owner,definition=run?.definition;
+  if(!exactFields(grant,['runId','ownerKey','loopId','revision','grantGeneration','policySha256'])||
+    typeof owner?.agentId!=='string'||typeof owner.sessionKey!=='string'||typeof owner.sessionId!=='string'||
+    typeof definition?.id!=='string'||!Number.isSafeInteger(definition.revision)||definition.revision<1||
+    run.id!==id||grant.runId!==id||grant.ownerKey!==ownerKey||grant.ownerKey!==JSON.stringify([owner.agentId,owner.sessionKey,owner.sessionId])||
+    grant.loopId!==definition.id||grant.revision!==definition.revision||run.testMode===true||run.requestFingerprintVersion!==2||!hasMemoryEffects(definition)||
+    typeof grant.grantGeneration!=='string'||grant.grantGeneration.length<1||grant.grantGeneration.length>64||
+    grant.grantGeneration!==(run.grantGeneration??'legacy')||!memoryDigest.test(grant.policySha256)||
+    grant.policySha256!==memoryFingerprint(definition.memoryPolicy??null))throw new Error('Invalid saved run memory write grant.');
+}
 function validateMemoryProvenance(value,mutationId){
   if(!exactFields(value,['at','grantGeneration','loopRevision','mutationId','nodeId','operation','runId'])||!validTime(value.at)||!memoryId.test(value.grantGeneration)||!Number.isSafeInteger(value.loopRevision)||value.loopRevision<1||!memoryId.test(value.mutationId)||mutationId!==undefined&&value.mutationId!==mutationId||!memoryName.test(value.nodeId)||!['write','update','forget','retention','reset'].includes(value.operation)||!memoryId.test(value.runId))throw new Error('Invalid saved memory provenance.');
 }
@@ -80,6 +96,9 @@ if(existsSync(workerData.file)){
       for(const [table,column] of Object.entries({metadata:'value',loops:'record',revisions:'definition',runs:'record',attempts:'evidence',outputs:'value',...schemaVersion>=2?{retired_admissions:'record'}:{},...schemaVersion>=4?{memory_records:'record',memory_receipts:'record'}:{}})){
         if(database.prepare(`SELECT 1 FROM ${table} WHERE NOT json_valid(${column}) LIMIT 1`).get())throw new Error(`Invalid saved JSON in Loops ${table}.`);
       }
+      // Cold runs are not all loaded by readWorkingState(). Reject forged or
+      // inconsistent stored grants before a writable handle or backup opens.
+      for(const row of database.prepare("SELECT id,owner_key,record FROM runs WHERE json_type(record,'$.memoryWriteGrant') IS NOT NULL").iterate())validateRunMemoryWriteGrant(JSON.parse(row.record),row.id,row.owner_key);
       if(!database.prepare("SELECT 1 FROM metadata WHERE key='version'").get()){
         for(const table of Object.keys(tables))if(database.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())throw new Error('Invalid Loops state: saved records have no format version.');
       }
@@ -277,11 +296,13 @@ function write(next,mode='full'){
     for(const {id} of database.prepare('SELECT id FROM loops').all())if(!Object.hasOwn(next.loops,id))database.prepare('DELETE FROM loops WHERE id=?').run(id);
     }
     for(const [id,run] of runOnly?[[next.id,next]]:Object.entries(next.runs)){
+      const owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
+      validateRunMemoryWriteGrant(run,id,owner);
       const json=JSON.stringify(run);
-      const previous=database.prepare("SELECT state, record=? AS unchanged, COALESCE(json_extract(record,'$.requestFingerprintVersion'),1) AS fingerprintVersion FROM runs WHERE id=?").get(json,id);
+      const previous=database.prepare("SELECT state,record,record=? AS unchanged, COALESCE(json_extract(record,'$.requestFingerprintVersion'),1) AS fingerprintVersion FROM runs WHERE id=?").get(json,id);
       if(previous?.unchanged)continue;
       if(previous&&previous.fingerprintVersion!==(run.requestFingerprintVersion??1))throw new Error('Admission fingerprint contract is immutable.');
-      const owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
+      if(previous&&memoryFingerprint(JSON.parse(previous.record).memoryWriteGrant??null)!==memoryFingerprint(run.memoryWriteGrant??null))throw new Error('Run memory write grant is immutable after admission.');
       database.prepare('INSERT INTO runs VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET owner_key=excluded.owner_key,state=excluded.state,created_at=excluded.created_at,record=excluded.record').run(id,owner,run.state,run.createdAt,json);
       const admission=database.prepare('SELECT run_id,fingerprint FROM admissions WHERE request_key=?').get(run.requestKey);
       if(admission&&(admission.run_id!==id||admission.fingerprint!==run.requestFingerprint))throw new Error('Admission identity conflict.');

@@ -43,20 +43,17 @@ async function setup(options?:{root?:string;start?:boolean;toolContext?:Partial<
   // The real published feature SDK registers these adapters. Only host capabilities are faked.
   const complete=vi.fn<OpenClawPluginApi['runtime']['llm']['complete']>(async request=>options?.onComplete?options.onComplete(request):({text:'An actual adapter result.',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}}));
   const config={plugins:{entries:{'loops-poc':{enabled:true}}}},defaultModel=options?.defaultModel??{provider:'fake',model:'test-only'};
-  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>options?.sessionEntry?options.sessionEntry({agentId,sessionKey},sessions):sessions.get(`${agentId}:${sessionKey}`)}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>defaultModel}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
+  const api={id:'loops-poc',config,pluginConfig:options?.maxConcurrentRuns===undefined?{}:{maxConcurrentRuns:options.maxConcurrentRuns},runtime:{config:{current:()=>config},state:{resolveStateDir:()=>root},agent:{session:{resolveStorePath:()=>join(root,'sessions.json'),getSessionEntry:({agentId,sessionKey}:{agentId:string;sessionKey:string})=>options?.sessionEntry?options.sessionEntry({agentId,sessionKey},sessions):sessions.get(`${agentId}:${sessionKey}`),runWithWorkAdmission:async(_params:unknown,run:(signal:AbortSignal)=>Promise<unknown>)=>run(new AbortController().signal)}},llm:{complete},modelConfig:{resolveDefaultModelForAgent:()=>defaultModel}},registerCommand:(c:OpenClawPluginCommandDefinition)=>commands.set(c.name,c),registerSessionAction:(a:PluginSessionActionRegistration)=>actions.set(a.id,a),registerTool:(t:ToolRegistration)=>registered.push(t),registerService:(s:OpenClawPluginService)=>services.push(s)} as unknown as OpenClawPluginApi;
   (options?.plugin??plugin).register(api);
   if(options?.start!==false)for(const s of services){await s.start({} as Parameters<OpenClawPluginService['start']>[0]);shutdowns.push(async()=>{await s.stop?.({} as Parameters<OpenClawPluginService['start']>[0]);});}
-  const toolContext:OpenClawPluginToolContext={agentId,sessionKey:key,sessionId,requesterSenderId:'host-sender',...options?.toolContext};
+  const toolContext:OpenClawPluginToolContext<2>={agentId,sessionKey:key,sessionId,requesterSenderId:'host-sender',assertInvocationCurrent:()=>{},...options?.toolContext};
   const tools=registered.flatMap(t=>{
-    // The 9.6 SDK also permits a v2 factory whose context carries a live
-    // final-effect authority callback. This v1 fixture cannot forge it.
-    if(typeof t==='object'&&'contextVersion' in t)throw new Error('v2 tool factories require host-issued invocation authority');
-    const value=typeof t==='function'?t(toolContext):t;
+    const value=typeof t==='object'&&'contextVersion' in t?t.create(toolContext):typeof t==='function'?t(toolContext):t;
     return Array.isArray(value)?value:value?[value]:[];
   });
   const commandContext={agentId,sessionKey:key,sessionId,senderId:'host-sender',channel:'webchat',isAuthorizedSender:true,gatewayClientScopes:['operator.admin','operator.write'],config} as unknown as PluginCommandContext;
   const action=(id:string,payload:Record<string,unknown>,scopes=['operator.admin','operator.write','operator.read'])=>actions.get(id)!.handler({pluginId:'loops-poc',actionId:id,agentId,sessionKey:key,payload:payload as never,client:{connId:'human',scopes}});
-  return {root,commands,actions,tools,complete,commandContext,action,config,key,sessionId,agentId,services,sessions};
+  return {root,commands,actions,registered,tools,complete,commandContext,action,config,key,sessionId,agentId,services,sessions};
 }
 // Conversation consumers follow the same documented reference protocol. Check
 // each formatted reply, not only the larger feature-SDK envelope.
@@ -85,6 +82,32 @@ function schemaBudget(value:unknown,depth=0,state={nodes:0,maxDepth:0}):typeof s
   return state;
 }
 describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
+  it('registers v2 tools and denies a memory effect after the native invocation loses authority',async()=>{
+    let current=true,entered!:()=>void,finish!:()=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+    const s=await setup({toolContext:{assertInvocationCurrent:()=>{if(!current)throw Error('native invocation closed');}},onComplete:async()=>{
+      entered();await gate;return {text:'not stored',provider:'fake',model:'test-only',agentId:'main',usage:{},execution:{mode:'isolated-agent-runtime',owner:{kind:'harness',id:'fake'}},audit:{caller:{kind:'plugin',id:'loops-poc'}}};
+    }});
+    expect(s.registered.length).toBeGreaterThan(0);
+    expect(s.registered.every(tool=>typeof tool==='object'&&'contextVersion' in tool&&tool.contextVersion===2)).toBe(true);
+    const definition={schemaVersion:3 as const,id:'memory-native-authority',slug:'memory-native-authority',name:'Memory native authority',description:'',revision:0,
+      inputSchema:[],capabilities:['llm'] as const,limits:{maxExecutions:4,maxOutputBytes:4096},layout:{},
+      nodes:[{id:'input',kind:'input' as const,label:'Input'},{id:'think',kind:'inference' as const,label:'Think',prompt:'Produce a value.',output:'text' as const},
+        {id:'remember',kind:'memory' as const,label:'Remember',memory:{operation:'write' as const,key:'notes.fact',value:'{{nodes.think.text}}'}},
+        {id:'return',kind:'return' as const,label:'Return',value:'done'}],
+      edges:[{id:'a',source:'input',target:'think',port:'next' as const},{id:'b',source:'think',target:'remember',port:'next' as const},{id:'c',source:'remember',target:'return',port:'next' as const}],
+      memoryPolicy:{version:1 as const,enabled:true,nodes:{remember:{readPrefixes:[],writeScopes:[{prefix:'notes',schemaId:'fact',schemaVersion:1,retentionDays:30}],forgetPrefixes:[]}}},
+      memorySchemas:[{id:'fact',version:1,schema:{type:'string' as const}}]};
+    expect(await s.action('create',{definition,enabled:true})).toMatchObject({ok:true});
+    const tool=s.tools.find(item=>item.name==='loops_run')!;
+    const pending=tool.execute('native-memory-closed',{slug:definition.slug,input:{},requestId:'native-memory-closed'});
+    await started;current=false;finish();
+    await expect(pending).rejects.toThrow(/native invocation closed/);
+    const listed=await s.action('runs',{}) as {result:Array<{id:string;state:string}>};
+    expect(listed.result).toHaveLength(1);expect(listed.result[0].state).toBe('failed');
+    const read=await s.action('memory',{runId:listed.result[0].id,nodeId:'remember',operation:'consume',key:'notes.fact'});
+    expect(JSON.stringify(read)).toMatch(/not found|NOT_FOUND/i);
+  });
   it('registers compact, strict versioned definition schemas on UI, command, and tool routes',async()=>{
     const s=await setup();
     const definition=(schemaVersion:1|2|3)=>{

@@ -1,4 +1,4 @@
-import {afterEach,describe,expect,it} from 'vitest';
+import {afterEach,describe,expect,it,vi} from 'vitest';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -7,6 +7,7 @@ import {SqliteStorage} from '../src/storage.js';
 import {validateGraph,type Definition} from '../src/graph.js';
 import {duplicateNode,revisionChanges} from '../src/editor-operations.js';
 import type {DataSchema} from '../src/data-schema.js';
+import {createHash} from 'node:crypto';
 
 const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
@@ -31,12 +32,50 @@ describe('saved opt-in memory graph integration',()=>{
     expect(engine.save(actor,write,0,true).issues).toEqual([]);
     const readOnly:Actor={...actor,source:'session-action',canManage:false,human:false};
     const value={count:0,nullable:null,unicode:'private'};
-    const denied=await engine.run(readOnly,write.slug,{value},'memory-read-only-run');
-    expect(denied).toMatchObject({state:'failed'});
-    expect(denied.error).toMatch(/write access|authorized agent tool/i);
+    await expect(engine.run(readOnly,write.slug,{value},'memory-read-only-run')).rejects.toThrow(/write access|authorized agent tool/i);
+    expect(engine.runs(actor)).toEqual([]);
     const authorized=await engine.run(actor,write.slug,{value},'memory-authorized-run');
     expect(authorized).toMatchObject({state:'completed',result:1});
     await engine.close();
+  });
+  it('binds a UI running handle to one exact plugin memory grant and rechecks revocation before its later CAS',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-memory-background-'));roots.push(root);
+    const store=new SqliteStorage(join(root,'loops.sqlite'));
+    let entered!:()=>void,finish!:()=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+    const waitingHost:HostCapabilities={...host,complete:async()=>{entered();await gate;return {text:'continued'};}};
+    const engine=new Engine(store,waitingHost,{replyTimeoutMs:5});
+    const write=definition('write');write.capabilities=['llm'];
+    write.nodes.splice(1,0,{id:'think',kind:'inference',label:'Think',prompt:'Continue.',output:'text'});
+    write.edges=[{id:'a',source:'input',target:'think',port:'next'},{id:'b',source:'think',target:'remember',port:'next'},{id:'c',source:'remember',target:'return',port:'next'}];
+    expect(engine.save(actor,write,0,true).issues).toEqual([]);
+    const ui:Actor={...actor,source:'session-action',human:false,canManage:true};
+    const value={count:0,nullable:null,unicode:'after handle'};
+    const pending=engine.run(ui,write.slug,{value},'memory-ui-background');
+    let handle!:Awaited<typeof pending>;
+    try{
+      await started;handle=await pending;
+      expect(handle.state).toBe('running');
+      expect(handle.memoryWriteGrant).toMatchObject({runId:handle.id,ownerKey:JSON.stringify([actor.agentId,actor.sessionKey,actor.sessionId]),
+        loopId:write.id,revision:1,grantGeneration:handle.grantGeneration});
+    }finally{finish();}
+    await vi.waitFor(()=>expect(engine.status(ui,handle.id).state).toBe('completed'));
+    expect(engine.memoryQuery(ui,{runId:handle.id,nodeId:'remember',operation:'consume',key:'notes.fact'})).toMatchObject({result:{value}});
+    await engine.close();
+
+    const secondRoot=mkdtempSync(join(tmpdir(),'loops-memory-revoked-background-'));roots.push(secondRoot);
+    const secondStore=new SqliteStorage(join(secondRoot,'loops.sqlite'));
+    let enteredSecond!:()=>void,finishSecond!:()=>void;
+    const secondStarted=new Promise<void>(resolve=>{enteredSecond=resolve;}),secondGate=new Promise<void>(resolve=>{finishSecond=resolve;});
+    const secondHost:HostCapabilities={...host,complete:async()=>{enteredSecond();await secondGate;return {text:'continued'};}};
+    const second=new Engine(secondStore,secondHost,{replyTimeoutMs:5});
+    expect(second.save(actor,write,0,true).issues).toEqual([]);
+    const next=second.run(ui,write.slug,{value},'memory-ui-revoked');let nextHandle!:Awaited<typeof next>;
+    try{await secondStarted;nextHandle=await next;second.revoke(actor,write.id);}finally{finishSecond();}
+    await vi.waitFor(()=>expect(second.status(ui,nextHandle.id).state).toBe('failed'));
+    const scope=createHash('sha256').update(JSON.stringify([actor.agentId,actor.sessionKey,actor.sessionId])).digest('hex');
+    expect(secondStore.page(scope,write.id,'notes',undefined,10).items).toEqual([]);
+    await second.close();
   });
   it('copies explicit policy with a duplicated Memory node and reports policy and catalog edits',()=>{
     const write=definition('write'),copied=duplicateNode(write,'remember',()=> 'remember-copy');
