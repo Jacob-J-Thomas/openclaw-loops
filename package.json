@@ -39,7 +39,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "node scripts/license-notices.mjs && node scripts/build.mjs && bash scripts/dev.sh plugins build",
+    "build": "node scripts/license-notices.mjs && node scripts/build.mjs && bash scripts/dev.sh plugins build && node scripts/build.mjs --manifest-only",
     "lint": "eslint src test scripts",
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm test && npm run build",

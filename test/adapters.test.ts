@@ -362,15 +362,33 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     });
     const transport={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>s.action(params.actionId as string,params.payload as Record<string,unknown>)} as FeatureTransport;
     const client=createLoopsClient(transport),invoke=(op:Parameters<typeof client.invoke>[0],input:Record<string,unknown>={}):Promise<unknown>=>surface==='command'?commandJson(s,op,input):surface==='tool'?toolJson(s,op==='load'?'read':op,input,`queue-${++sequence}`):client.invoke(op,input as never);
+    const rows=()=>invoke('runs') as Promise<Array<{id:string}>>;
+    const queuedId=async(excluded:string[],count:number)=>{
+      await vi.waitFor(async()=>expect(await rows()).toHaveLength(count));
+      const item=(await rows()).find(row=>!excluded.includes(row.id));
+      expect(item).toBeDefined();return item!.id;
+    };
     try{
       await invoke('enable',{id:'summarize-text',revision:1,enabled:true});
       const running=invoke('run',{slug:'summarize-text',input:{text:'Active'},requestId:'active'});
+      void running.catch(()=>{});
+      let nativeRunningSettled=false;void running.then(()=>{nativeRunningSettled=true;},()=>{nativeRunningSettled=true;});
       await vi.waitFor(()=>expect(entered).toHaveLength(1));const first=(await invoke('runs') as Array<{id:string}>)[0];
-      const cancelled=await invoke('run',{slug:'summarize-text',input:{text:'Cancel queued'},requestId:'cancel-queued'}) as RunReceipt;
-      const next=await invoke('run',{slug:'summarize-text',input:{text:'Next'},requestId:'next'}) as RunReceipt;
-      expect(cancelled).toMatchObject({state:'queued',executions:0,steps:[]});expect(next).toMatchObject({state:'queued',executions:0,steps:[]});
+      const cancelledPending=invoke('run',{slug:'summarize-text',input:{text:'Cancel queued'},requestId:'cancel-queued'}) as Promise<RunReceipt>;
+      void cancelledPending.catch(()=>{});
+      const cancelled=surface==='ui'?await cancelledPending:await invoke('inspect',{runId:await queuedId([first.id],2)}) as RunReceipt;
+      const nextPending=invoke('run',{slug:'summarize-text',input:{text:'Next'},requestId:'next'}) as Promise<RunReceipt>;
+      void nextPending.catch(()=>{});
+      let nativeNextSettled=false;void nextPending.then(()=>{nativeNextSettled=true;},()=>{nativeNextSettled=true;});
+      const next=surface==='ui'?await nextPending:await invoke('inspect',{runId:await queuedId([first.id,cancelled.id],3)}) as RunReceipt;
+      expect(cancelled).toMatchObject({state:'queued',executions:0});expect(next).toMatchObject({state:'queued',executions:0});
+      if(surface==='ui'){expect(cancelled.steps).toEqual([]);expect(next.steps).toEqual([]);}
+      else{expect((cancelled as unknown as Run).trace).toEqual([]);expect((next as unknown as Run).trace).toEqual([]);}
       expect(await invoke('cancel',{runId:cancelled.id})).toMatchObject({state:'cancelled',executions:0});
-      expect(await invoke('cancel',{runId:first.id})).toMatchObject({state:'cancelled',cleanupPending:true});expect(await running).toMatchObject({id:first.id,state:'cancelled'});
+      if(surface!=='ui')expect(await cancelledPending).toMatchObject({id:cancelled.id,state:'cancelled'});
+      expect(await invoke('cancel',{runId:first.id})).toMatchObject({state:'cancelled',cleanupPending:true});
+      if(surface==='ui')expect(await running).toMatchObject({id:first.id,state:'cancelled'});
+      else{expect(nativeRunningSettled).toBe(false);expect(nativeNextSettled).toBe(false);}
       await vi.waitFor(()=>expect(entered[0]?.aborted).toBe(true));expect(entered).toHaveLength(1);expect(physical).toBe(1);
       expect(await invoke('run',{slug:'summarize-text',input:{text:'Active'},requestId:'active'})).toMatchObject({id:first.id,state:'cancelled',cleanupPending:true});
       const recovery={runId:first.id,mode:'retry-node',requestId:'premature-recovery'};
@@ -380,6 +398,10 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
       expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'queued',executions:0,trace:[]});expect(entered).toHaveLength(1);
       const releasedAt=performance.now();
       release();
+      if(surface!=='ui'){
+        expect(await running).toMatchObject({id:first.id,state:'cancelled'});
+        expect(await nextPending).toMatchObject({id:next.id,state:'completed'});
+      }
       try{
         await vi.waitFor(async()=>expect(await invoke('inspect',{runId:next.id})).toMatchObject({state:'completed',result:'An actual adapter result.'}),{timeout:5000});
       }catch(error){
@@ -1268,7 +1290,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=await setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=await setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_memory','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(s.actions.size).toBe(39);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_memory','loops_output','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(JSON.parse(readFileSync('openclaw.plugin.json','utf8')).contracts.tools).toEqual(s.tools.map(tool=>tool.name).sort());expect(s.actions.size).toBe(39);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
   it('reads an authored SQLite memory value through UI, command and tool adapters',async()=>{
     const s=await setup();
     const {id:_id,revision:_revision,...content}=structuredClone(examples[0]);
