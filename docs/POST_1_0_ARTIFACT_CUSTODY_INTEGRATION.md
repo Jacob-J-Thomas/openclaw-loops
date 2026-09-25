@@ -15,9 +15,15 @@ The core stores immutable base64-encoded binary records, with metadata and bytes
 in the same file. A single artifact or multi-artifact import is staged in a
 private directory and published with one directory rename after file flushes.
 Generated names and no-follow checks on store entries prevent artifact IDs from
-becoming paths. A store-level lock serializes reads, writes, imports, quota
-checks and cleanup across cooperating processes. A leftover lock or staging
-directory requires explicit inspection; neither is silently stolen or deleted.
+becoming paths. Each synchronous custody operation holds `BEGIN EXCLUSIVE` on
+the stable private `.custody-owner.sqlite` file, serializing reads, writes,
+imports, quota checks, recovery inspection and cleanup across processes. The
+OS releases that transaction when its process dies, including after SIGKILL;
+the stable file is never unlinked, so competing recoverers cannot steal one
+another's lock. A remaining legacy `.custody-lock` directory has no verifiable
+owner identity and stays fail-closed for explicit operator inspection. An
+unresolved staging directory likewise requires explicit reconciliation;
+neither it nor uncertain bytes are silently replayed or deleted.
 Commit failure after rename reports an uncertain outcome and preserves the
 published data for readback. Cleanup reports partial deletion and requires a new
 preview if I/O fails.

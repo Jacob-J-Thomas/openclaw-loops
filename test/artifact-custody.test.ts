@@ -39,7 +39,7 @@ describe('artifact custody core',()=>{
   it('rejects over-limit, quota and malformed input without changing committed files',()=>{
     const {directory,store}=setup({maxArtifactBytes:4,maxTotalBytes:4,maxBundleBytes:4,maxArtifacts:1});
     expect(()=>store.put(owner,origin,Uint8Array.from([1,2,3,4,5]),'application/octet-stream')).toThrow(/limit/i);
-    expect(readdirSync(directory)).toEqual([]);
+    expect(readdirSync(directory).filter(name=>name.startsWith('batch-')||name.startsWith('.staging-'))).toEqual([]);
     const ref=store.put(owner,origin,Uint8Array.from([1,2,3]),'application/octet-stream');
     expect(()=>store.put(owner,origin,Uint8Array.from([4,5]),'application/octet-stream')).toThrow(/quota/i);
     expect(()=>store.put(owner,origin,Uint8Array.from([1]),'bad-mime')).toThrow(/media type/i);
@@ -106,26 +106,26 @@ describe('artifact custody core',()=>{
   it('fails closed on another custody owner or unresolved staging instead of bypassing quota checks',()=>{
     const {directory,store}=setup();
     mkdirSync(join(directory,'.custody-lock'));
-    expect(()=>store.put(owner,origin,Uint8Array.from([1]),'application/octet-stream')).toThrow(/owned by another operation/i);
+    expect(()=>store.put(owner,origin,Uint8Array.from([1]),'application/octet-stream')).toThrow(/unresolved legacy lock/i);
     rmSync(join(directory,'.custody-lock'),{recursive:true});
     mkdirSync(join(directory,'.staging-00000000-0000-0000-0000-000000000000'));
     expect(()=>store.put(owner,origin,Uint8Array.from([1]),'application/octet-stream')).toThrow(/uncertain storage outcome/i);
-    expect(readdirSync(directory)).toEqual(['.staging-00000000-0000-0000-0000-000000000000']);
+    expect(readdirSync(directory).filter(name=>name.startsWith('.staging-'))).toEqual(['.staging-00000000-0000-0000-0000-000000000000']);
   });
 
   it('holds one reentrant custody lease across SQL reserve, file publication and SQL status',()=>{
     const {directory,store}=setup(),competing=new ArtifactCustody(directory),events:string[]=[];
     const ref=store.putCoordinated(owner,origin,Uint8Array.from([0,255]),'application/octet-stream',{
       operationId:'operation_one',
-      reserve:refs=>{events.push('reserved');expect(refs).toHaveLength(1);expect(existsSync(join(directory,'.custody-lock'))).toBe(true);
+      reserve:refs=>{events.push('reserved');expect(refs).toHaveLength(1);expect(existsSync(join(directory,'.custody-owner.sqlite'))).toBe(true);
         expect(store.list(owner).total).toBe(0);expect(()=>competing.list(owner)).toThrow(/owned by another operation/i);},
-      published:refs=>{events.push('published');expect(store.list(owner).items).toEqual([...refs]);expect(existsSync(join(directory,'.custody-lock'))).toBe(true);},
+      published:refs=>{events.push('published');expect(store.list(owner).items).toEqual([...refs]);expect(existsSync(join(directory,'.custody-owner.sqlite'))).toBe(true);},
     });
     expect(events).toEqual(['reserved','published']);
     expect(store.list(owner).items).toEqual([ref]);
-    expect(existsSync(join(directory,'.custody-lock'))).toBe(false);
+    expect(existsSync(join(directory,'.custody-owner.sqlite'))).toBe(true);
     expect(()=>store.withCoordinationLease(()=>Promise.resolve('unsafe'))).toThrow(/uncertain storage outcome/i);
-    expect(existsSync(join(directory,'.custody-lock'))).toBe(false);
+    expect(competing.list(owner).items).toEqual([ref]);
   });
 
   it('reserves all imported references before batch publication and preserves ambiguous committed files',()=>{

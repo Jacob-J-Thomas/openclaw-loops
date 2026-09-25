@@ -1,6 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync} from 'node:fs';
+import {chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync} from 'node:fs';
 import {dirname,isAbsolute, join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 import {LoopError, requestError, storageError} from './errors.js';
 
 // This store receives already-authorized bytes. A reference is an identifier,
@@ -24,6 +25,7 @@ const uuid=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const digest=/^[a-f0-9]{64}$/;
 const mime=/^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
 const operationId=/^[a-zA-Z0-9_-]{1,128}$/;
+const leaseNames=new Set(['.custody-owner.sqlite','.custody-owner.sqlite-journal','.custody-owner.sqlite-wal','.custody-owner.sqlite-shm']);
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 const fail=(code:string,message:string,recovery='Inspect the artifact request and committed store before retrying.')=>requestError(message,code,recovery);
 const corrupt=()=>new LoopError({code:'LOOPS_ARTIFACT_CORRUPT',message:'Artifact metadata or content failed validation.',phase:'storage',retryable:false,recovery:'Preserve the plugin-owned artifact store and restore a verified matching backup. Do not overwrite the affected evidence.'});
@@ -79,17 +81,35 @@ export class ArtifactCustody {
       if(!nested.ok)throw nested.error;
       return nested.value;
     }
-    const lock=join(this.root,'.custody-lock');
+    const legacyLock=join(this.root,'.custody-lock'),leasePath=join(this.root,'.custody-owner.sqlite');
     safeDirectory(this.root);
-    try{mkdirSync(lock,{mode:0o700});}catch(error){
-      if(error&&typeof error==='object'&&'code' in error&&error.code==='EEXIST')throw fail('LOOPS_ARTIFACT_BUSY','Artifact custody is owned by another operation.','Wait for the owner to finish; inspect a stale lock before explicit recovery.');
-      throw storageError(error);
+    // The legacy bare directory has no trustworthy owner identity. It must be
+    // inspected explicitly; it cannot be reclaimed safely by a new protocol.
+    if(existsSync(legacyLock))throw fail('LOOPS_ARTIFACT_BUSY','Artifact custody has an unresolved legacy lock.','Inspect the old owner before explicit recovery.');
+    try{const stat=lstatSync(leasePath);if(!stat.isFile()||stat.isSymbolicLink())throw corrupt();}
+    catch(error){if(!(error instanceof Error&&'code' in error&&error.code==='ENOENT'))throw error;}
+    let lease:DatabaseSync|undefined;
+    try{
+      lease=new DatabaseSync(leasePath);
+      const stat=lstatSync(leasePath);if(!stat.isFile()||stat.isSymbolicLink())throw corrupt();
+      chmodSync(leasePath,0o600);
+      lease.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;');
+    }catch(error){
+      // Closing also releases a partially acquired transaction. Never unlink
+      // this stable file: concurrent crash recoverers share its OS lock.
+      try{lease?.close();}catch{throw uncertain(error);}
+      if(error instanceof Error&&'errcode' in error&&error.errcode===5)throw fail('LOOPS_ARTIFACT_BUSY','Artifact custody is owned by another operation.','Wait for its OS-backed lease to be released.');
+      throw error instanceof LoopError?error:storageError(error);
     }
+    if(existsSync(legacyLock)){lease.close();throw fail('LOOPS_ARTIFACT_BUSY','Artifact custody has an unresolved legacy lock.','Inspect the old owner before explicit recovery.');}
     this.leaseDepth=1;
     let outcome:{ok:true;value:T}|{ok:false;error:unknown};
     try{outcome={ok:true,value:action()};}catch(error){outcome={ok:false,error};}
     this.leaseDepth=0;
-    try{rmdirSync(lock);}catch(error){throw uncertain(outcome.ok?error:new AggregateError([outcome.error,error]));}
+    let releaseError:unknown;
+    try{lease.exec('ROLLBACK');}catch(error){releaseError=error;}
+    try{lease.close();}catch(error){releaseError=releaseError?new AggregateError([releaseError,error]):error;}
+    if(releaseError)throw uncertain(outcome.ok?releaseError:new AggregateError([outcome.error,releaseError]));
     if(!outcome.ok)throw outcome.error;
     return outcome.value;
   }
@@ -125,7 +145,7 @@ export class ArtifactCustody {
   private inventory(ignoreStaging=false):Located[]{
     const entries:Located[]=[];
     for(const dir of readdirSync(this.root)){
-      if(dir==='.custody-lock')continue;
+      if(leaseNames.has(dir))continue;
       if(dir.startsWith('.staging-')){if(ignoreStaging)continue;throw uncertain(new Error('Unresolved artifact staging directory.'));}
       if(!/^batch-[a-f0-9-]{36}$/.test(dir)||!uuid.test(dir.slice(6)))throw corrupt();
       const directory=join(this.root,dir);safeDirectory(directory);
