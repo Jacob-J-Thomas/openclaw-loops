@@ -1,5 +1,5 @@
 import type {MessagePort} from 'node:worker_threads';
-import type {Actor,Engine} from './engine.js';
+import type {Actor,Engine,HostCapabilities} from './engine.js';
 import type {InferenceSettings} from './inference-settings.js';
 import {LoopError,type LoopErrorData} from './errors.js';
 
@@ -18,7 +18,7 @@ export type Reply={ok:true;value:unknown}|{ok:false;error:ErrorData};
 export type HostRequest={type:'host';id:string;actorId:string;execution:Pick<Actor,'model'|'reasoning'|'authProfileId'>;method:'checkActor'|'check'|'capabilities'|'complete'|'modelInfo';args:unknown[];port?:MessagePort;signal?:SharedArrayBuffer};
 export type ServiceRequest={type:'invoke';id:string;operation:EngineMethod;actor:ActorRef;args:unknown[]}|{type:'close';id:string;operation:'close'}|{type:'abortActor';actorId:string}|{type:'disposeActor';actorId:string}|{type:'hostResult';id:string;reply:Reply};
 export type ServiceResponse={type:'ready';reply:Reply}|{type:'result';id:string;reply:Reply}|{type:'changed'}|{type:'retain'|'release';actorId:string}|{type:'abortHost';id:string}|HostRequest;
-export type HostCompletionArgs=[prompt:string,timeoutMs:number|undefined,settings:InferenceSettings|undefined];
+export type HostCompletionArgs=[prompt:string,timeoutMs:number|undefined,settings:InferenceSettings|undefined,structured:Parameters<HostCapabilities['complete']>[5]];
 
 // Structured clone drops custom Error properties. Keep only fields used by the
 // existing error classifier; raw causes remain private and are never receipts.

@@ -8,6 +8,9 @@ type Tool = Extract<FeatureInvocationContext,{source:'tool'}>['tool'];
 type Action = Extract<FeatureInvocationContext,{source:'session-action'}>['action'];
 type SessionLookup = OpenClawPluginApi['runtime']['agent']['session']['getSessionEntry'];
 type SessionLookupRequest = Parameters<SessionLookup>[0];
+type ToolRegistration = Parameters<OpenClawPluginApi['registerTool']>[0];
+type V2ToolFactory = Extract<ToolRegistration,{contextVersion:2}>;
+type V2ToolContext = Parameters<V2ToolFactory['create']>[0];
 type Equal<A,B> = [A] extends [B] ? [B] extends [A] ? true : false : false;
 type Assert<T extends true> = T;
 
@@ -27,6 +30,9 @@ export type ActionCurrentIdentity = Assert<Equal<
 >>;
 // The lookup accepts caller-selected keys. This shape alone is not authorization.
 export type SessionLookupRequestShape = Assert<SessionLookupRequest extends {sessionKey:string;agentId?:string;readConsistency?:'latest'} ? true : false>;
+// 9.6 adds an opt-in final-effect guard. Presence in the type surface does not
+// turn a v1 tool context into durable authority or authorize another session.
+export type V2ToolRequiresCurrentInvocation = Assert<Equal<V2ToolContext['assertInvocationCurrent'],()=>void>>;
 
 export function lookupCurrentSession(api:OpenClawPluginApi,context:Command) {
   if (!context.agentId || !context.sessionKey) return undefined;

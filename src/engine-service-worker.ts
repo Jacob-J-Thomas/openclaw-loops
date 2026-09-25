@@ -41,7 +41,7 @@ function actorFor(ref:ActorRef):WorkerActor{
 const host:HostCapabilities={
   check:(actor,capability)=>{syncHost(actor,'check',[capability]);},
   capabilities:(actor,settings)=>syncHost(actor,'capabilities',[settings]) as ReturnType<NonNullable<HostCapabilities['capabilities']>>,
-  complete:(actor,prompt,signal,timeout,settings)=>asyncHost(actor,'complete',[prompt,timeout,settings],signal) as ReturnType<HostCapabilities['complete']>,
+  complete:(actor,prompt,signal,timeout,settings,structured)=>asyncHost(actor,'complete',[prompt,timeout,settings,structured],signal) as ReturnType<HostCapabilities['complete']>,
   modelInfo:actor=>asyncHost(actor,'modelInfo') as ReturnType<HostCapabilities['modelInfo']>,
 };
 let engine:Engine|undefined,storage:SqliteStorage|undefined,closing=false;

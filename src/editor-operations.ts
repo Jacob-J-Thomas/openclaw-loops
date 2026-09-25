@@ -27,8 +27,8 @@ export function copyDefinition(definition:Definition,id:string,templateDefaults?
   return templateDefaults?{...copy,schemaVersion:definition.schemaVersion===3?3:2,limits:{...copy.limits,...templateDefaults}}:copy;
 }
 
-// Timeout authoring requires at least v2's optional limit. A v3 downgrade
-// would make its typed branches, recursive schemas, or context invalid.
+// Timeout authoring requires at least v2. Keep v3's authored schemas,
+// branching, and context rather than downgrading an otherwise valid graph.
 export function withActiveTimeout(definition:Definition,timeoutMs:number|undefined):Definition{
   const limits={...definition.limits};
   if(timeoutMs===undefined)delete limits.timeoutMs;
@@ -36,10 +36,10 @@ export function withActiveTimeout(definition:Definition,timeoutMs:number|undefin
   return {...definition,schemaVersion:definition.schemaVersion===1?2:definition.schemaVersion,limits};
 }
 
-// These nodes carry v3-only evidence and context contracts. Palette additions
-// keep the editable draft on a schema version that can represent the new node.
+// These nodes carry v3-only contracts. Palette additions must upgrade the
+// editable draft before it can be saved or published.
 export function schemaVersionForAddedNode(version:Definition['schemaVersion'],kind:GraphNode['kind']):Definition['schemaVersion']{
-  return kind==='evaluate'||kind==='gate'||kind==='context-lifecycle'||kind==='memory'||kind==='artifact'?3:version;
+  return kind==='evaluate'||kind==='gate'||kind==='switch'||kind==='context-lifecycle'||kind==='memory'||kind==='artifact'?3:version;
 }
 
 export function autoLayout(definition:Definition):Definition{

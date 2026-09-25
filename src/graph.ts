@@ -17,11 +17,11 @@ export {isJson} from './node-values.js';
 export {NodeSchema,PredicateSchema,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 const obj={additionalProperties:false} as const;
 const flatInputFieldSchema=Type.Object({name:key,label:Type.String({minLength:1,maxLength:100}),type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json')]),required:Type.Boolean()},obj);
-const artifactInputFieldSchema=Type.Object({...flatInputFieldSchema.properties,type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json'),Type.Literal('artifact')]),schema:Type.Optional(Type.Unknown())},obj);
+const recursiveInputFieldSchema=Type.Object({...flatInputFieldSchema.properties,type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json'),Type.Literal('artifact')]),schema:Type.Optional(Type.Unknown())},obj);
 export const DefinitionFields = {
   schemaVersion:Type.Union([Type.Literal(1),Type.Literal(2),Type.Literal(3)]), id:key, slug:key, name:Type.String({minLength:1,maxLength:100}),
   description:Type.String({maxLength:500}), revision:Type.Integer({minimum:0}),
-  inputSchema:Type.Array(artifactInputFieldSchema),
+  inputSchema:Type.Array(recursiveInputFieldSchema),
   nodes:Type.Array(ContextNodeSchema,{minItems:2}),
   edges:Type.Array(Type.Object({id:key,source:key,target:key,port:Type.Union([Type.Literal('next'),Type.Literal('true'),Type.Literal('false'),Type.Literal('approve'),Type.Literal('reject')])},obj)),
   layout:Type.Record(key,Type.Object({x:Type.Number({minimum:-10000,maximum:10000}),y:Type.Number({minimum:-10000,maximum:10000})},obj)),
@@ -85,6 +85,7 @@ export function validateGraph(d:Definition):Issue[] {
     if(node.kind==='artifact'&&(node.outputSchema!==undefined||node.context?.patch.mode!=='omit'&&node.context?.patch!==undefined))error('Artifact effects cannot have an output schema or context patch after the durable publication.',node.id);
     if(node.outputSchema!==undefined)for(const diagnostic of dataSchemaIssues(node.outputSchema))error(`Output schema ${diagnostic.instancePath||'/'}: ${diagnostic.message}`,node.id);
     if(node.kind==='inference'&&node.outputSchema!==undefined&&node.output!=='json')error('Inference output schemas require JSON output mode.',node.id);
+    if(node.kind==='inference'&&node.structuredGeneration==='native'&&(node.output!=='json'||node.outputSchema===undefined))error('Native structured generation requires JSON output and a valid output schema.',node.id);
     if(node.kind==='context-lifecycle'){try{validateLifecycle(node.lifecycle);}catch(cause){error(cause instanceof Error?cause.message:'Invalid lifecycle configuration.',node.id);}if(['summarize','compact'].includes(node.lifecycle.operation)&&!d.capabilities.includes('llm'))error('Declare the llm capability for lifecycle completion.',node.id);}
     const context=node.context;
     if(!context)continue;

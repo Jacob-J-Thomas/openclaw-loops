@@ -1,6 +1,6 @@
 # Native full-agent qualification (#242)
 
-This Bolt qualifies the public external-plugin `runtime.agent.runEmbeddedAgent` route on OpenClaw 2026.9.5. It does not implement an Agent node, accept X08/X10, or claim provider/account parity. Source compilation and pure harness tests are separate from a real installed-host receipt. Until the lead executes the verifier successfully, native agent execution remains unproven by this candidate.
+This Bolt's public external-plugin `runtime.agent.runEmbeddedAgent` route was originally qualified on OpenClaw 2026.9.5. The verifier now requires the 2026.9.6 host under [Bolt #273](https://github.com/Jacob-J-Thomas/openclaw-loops/issues/273); a fresh installed-host receipt is required for that version. It does not implement an Agent node, accept X08/X10, or claim provider/account parity. Source compilation and pure harness tests are separate from real installed-host evidence.
 
 ## Lead-controlled execution
 

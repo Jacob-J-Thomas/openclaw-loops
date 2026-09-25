@@ -1,6 +1,6 @@
-import React,{useState} from 'react';
-import type {GraphNode,Json} from './graph.js';
-import {literalValue,type NodeValue} from './node-values.js';
+import React from 'react';
+import type {Definition,GraphNode,Json} from './graph.js';
+import {literalValue} from './node-values.js';
 import {ValueEditor} from './value-editor.js';
 import type {SwitchNode,TypedCondition,TypedConditionNode,TypedOperator} from './branching.js';
 
@@ -28,12 +28,18 @@ export function TypedConditionEditor({value,onChange}:{value:TypedCondition;onCh
     <p className="lp-hint">Exists and missing distinguish an absent binding from a JSON null. Other operators report unavailable or wrong-type values as execution errors.</p>
   </div>;
 }
-function CaseValue({value,onChange,label}:{value:Json;onChange:(value:Json)=>void;label:string}){
-  const [error,setError]=useState('');
-  const apply=(next:NodeValue)=>{if(typeof next==='string'){setError('Switch cases are typed literals; use the literal JSON editor.');return;}try{onChange(literalValue(next.literalJson));setError('');}catch(cause){setError(cause instanceof Error?cause.message:'Invalid JSON literal.');}};
-  return <><ValueEditor label={label} value={{literalJson:JSON.stringify(value)}} literals onChange={apply}/>{error&&<p className="lp-node-error" role="alert">{error}</p>}</>;
+export type CaseDrafts=Map<string,string>;
+export const caseDraftKey=(definitionId:string,nodeId:string,caseId:string)=>JSON.stringify([definitionId,nodeId,caseId]);
+export function hasActiveCaseDrafts(definition:Definition|null,drafts:CaseDrafts){
+  return !!definition&&definition.nodes.some(node=>node.kind==='switch'&&node.cases.some(item=>drafts.has(caseDraftKey(definition.id,node.id,item.id))));
 }
-export function SwitchEditor({node,onChange,fresh}:{node:SwitchNode;onChange:(node:SwitchNode)=>void;fresh:(prefix:string)=>string}){
+function CaseValue({value,onChange,label,draftKey,drafts,onDraftValidityChange}:{value:Json;onChange:(value:Json)=>void;label:string;draftKey:string;drafts:CaseDrafts;onDraftValidityChange:()=>void}){
+  const raw=drafts.get(draftKey),source=raw??JSON.stringify(value);
+  let error:string|undefined;if(raw!==undefined)try{literalValue(raw);}catch(cause){error=cause instanceof Error?cause.message:'Invalid JSON literal.';}
+  const apply=(next:string)=>{try{const parsed=literalValue(next);drafts.delete(draftKey);onDraftValidityChange();onChange(parsed);}catch{drafts.set(draftKey,next);onDraftValidityChange();}};
+  return <><Field label={`${label} JSON`}><textarea rows={3} value={source} aria-invalid={Boolean(error)} onChange={event=>apply(event.target.value)}/></Field>{error&&<><p className="lp-node-error" role="alert">{error}</p><button type="button" className="lp-text-button" onClick={()=>{drafts.delete(draftKey);onDraftValidityChange();}}>Discard invalid case text</button></>}</>;
+}
+export function SwitchEditor({node,onChange,fresh,definitionId,drafts,onDraftValidityChange}:{node:SwitchNode;onChange:(node:SwitchNode)=>void;fresh:(prefix:string)=>string;definitionId:string;drafts:CaseDrafts;onDraftValidityChange:()=>void}){
   const updateCase=(index:number,patch:Partial<SwitchNode['cases'][number]>)=>onChange({...node,cases:node.cases.map((item,current)=>current===index?{...item,...patch}:item)});
   return <div className="lp-switch-editor">
     <ValueEditor label="Switch value or binding" value={node.value} literals onChange={value=>onChange({...node,value})}/>
@@ -42,7 +48,7 @@ export function SwitchEditor({node,onChange,fresh}:{node:SwitchNode;onChange:(no
     {node.cases.map((item,index)=><section className="lp-switch-case" key={item.id} aria-label={'Switch case '+(index+1)}>
       <Field label={'Case '+(index+1)+' label'}><input value={item.label} onChange={event=>updateCase(index,{label:event.target.value})}/></Field>
       <div className="lp-mono lp-muted">Stable port ID · {item.id}</div>
-      <CaseValue label={'Case '+(index+1)+' typed value'} value={item.value} onChange={value=>updateCase(index,{value})}/>
+      <CaseValue label={'Case '+(index+1)+' typed value'} value={item.value} draftKey={caseDraftKey(definitionId,node.id,item.id)} drafts={drafts} onDraftValidityChange={onDraftValidityChange} onChange={value=>updateCase(index,{value})}/>
       <button className="lp-text-button" onClick={()=>onChange({...node,cases:node.cases.filter((_,current)=>current!==index)})}>Remove case</button>
     </section>)}
     <button onClick={()=>onChange({...node,cases:[...node.cases,{id:fresh('case'),label:'New case',value:null}]})}>+ Add case</button>

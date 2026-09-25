@@ -15,7 +15,7 @@ import {type DocumentLinks, type MaintenancePolicy, type TransportRelease, empty
 import {fingerprintJson} from './fingerprint.js';
 import {applyContextPatch,assertContextState,contextBytes,initialContext,projectContext,type ContextState} from './context.js';
 import {EvaluationFailure,commitEvaluation,evaluate as evaluateDeterministically,isCommittedEvaluation,type Evaluator} from './evaluation.js';
-import {validateDataValue} from './data-schema.js';
+import {validateDataValue,type DataSchema} from './data-schema.js';
 import {lifecycleMutation,lifecycleValue,selected,selectedIfPresent,selectRetainedSource,validateLifecycle,type ContextLifecycle} from './context-lifecycle.js';
 import {MemoryCore,type MemoryInvocation,type MemoryRemovalPlan,type MemoryRepository} from './memory-core.js';
 import {memorySchemaValidator,assertNoMemorySchemaRedefinition} from './memory-definition.js';
@@ -24,9 +24,11 @@ import {ArtifactCustody,type ArtifactBundle,type ArtifactOwner,type ArtifactRefe
 import {decodeFileInput,decodeExternalFiles} from './artifact-node.js';
 import type {SqliteStorage} from './storage.js';
 
+
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
-export type NodeEvidence={nodeId:string;kind:string;iteration?:number;memoryMutationId?:string;artifactOperationId?:string;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;route?:{port:string;caseId?:string;observed:string;truncated?:boolean}};
+export type RouteTrace={port:string;caseId?:string;observed:string;truncated?:boolean;available?:true}|{port:string;caseId?:string;available:false};
+export type NodeEvidence={nodeId:string;kind:string;iteration?:number;memoryMutationId?:string;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:RouteTrace};
 export type ExecutionSettings=Pick<Actor,'model'|'reasoning'|'authProfileId'>&{agentModels?:Record<string,string>};
 export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;context?:ContextState;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
@@ -58,7 +60,7 @@ export class FileStorage implements Storage{
 }
 export interface HostCapabilities{
   check(actor:Actor,capability:Capability):void;
-  complete(actor:Actor,prompt:string,signal:AbortSignal,timeoutMs:number|undefined,settings?:InferenceSettings):Promise<Json>;
+  complete(actor:Actor,prompt:string,signal:AbortSignal,timeoutMs:number|undefined,settings?:InferenceSettings,structured?:{nodeId:string;schema:DataSchema}):Promise<Json>;
   capabilities?(actor:Actor,settings?:InferenceSettings):InferenceCapabilities;
   modelInfo(actor:Actor):Promise<Json>;
 }
@@ -502,8 +504,10 @@ export class Engine{
   }
   private pinAgentModels(actor:Actor,definition:Definition){
     const agentModels:Record<string,string>=Object.create(null);
-    for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)]))if(node.kind==='inference'&&node.agentId&&!node.model&&node.agentId!==actor.agentId&&!Object.hasOwn(agentModels,node.agentId)){
-      const model=this.capabilities(actor,{agentId:node.agentId}).model;if(model)agentModels[node.agentId]=model;
+    for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)])){
+      const settings=node.kind==='inference'?node:node.kind==='context-lifecycle'&&['summarize','compact'].includes(node.lifecycle.operation)?node.lifecycle:undefined;
+      if(!settings?.agentId||settings.model||settings.agentId===actor.agentId||Object.hasOwn(agentModels,settings.agentId))continue;
+      const model=this.capabilities(actor,{agentId:settings.agentId}).model;if(model)agentModels[settings.agentId]=model;
     }
     return agentModels;
   }
@@ -544,11 +548,25 @@ export class Engine{
     r.state='running';delete r.pending;r.outputs[node.id]=output;if(context)r.context=context;if(review)r.review=review;r.cursor=cursor;this.persist(r);return true;
   }
   private checkpoint(r:Run){r.updatedAt=now();this.persist(r);}
-  private validateOutput(node:GraphNode,output:Json):Json{
+  private rejectedResponse(r:Run,nodeId:string,text:string){
+    const evidence=r.trace.findLast(item=>item.nodeId===nodeId&&item.state==='running');if(!evidence)return;
+    const bytes=Buffer.byteLength(text,'utf8');let preview='',previewBytes=0;
+    for(const character of text){const size=Buffer.byteLength(character,'utf8');if(previewBytes+size>1024)break;preview+=character;previewBytes+=size;}
+    evidence.rejectedResponse={preview,bytes,sha256:hash(text),truncated:previewBytes<bytes};
+  }
+  private validateOutput(node:GraphNode,output:Json,r?:Run):Json{
     if(node.outputSchema===undefined)return output;
     const value=node.kind==='inference'&&node.output==='json'&&output&&typeof output==='object'&&!Array.isArray(output)?output.value:output;
     const diagnostics=validateDataValue(node.outputSchema,value);
-    if(diagnostics.length)throw executionError(`Output ${node.id}${diagnostics[0].instancePath||'/'}: ${diagnostics[0].message}`,'LOOPS_OUTPUT_SCHEMA_INVALID','Correct the node output schema or the producing node, then explicitly retry the failed node.');
+    if(diagnostics.length){
+      if(r&&node.kind==='inference'&&typeof (output as {text?:unknown}).text==='string')this.rejectedResponse(r,node.id,(output as {text:string}).text);
+      const diagnostic=diagnostics[0];let actualValue:unknown=value;
+      for(const segment of diagnostic.instancePath.split('/').slice(1).map(part=>part.replaceAll('~1','/').replaceAll('~0','~'))){
+        actualValue=actualValue&&typeof actualValue==='object'&&Object.hasOwn(actualValue,segment)?(actualValue as Record<string,unknown>)[segment]:undefined;
+      }
+      const actual=actualValue===null?'null':Array.isArray(actualValue)?'array':typeof actualValue;
+      throw executionError(`Output ${node.id}${diagnostic.instancePath||'/'}: ${diagnostic.message} (${diagnostic.keyword}; actual ${actual}).`,'LOOPS_OUTPUT_SCHEMA_INVALID','Correct the node output schema or the producing node, then explicitly retry the failed node.');
+    }
     return output;
   }
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}
@@ -600,7 +618,7 @@ export class Engine{
         const next=applyContextPatch(r.context,node.id,node.context,output,value=>bind(value,contextFor(node)),hash);
         assertContextState(next);assertBudget(next,r.outputs);r.context=next;
       };
-      const validateOutput=(node:GraphNode,output:Json):Json=>this.validateOutput(node,output);
+      const validateOutput=(node:GraphNode,output:Json):Json=>this.validateOutput(node,output,r);
       const execution:NodeExecutionContext={
         signal,input:r.input,bind:(template,node=n)=>bind(template,contextFor(node)),resolve:(template,node=n)=>resolveBinding(template,contextFor(node)),compare:(predicate,node=n,iteration)=>compare(predicate,contextFor(node,iteration),r.definition.schemaVersion),
         infer:(node,iteration)=>this.infer(actor,r,node,contextFor(node,iteration),signal),evaluate:async(value:Json,evaluator:Evaluator,nodeId:string)=>{try{return commitEvaluation(await evaluateDeterministically(value,evaluator,{signal,...this.options.evaluationWorkerUrl?{workerUrl:this.options.evaluationWorkerUrl}:{}}),nodeId);}catch(error){throw error instanceof EvaluationFailure?evaluationExecutionError(error.detail.code):error;}},modelInfo:()=>this.host.modelInfo(actor),readOutput:id=>{const output=r.outputs[id];if(n.kind==='gate'&&!isCommittedEvaluation(output,n.evaluationId))throw executionError('Evidence gate requires an intact committed evaluation result from this run.','LOOPS_EVIDENCE_UNAVAILABLE');return output;},
@@ -616,7 +634,7 @@ export class Engine{
       if(n.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(n.memory.operation))pendingMemoryMutationId=evidence.memoryMutationId;
       if(n.kind==='artifact'&&evidence.artifactOperationId&&this.artifactPort().artifactOperation(r.owner,evidence.artifactOperationId))pendingArtifactOperationId=evidence.artifactOperationId;
       const result=outcome.park?outcome.output:validateOutput(n,outcome.output),port=outcome.port??'next';
-      if(outcome.route){const observed=textPage(display(outcome.route.observed),0,512);evidence.route={port:outcome.route.port,...outcome.route.caseId?{caseId:outcome.route.caseId}:{},observed:observed.text,...observed.nextOffset===null?{}:{truncated:true}};}
+      if(outcome.route){const route=outcome.route,identity={port:route.port,...route.caseId?{caseId:route.caseId}:{}};if(route.available){const observed=textPage(display(route.observed),0,512);evidence.route={...identity,available:true,observed:observed.text,...observed.nextOffset===null?{}:{truncated:true}};}else evidence.route={...identity,available:false};}
       if(outcome.park){
         this.finish(r,evidence,outcome.park.value);r.state=outcome.park.state;r.pending=evidence.output;evidence.state=outcome.park.state;
         // v1/v2 runs historically expose the parked node's empty output. v3
@@ -676,17 +694,19 @@ export class Engine{
     const entries=[...Object.values(record?.revisions??{}).flatMap(revision=>revision.memorySchemas??[]),...(r.definition.memorySchemas??[])];
     return new MemoryCore(repository as MemoryRepository,memorySchemaValidator(entries));
   }
-  private memoryInvocation(actor:Actor,r:Run,nodeId:string,signal?:AbortSignal):MemoryInvocation{
+  private memoryInvocation(actor:Actor,r:Run,nodeId:string,signal?:AbortSignal,effect=false):MemoryInvocation{
     if(r.testMode)throw requestError('Memory requires a saved, enabled loop revision; unpublished tests cannot read or write memory.','LOOPS_MEMORY_DISABLED');
-    return {owner:r.owner,loopId:r.definition.id,loopRevision:r.definition.revision,runId:r.id,nodeId,grantGeneration:r.grantGeneration??legacyGrantGeneration,policy:r.definition.memoryPolicy,assertAuthorized:()=>this.allowedRun(actor,r),...signal?{signal}:{}};
+    return {owner:r.owner,loopId:r.definition.id,loopRevision:r.definition.revision,runId:r.id,nodeId,grantGeneration:r.grantGeneration??legacyGrantGeneration,policy:r.definition.memoryPolicy,assertAuthorized:()=>{this.allowedRun(actor,r);if(effect)this.ensureAuthor(actor);},...signal?{signal}:{}};
   }
   private memoryNode(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'memory'}>,ctx:BindingContext,signal:AbortSignal,mutationId:string):Json{
     const config=node.memory,key=bind(config.key,ctx);
+    const effect=['write','update','forget','retention-apply','reset-apply'].includes(config.operation);
+    if(effect)this.ensureAuthor(actor);
     if(typeof key!=='string')throw requestError('Memory key must resolve to text.','LOOPS_MEMORY_KEY');
     const value=config.value===undefined?undefined:bind(config.value,ctx);
     const version=config.expectedVersion===undefined?undefined:bind(config.expectedVersion,ctx);
     const plan=config.plan===undefined?undefined:bind(config.plan,ctx);
-    return this.memoryCall(this.memoryCore(r),this.memoryInvocation(actor,r,node.id,signal),config.operation,key,mutationId,value,version,plan,config.limit);
+    return this.memoryCall(this.memoryCore(r),this.memoryInvocation(actor,r,node.id,signal,effect),config.operation,key,mutationId,value,version,plan,config.limit);
   }
   private memoryCall(core:MemoryCore,inv:MemoryInvocation,operation:MemoryNodeOperation,key:string,mutationId:string,value?:Json,version?:Json,plan?:Json,limit?:number):Json{
     switch(operation){
@@ -783,16 +803,16 @@ export class Engine{
     const deadline=this.deadlines.get(r.id);
     const remaining=deadline===undefined?undefined:deadline-Date.now();
     if(remaining!==undefined&&remaining<=0)throw executionError('Execution timeout exceeded.','LOOPS_TIMEOUT');
-    const completion=this.host.complete(actor,prompt,signal,remaining,settings);
+    const completion=this.host.complete(actor,prompt,signal,remaining,settings,n.structuredGeneration==='native'&&n.outputSchema?{nodeId:n.id,schema:n.outputSchema}:undefined);
     this.trackPhysical(r.id,completion);
     let stop:()=>void=()=>{};
     const aborted=new Promise<never>((_,reject)=>{const abort=()=>reject(signal.reason??new Error('Aborted'));stop=()=>signal.removeEventListener('abort',abort);if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});});
     const response=await Promise.race([completion,aborted]).finally(stop) as Record<string,Json>;
-    if(typeof response.text!=='string')throw executionError('Host completion returned no text.','LOOPS_OUTPUT_INVALID');
+    if(typeof response.text!=='string')throw executionError('Host completion returned no text at JSON Pointer / (expected text response).','LOOPS_OUTPUT_INVALID');
     if(n.output==='json'){
-      let value:unknown;try{value=JSON.parse(response.text);}catch{throw executionError('The model output is not valid JSON.','LOOPS_OUTPUT_INVALID');}
-      if(r.definition.schemaVersion===1&&(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>16||Object.values(value).some(v=>v!==null&&!['string','boolean','number'].includes(typeof v))))throw executionError('Structured output must be a flat JSON object with at most 16 scalar fields.','LOOPS_OUTPUT_INVALID');
-      if(!isJson(value))throw executionError('Structured output must contain valid JSON without unsafe keys or excessive nesting.','LOOPS_OUTPUT_INVALID');
+      let value:unknown;try{value=JSON.parse(response.text);}catch{this.rejectedResponse(r,n.id,response.text);throw executionError('The model output at JSON Pointer / is not valid JSON (expected one JSON value).','LOOPS_OUTPUT_INVALID');}
+      if(r.definition.schemaVersion===1&&(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>16||Object.values(value).some(v=>v!==null&&!['string','boolean','number'].includes(typeof v)))){this.rejectedResponse(r,n.id,response.text);throw executionError('Structured output at JSON Pointer / must be a flat object with at most 16 scalar fields.','LOOPS_OUTPUT_INVALID');}
+      if(!isJson(value)){this.rejectedResponse(r,n.id,response.text);throw executionError('Structured output at JSON Pointer / must be valid JSON without unsafe keys or excessive nesting.','LOOPS_OUTPUT_INVALID');}
       response.value=value;
     }
     return response;

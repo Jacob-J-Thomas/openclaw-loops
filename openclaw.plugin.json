@@ -56,12 +56,11 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/307907fc4b88c4b7deaa8283902686db43fd4b7f76f1107b20c71653feddfc67/index.js"
+    "entry": "dist/control-ui/6cec2a62b72615a46605d14ada2e2ca048290a6118ef7be5c1a64c061d1a37f7/index.js"
   },
   "contracts": {
     "tools": [
       "loops_archive",
-      "loops_artifact",
       "loops_browse",
       "loops_cancel",
       "loops_capabilities",
@@ -81,7 +80,6 @@
       "loops_list",
       "loops_read",
       "loops_maintenance",
-      "loops_memory",
       "loops_output",
       "loops_publish",
       "loops_recover",

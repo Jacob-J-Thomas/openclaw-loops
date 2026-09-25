@@ -25,6 +25,19 @@ function definition(operation:'write'|'consume',revision=0):Definition{
 }
 
 describe('saved opt-in memory graph integration',()=>{
+  it('denies a read-only session action before an authored Memory effect commits',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-memory-read-only-'));roots.push(root);
+    const engine=new Engine(new SqliteStorage(join(root,'loops.sqlite')),host),write=definition('write');
+    expect(engine.save(actor,write,0,true).issues).toEqual([]);
+    const readOnly:Actor={...actor,source:'session-action',canManage:false,human:false};
+    const value={count:0,nullable:null,unicode:'private'};
+    const denied=await engine.run(readOnly,write.slug,{value},'memory-read-only-run');
+    expect(denied).toMatchObject({state:'failed'});
+    expect(denied.error).toMatch(/write access|authorized agent tool/i);
+    const authorized=await engine.run(actor,write.slug,{value},'memory-authorized-run');
+    expect(authorized).toMatchObject({state:'completed',result:1});
+    await engine.close();
+  });
   it('copies explicit policy with a duplicated Memory node and reports policy and catalog edits',()=>{
     const write=definition('write'),copied=duplicateNode(write,'remember',()=> 'remember-copy');
     expect(copied.memoryPolicy).toMatchObject({enabled:true,nodes:{'remember-copy':write.memoryPolicy?.enabled?write.memoryPolicy.nodes.remember:undefined}});
