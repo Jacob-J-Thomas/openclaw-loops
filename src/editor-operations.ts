@@ -27,6 +27,12 @@ export function copyDefinition(definition:Definition,id:string,templateDefaults?
   return templateDefaults?{...copy,schemaVersion:definition.schemaVersion===3?3:2,limits:{...copy.limits,...templateDefaults}}:copy;
 }
 
+// Evaluate and Evidence gate carry the v3-only evidence and context contract.
+// Adding either from the palette must keep the editable draft schema-valid.
+export function schemaVersionForAddedNode(version:Definition['schemaVersion'],kind:GraphNode['kind']):Definition['schemaVersion']{
+  return kind==='evaluate'||kind==='gate'?3:version;
+}
+
 export function autoLayout(definition:Definition):Definition{
   const depth=new Map<string,number>();
   for(const node of definition.nodes)depth.set(node.id,0);
@@ -69,6 +75,7 @@ export function bindingChoices(definition:Definition,consumer:GraphNode):string[
 export function insertBinding(node:GraphNode,binding:string):GraphNode{
   const replaceOrAppend=(value:unknown)=>typeof value==='string'?value+binding:binding;
   if(node.kind==='inference')return {...node,prompt:replaceOrAppend(node.prompt)};
+  if(node.kind==='evaluate')return {...node,value:replaceOrAppend(node.value)};
   if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
   if(node.kind==='return')return {...node,value:binding};
   if(node.kind==='condition')return {...node,predicate:{...node.predicate,left:binding}};

@@ -3,6 +3,7 @@ import {AdvancedSchema,ReasoningSchema} from './inference-settings.js';
 import {executionError} from './errors.js';
 import {NodeValueSchema,type NodeValue,type Json} from './node-values.js';
 import {ContextNodeConfigSchema,type ContextNodeConfig} from './context.js';
+import {type EvaluationResult,type Evaluator} from './evaluation.js';
 export type {Json,NodeValue} from './node-values.js';
 
 export const identifierSchema=Type.String({pattern:'^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$'});
@@ -32,15 +33,24 @@ return {
 const schemas=schemasForValues(NodeValueSchema),legacySchemas=schemasForValues(text);
 export const NodeSchema=Type.Union([schemas.input,schemas.inference,schemas.action,schemas.condition,schemas.repeat,schemas.wait,schemas.review,schemas.return,schemas.fail]);
 export const LegacyNodeSchema=Type.Union([legacySchemas.input,legacySchemas.inference,legacySchemas.action,legacySchemas.condition,legacySchemas.repeat,legacySchemas.wait,legacySchemas.review,legacySchemas.return,legacySchemas.fail]);
-export type GraphNode=Static<typeof NodeSchema>&{context?:ContextNodeConfig};
+type BaseGraphNode=Static<typeof NodeSchema>&{context?:ContextNodeConfig};
+type EvaluateNode={id:string;kind:'evaluate';label:string;value:NodeValue;evaluator:Evaluator;context?:ContextNodeConfig};
+type GateNode={id:string;kind:'gate';label:string;evaluationId:string;context?:ContextNodeConfig};
+export type GraphNode=BaseGraphNode|EvaluateNode|GateNode;
 const contextExtension=Type.Object({context:Type.Optional(ContextNodeConfigSchema)},strict);
 const withContext=(schema:{properties:Record<string,TSchema>})=>Type.Object({...schema.properties,...contextExtension.properties},strict);
+const evaluatorSchema=Type.Union([
+  Type.Object({kind:Type.Literal('json-schema-2020'),version:Type.String({minLength:1,maxLength:256}),schema:Type.Unknown()},strict),
+  Type.Object({kind:Type.Literal('predicate'),version:Type.String({minLength:1,maxLength:256}),predicate:Type.Object({op:Type.Union([Type.Literal('equals'),Type.Literal('not-equals'),Type.Literal('contains'),Type.Literal('less-than'),Type.Literal('greater-than'),Type.Literal('truthy')]),expected:Type.Optional(Type.Unknown())},strict)},strict),
+]);
+const evaluateSchema=Type.Object({...identity,kind:Type.Literal('evaluate'),value:NodeValueSchema,evaluator:evaluatorSchema,...contextExtension.properties},strict);
+const gateSchema=Type.Object({...identity,kind:Type.Literal('gate'),evaluationId:identifierSchema,...contextExtension.properties},strict);
 const contextSchemas={
   input:withContext(schemas.input),inference:withContext(schemas.inference),action:withContext(schemas.action),condition:withContext(schemas.condition),
   wait:withContext(schemas.wait),review:withContext(schemas.review),return:withContext(schemas.return),fail:withContext(schemas.fail),
 };
 const contextRepeatSchema=Type.Object({...identity,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:Type.Tuple([contextSchemas.inference,contextSchemas.condition]),...contextExtension.properties},strict);
-export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail]));
+export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail,evaluateSchema,gateSchema]));
 export type Predicate=Static<typeof PredicateSchema>;
 export type NodeKind=GraphNode['kind'];
 export type NodeOf<K extends NodeKind>=Extract<GraphNode,{kind:K}>;
@@ -53,7 +63,9 @@ export type NodeExecutionContext={
   bind:(template:NodeValue,node?:GraphNode)=>Json;
   compare:(predicate:Predicate,node?:GraphNode,iteration?:number)=>boolean;
   infer:(node:NodeOf<'inference'>,iteration?:number)=>Promise<Json>;
+  evaluate:(value:Json,evaluator:Evaluator,nodeId:string)=>Promise<EvaluationResult>;
   modelInfo:()=>Promise<Json>;
+  readOutput:(nodeId:string)=>Json|undefined;
   requireCapability:(capability:NodeCapability)=>void;
   checkAuthority:()=>void;
   begin:(node:GraphNode,iteration:number)=>number;
@@ -62,7 +74,7 @@ export type NodeExecutionContext={
   commitContext:(node:GraphNode,output:Json)=>void;
 };
 type NodeContract<K extends NodeKind>={
-  schema:(typeof schemas)[K];
+  schema:TSchema;
   ports:readonly string[];
   capabilities:readonly NodeCapability[];
   terminal:boolean;
@@ -95,6 +107,12 @@ export const nodeContracts:{[K in NodeKind]:NodeContract<K>}={
   condition:{schema:schemas.condition,ports:['true','false'],capabilities:[],terminal:false,bindings:node=>predicateBindings(node.predicate),outputFields:()=>['value'],
     execute:(node,context)=>{const passed=context.compare(node.predicate,node);return {output:{value:passed},port:passed?'true':'false'};},
     editor:{title:'Condition',icon:'IF',description:node=>node.predicate.op,create:id=>({id,kind:'condition',label:'Condition',predicate:{left:'{{input.text}}',op:'equals',right:'yes'}})}},
+  evaluate:{schema:evaluateSchema,ports:['next'],capabilities:[],terminal:false,bindings:node=>[{text:node.value}],outputFields:()=>['passed','errors','evidenceDigest','evaluatorDigest','inputDigest','evaluatorVersion','evaluatorNodeId'],
+    execute:async(node,context)=>({output:await context.evaluate(context.bind(node.value,node),node.evaluator,node.id)}),
+    editor:{title:'Evaluate',icon:'✓?',description:()=> 'Deterministic schema or predicate evidence',create:id=>({id,kind:'evaluate',label:'Evaluate',value:'{{input.text}}',evaluator:{kind:'json-schema-2020',version:'2020-12',schema:{type:'string'}}})}},
+  gate:{schema:gateSchema,ports:['true','false'],capabilities:[],terminal:false,bindings:noBindings,outputFields:()=>['passed','evidenceDigest','evaluatorNodeId'],
+    execute:(node,context)=>{const evidence=context.readOutput(node.evaluationId);if(!evidence||typeof evidence!=='object'||Array.isArray(evidence)||evidence.kind!=='loops-evaluation'||evidence.evaluatorNodeId!==node.evaluationId||typeof evidence.passed!=='boolean'||typeof evidence.evidenceDigest!=='string')throw executionError('Evidence gate requires committed evaluation evidence from this run.','LOOPS_EVIDENCE_UNAVAILABLE');return {output:{passed:evidence.passed,evidenceDigest:evidence.evidenceDigest,evaluatorNodeId:evidence.evaluatorNodeId},port:evidence.passed?'true':'false'};},
+    editor:{title:'Evidence gate',icon:'⇄',description:()=> 'Route committed evaluation evidence',create:id=>({id,kind:'gate',label:'Evidence gate',evaluationId:'evaluate'})}},
   repeat:{schema:schemas.repeat,ports:['next'],capabilities:['llm'],terminal:false,
     bindings:node=>[{text:node.body[0].prompt},...predicateBindings(node.body[1].predicate).map(binding=>({...binding,prior:[node.body[0].id]}))],
     outputFields:node=>[...inferenceFields(node.body[0]),'succeeded','iterations','exhausted'],

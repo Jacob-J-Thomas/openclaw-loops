@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {autoLayout} from '../src/editor-operations.js';
+import {autoLayout,schemaVersionForAddedNode} from '../src/editor-operations.js';
 import {parseDefinition,validateGraph,type Definition} from '../src/graph.js';
 
 const branching:Definition={schemaVersion:2,id:'arrange-fixture',slug:'arrange-fixture',name:'Arrange fixture',description:'Preserve authored graph data.',revision:3,inputSchema:[{name:'route',label:'Route',type:'boolean',required:true}],capabilities:['model-info'],nodes:[
@@ -24,6 +24,13 @@ const chain=(schemaVersion:1|2,count:number,edges=true):Definition=>{
 };
 
 describe('automatic graph layout',()=>{
+  it('promotes palette additions for v3-only evaluation evidence without changing other node families',()=>{
+    expect(schemaVersionForAddedNode(2,'evaluate')).toBe(3);
+    expect(schemaVersionForAddedNode(2,'gate')).toBe(3);
+    expect(schemaVersionForAddedNode(1,'evaluate')).toBe(3);
+    expect(schemaVersionForAddedNode(3,'return')).toBe(3);
+    expect(schemaVersionForAddedNode(2,'inference')).toBe(2);
+  });
   it('arranges a valid branching join without changing its authored graph or settings',()=>{
     expect(validateGraph(branching)).toEqual([]);
     const before=structuredClone(branching),arranged=autoLayout(branching);

@@ -71,12 +71,20 @@ describe('explicit JSON node values',()=>{
     if(node.kind==='inference')node.prompt=literal('No inputs');
     if(node.kind==='condition')node.predicate={left:literal(0),op:'equals',right:literal(0)};
     if(node.kind==='repeat'){node.body[0].prompt=literal('No inputs');node.body[1].predicate={left:'{{repeat.index}}',op:'greater-than',right:literal(5)};}
+    if(node.kind==='evaluate'){node.value=literal(0);d.schemaVersion=3;}
     if(node.kind==='wait')node.message=literal(null);if(node.kind==='review')node.proposal=literal(false);if(node.kind==='return')node.value=literal(0);
     d.nodes=kind==='input'?[node,d.nodes[1]]:nodeContract(kind).terminal?[d.nodes[0],node]:[d.nodes[0],node,d.nodes[1]];
     d.edges=[...kind==='input'?[]:[{id:'entry',source:'input',target:'node',port:'next' as const}],...nodeContract(kind).ports.map(port=>({id:`node-${port}`,source:'node',target:'result',port:port as Definition['edges'][number]['port']}))];d.capabilities=requiredCapabilities(d.nodes);
+    if(node.kind==='gate'){
+      d.schemaVersion=3;
+      const evaluation=nodeContract('evaluate').editor.create('evaluate',prefix=>`${prefix}-evidence`,6);evaluation.value=literal(0);
+      d.nodes=[d.nodes[0],evaluation,node,d.nodes.at(-1)!];node.evaluationId=evaluation.id;
+      d.edges=[{id:'entry',source:'input',target:evaluation.id,port:'next'},{id:'evidence',source:evaluation.id,target:'node',port:'next'},...nodeContract(node.kind).ports.map(port=>({id:`node-${port}`,source:'node',target:'result',port:port as Definition['edges'][number]['port']}))];
+      d.capabilities=requiredCapabilities(d.nodes);
+    }
     expect(validateGraph(parseDefinition(d))).toEqual([]);
     if(d.edges.some(edge=>edge.source==='node')){const missing=structuredClone(d);missing.edges=missing.edges.filter(edge=>edge.id!==d.edges.find(edge=>edge.source==='node')!.id);expect(validateGraph(missing).some(issue=>issue.message.startsWith('Connect exactly one'))).toBe(true);}
-    d.edges.push({id:'illegal',source:'node',target:nodeContract(kind).terminal?'node':'result',port:kind==='condition'?'next':'false'});expect(validateGraph(d)).toContainEqual({nodeId:'node',message:'Unexpected outgoing port.'});
+    d.edges.push({id:'illegal',source:'node',target:nodeContract(kind).terminal?'node':'result',port:kind==='condition'||kind==='gate'?'next':'false'});expect(validateGraph(d)).toContainEqual({nodeId:'node',message:'Unexpected outgoing port.'});
   });
   it('duplicates Repeat template references without rewriting JSON literals and compares format changes',()=>{
     const d=structuredClone(examples[1]);d.schemaVersion=2;const source=d.nodes.find(n=>n.kind==='repeat')!;if(source.kind!=='repeat')throw Error();

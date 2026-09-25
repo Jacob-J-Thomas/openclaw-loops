@@ -194,6 +194,26 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const inspection=await s.action('inspect',{runId:admission.result.id});expect(inspection).toMatchObject({ok:true,result:{state:'completed',result:0,context:{version:1,value:{input:{},answer:0},journal:[{nodeId:'input',baseVersion:0,version:1,mode:'replace',target:'/answer',source:{kind:'literal',value:{literalJson:'0'}},valueBytes:1}]}}});
     const journal=(inspection as {result:Run}).result.context!.journal;expect(journal[0]!.valueSha256).toMatch(/^[a-f0-9]{64}$/);expect(s.complete).not.toHaveBeenCalled();
   });
+  it('executes authored v3 Evaluate → Evidence gate terminal paths through UI, command, and tool adapters',async()=>{
+    const s=await setup();
+    const definition:import('../src/graph.js').Definition={schemaVersion:3,id:'adapter-evidence-gate',slug:'adapter-evidence-gate',name:'Adapter evidence gate',description:'Deterministic adapter fixture.',revision:0,inputSchema:[{name:'count',label:'Count',type:'number',required:true}],capabilities:[],limits:{maxExecutions:8,maxOutputBytes:131072},nodes:[
+      {id:'input',kind:'input',label:'Input'},
+      {id:'evaluate',kind:'evaluate',label:'Evaluate',value:'{{input.count}}',evaluator:{kind:'json-schema-2020',version:'2020-12',schema:{type:'number',minimum:0}},context:{version:1,projection:{mode:'omit'},patch:{mode:'replace',target:'/evaluation',source:{kind:'output'}}}},
+      {id:'gate',kind:'gate',label:'Gate',evaluationId:'evaluate',context:{version:1,projection:{mode:'omit'},patch:{mode:'omit'}}},
+      {id:'accepted',kind:'return',label:'Accepted',value:'accepted'},
+      {id:'rejected',kind:'return',label:'Rejected',value:'rejected'},
+    ],edges:[
+      {id:'input-evaluate',source:'input',target:'evaluate',port:'next'},
+      {id:'evaluate-gate',source:'evaluate',target:'gate',port:'next'},
+      {id:'gate-accepted',source:'gate',target:'accepted',port:'true'},
+      {id:'gate-rejected',source:'gate',target:'rejected',port:'false'},
+    ],layout:{input:{x:0,y:0},evaluate:{x:200,y:0},gate:{x:400,y:0},accepted:{x:600,y:-80},rejected:{x:600,y:80}}};
+    const ui=await s.action('test',{definition,input:{count:0},requestId:'evidence-ui'});expect(ui).toMatchObject({ok:true,result:{state:'completed',result:'accepted'}});
+    const command=await commandJson(s,'test',{definition,input:{count:-1},requestId:'evidence-command'}) as {id:string;state:string;result:string};expect(command).toMatchObject({state:'completed',result:'rejected'});
+    const tool=await toolJson(s,'test',{definition,input:{count:2}},'evidence-tool') as {id:string;state:string;result:string};expect(tool).toMatchObject({state:'completed',result:'accepted'});
+    const inspected=await s.action('inspect',{runId:tool.id});expect(inspected).toMatchObject({ok:true,result:{state:'completed',outputs:{evaluate:{kind:'loops-evaluation',passed:true,evaluatorNodeId:'evaluate'},gate:{passed:true,evaluatorNodeId:'evaluate'}},context:{journal:[{nodeId:'evaluate',target:'/evaluation'}]}}});
+    expect(s.complete).not.toHaveBeenCalled();
+  },30_000);
   it('protects actual parked, queued and settling run snapshots after reader release, including a parked restart',async()=>{
     let s=await setup(),release!:()=>void;const entered:AbortSignal[]=[];
     const implementation=s.complete.getMockImplementation()!;
