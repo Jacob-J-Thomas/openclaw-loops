@@ -56,7 +56,7 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/3dfc32516c10142c82b65edbeeec1e8ce01ab7a27b1133c1d2a21c10bbb5b889/index.js"
+    "entry": "dist/control-ui/d958f93e59f60a765877269afb1189cf126e619060d9d94209ed20c45aef43ca/index.js"
   },
   "contracts": {
     "tools": [
@@ -80,6 +80,7 @@
       "loops_list",
       "loops_read",
       "loops_maintenance",
+      "loops_memory",
       "loops_output",
       "loops_publish",
       "loops_recover",

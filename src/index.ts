@@ -56,6 +56,7 @@ const plugin=defineFeaturePlugin({contract:wireContract,name:'Loops',description
     }catch(error){return {text:`Loops ${formatFailure(errorDetail(error,{phase:'operation'}))}`};}}
   });
   const handlers:FeatureHandlers<typeof contract> = {
+    memory:(p,c)=>service().invoke('memoryQuery',bridge.actor(c),p),
     browse:(p,c)=>service().invoke('browse',bridge.actor(c),p),
     retention:(p,c)=>service().invoke('retention',bridge.actor(c),p.policy,p.applyPlanId),
     maintenance:(p,c)=>service().invoke('maintenance',bridge.actor(c),p.policy,p.applyPlanId),

@@ -14,6 +14,7 @@ export function documentLinks(operation: string, input: Record<string, unknown>,
   };
   const value = record(result) ? result : {};
   if (['run', 'test', 'retry', 'status', 'resume', 'cancel', 'inspect', 'review'].includes(operation)) add('runs', value.id);
+  else if(operation==='memory')add('runs',input.runId);
   else if (operation === 'output') add('runs', input.runId);
   else if (operation === 'runs') rows(result, 'runs');
   else if (operation === 'history') rows(value.items, 'runs');
