@@ -442,6 +442,79 @@ describe('SQLite artifact reservations, run links and cleanup leases',()=>{
     expect(storage.artifactCleanupLease(owner)?.token).toBe(token);
   });
 
+  it('cold-starts into cleanup recovery without rewriting interrupted runs under a retained GC lease',async()=>{
+    const {root,file,storage,custody}=setup();
+    const completed=await run(storage),running=await run(storage),queued=await run(storage);
+    const ref=custody.put(owner,{runId:completed.id,nodeId:'file_output'},Uint8Array.of(7),'application/octet-stream',0,at);
+    publish(storage,ref);storage.writeRun({...completed,outputs:{...completed.outputs,file_output:ref}});
+    storage.writeRun({...running,state:'running',cleanupPending:true});
+    storage.writeRun({...queued,state:'queued'});
+    const policy={olderThanDays:0},plan=custody.previewCleanupCoordinated(owner,policy,()=>storage.artifactProtectedSnapshot(owner),at+1000);
+    expect(plan.candidates.map(item=>item.id)).toEqual([ref.id]);
+    const token=randomUUID();storage.artifactBeginCleanup(owner,token,plan);
+    await storage.close();
+    const reopened=new SqliteStorage(file);disposals.push(()=>reopened.close());
+    const complete=vi.fn(async()=>({text:'fixture'}));
+    const engine=new Engine(reopened,{check:()=>{},modelInfo:async()=>({}),complete},{artifactDirectory:join(root,'artifacts')});
+    expect(engine.artifact(actor,{action:'cleanup-inspect'})).toMatchObject({result:{lease:{token}}});
+    expect(()=>engine.artifact(actor,{action:'list'})).toThrowError(expect.objectContaining({code:'LOOPS_ARTIFACT_RECOVERY_REQUIRED',detail:expect.objectContaining({recovery:expect.stringMatching(/cleanup-inspect.*cleanup-recover/i)})}));
+    await expect(engine.test(actor,examples[0],{text:'blocked'},randomUUID())).rejects.toThrowError(expect.objectContaining({code:'LOOPS_ARTIFACT_RECOVERY_REQUIRED'}));
+    expect(complete).not.toHaveBeenCalled();
+    expect((await engine.close())).toBeUndefined();
+    const reopenedAgain=new SqliteStorage(file);disposals.push(()=>reopenedAgain.close());
+    expect(reopenedAgain.artifactCleanupLease(owner)?.token).toBe(token);
+    const retryComplete=vi.fn(async()=>({text:'fixture'}));
+    const recovery=new Engine(reopenedAgain,{check:()=>{},modelInfo:async()=>({}),complete:retryComplete},{artifactDirectory:join(root,'artifacts')});
+    const fault=new DatabaseSync(file);
+    fault.exec("CREATE TRIGGER reject_recovery_update BEFORE UPDATE ON runs WHEN NEW.state='interrupted' BEGIN SELECT RAISE(ABORT,'blocked recovery normalization'); END;");fault.close();
+    const recoveryId=randomUUID();
+    expect(()=>recovery.artifact(actor,{action:'cleanup-recover',recoveryId})).toThrowError(expect.objectContaining({code:'LOOPS_STORAGE_CONFLICT'}));
+    expect(reopenedAgain.artifactRecoveryReceipt(owner,recoveryId)).toMatchObject({targetType:'cleanup',receipt:{outcome:'aborted'}});
+    expect(reopenedAgain.artifactCleanupLease(owner)).toBeUndefined();
+    await expect(recovery.test(actor,examples[0],{text:'still blocked'},randomUUID())).rejects.toThrowError(expect.objectContaining({code:'LOOPS_ARTIFACT_RECOVERY_REQUIRED'}));
+    expect(retryComplete).not.toHaveBeenCalled();
+    const clear=new DatabaseSync(file);clear.exec('DROP TRIGGER reject_recovery_update');clear.close();
+    expect(recovery.artifact(actor,{action:'cleanup-recover',recoveryId})).toMatchObject({result:{recoveryReceipt:{receipt:{outcome:'aborted'}}}});
+    expect(reopenedAgain.readRun(running.id,JSON.stringify([owner.agentId,owner.sessionKey,owner.sessionId]))).toMatchObject({state:'interrupted',uncertainty:expect.any(String)});
+    expect(reopenedAgain.readRun(queued.id,JSON.stringify([owner.agentId,owner.sessionKey,owner.sessionId]))).toMatchObject({state:'interrupted'});
+    await recovery.close();
+  });
+
+  it('closes an in-process engine with a retained cleanup lease without falsely acknowledging its write',async()=>{
+    const {root,file,storage,custody}=setup();
+    const engine=new Engine(storage,{check:()=>{},modelInfo:async()=>({}),complete:async()=>({text:'fixture'})},{artifactDirectory:join(root,'artifacts')});
+    const operationId='close-with-gc';
+    const ref=custody.put(owner,{runId:`capture-${operationId}`,nodeId:'upload'},Uint8Array.of(1),'application/octet-stream',0,at);
+    storage.artifactReserve(owner,[ref],operationId);storage.artifactPublished(owner,[ref],operationId);
+    storage.artifactReleaseUnlinked(owner,ref.id,operationId);
+    const plan=custody.previewCleanupCoordinated(owner,{olderThanDays:0},()=>storage.artifactProtectedSnapshot(owner),at+1000);
+    const token=randomUUID();storage.artifactBeginCleanup(owner,token,plan);
+    await expect(engine.close()).resolves.toBeUndefined();
+    const reopened=new SqliteStorage(file);disposals.push(()=>reopened.close());
+    expect(reopened.artifactCleanupLease(owner)?.token).toBe(token);
+  });
+
+  it('keeps every other owner fenced while one owner has a retained cleanup lease',async()=>{
+    const {root,file,storage,custody}=setup();
+    const operationId='first-owner';
+    const ref=custody.put(owner,{runId:`capture-${operationId}`,nodeId:'upload'},Uint8Array.of(3),'application/octet-stream',0,at);
+    storage.artifactReserve(owner,[ref],operationId);storage.artifactPublished(owner,[ref],operationId);
+    storage.artifactReleaseUnlinked(owner,ref.id,operationId);
+    const plan=custody.previewCleanupCoordinated(owner,{olderThanDays:0},()=>storage.artifactProtectedSnapshot(owner),at+1000);
+    expect(plan.candidates.map(item=>item.id)).toEqual([ref.id]);
+    storage.artifactBeginCleanup(owner,randomUUID(),plan);
+    await storage.close();
+    const reopened=new SqliteStorage(file);disposals.push(()=>reopened.close());
+    const engine=new Engine(reopened,{check:()=>{},modelInfo:async()=>({}),complete:async()=>({text:'fixture'})},{artifactDirectory:join(root,'artifacts')});
+    const otherActor={...actor,sessionId:foreign.sessionId};
+    expect(engine.artifact(otherActor,{action:'cleanup-inspect'})).toMatchObject({result:{lease:null}});
+    expect(()=>engine.artifact(otherActor,{action:'list'})).toThrowError(expect.objectContaining({code:'LOOPS_ARTIFACT_RECOVERY_REQUIRED'}));
+    expect(engine.artifact(actor,{action:'cleanup-recover',recoveryId:randomUUID()})).toMatchObject({result:{outcome:'aborted'}});
+    expect(reopened.artifactHasGcLease()).toBe(false);
+    expect(engine.artifact(actor,{action:'list'})).toMatchObject({action:'list'});
+    await engine.close();
+  });
+
   it('retires completed links only after confirmed filesystem cleanup and retains the receipt',async()=>{
     const {file,storage,custody}=setup(),saved=await run(storage);
     const ref=custody.put(owner,{runId:saved.id,nodeId:'file_output'},Uint8Array.of(7,8),'application/octet-stream',0,at);

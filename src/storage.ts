@@ -173,6 +173,7 @@ export class SqliteStorage implements Storage,IndexedRunStorage,MemoryRepository
     return new Set(snapshot.protectedIds);
   }
   artifactCleanupLease(owner:ArtifactOwner){return this.call<{token:string;startedAt:string;plan:CleanupPlan}|undefined>('artifact-gc-lease',{owner});}
+  artifactHasGcLease(){return this.call<boolean>('artifact-has-gc-lease');}
   artifactRecoveryInventory(owner:ArtifactOwner,cursor='',limit=50){return this.call<{items:ArtifactReference[];nextCursor:string|null}>('artifact-recovery-inventory',{owner,cursor,limit});}
   artifactRecoveryReceipt(owner:ArtifactOwner,recoveryId:string){return this.call<{targetType:'publication'|'cleanup';targetId:string;receipt:unknown}|undefined>('artifact-recovery-receipt',{owner,recoveryId});}
   artifactCleanupReceipt(owner:ArtifactOwner,token:string){return this.call<(CleanupPlan&{removed:number})|undefined>('artifact-gc-receipt',{owner,token});}

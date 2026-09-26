@@ -88,6 +88,7 @@ export class Engine{
   private custody?:ArtifactCustody;
   private cachedState!:State;
   private storageFailure?:LoopError;
+  private artifactRecoveryOnly=false;
   private get state(){if(this.storageFailure)throw this.storageFailure;return this.cachedState;}
   private set state(value:State){this.cachedState=value;}
   readonly budgets:Budgets;
@@ -100,6 +101,14 @@ export class Engine{
   constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>;documentDirectory?:string;artifactDirectory?:string;retainActor?:(actor:Actor)=>void;releaseActor?:(actor:Actor)=>void;evaluationWorkerUrl?:URL}={}){
     this.budgets=resolveBudgets(options.budgets);
     this.state=(storage.indexed?storage.indexed.readWorkingState():storage.read())??{version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}};
+    this.normalizeRestartState();
+    // A retained cleanup lease fences all reference writes, including the
+    // constructor's ordinary state normalization. Keep execution unavailable
+    // until an authorized recovery clears every lease and this state commits.
+    this.artifactRecoveryOnly=!!(storage as Partial<SqliteStorage>).artifactHasGcLease?.();
+    if(!this.artifactRecoveryOnly)this.persist();
+  }
+  private normalizeRestartState(){
     if(this.state.version!==1)throw new Error('Unsupported state store version.');
     for(const record of Object.values(this.state.loops)){
       record.revisions??={[record.definition.revision]:structuredClone(record.definition)};
@@ -125,11 +134,35 @@ export class Engine{
         for(const t of r.trace)if(t.state==='running'){t.state='interrupted';t.endedAt=now();}
       }
     }
-    this.persist();
   }
-  private persist(run?:Run){
+  private artifactRecoveryRequired(){
+    return requestError('Artifact cleanup recovery is required before Loops can resume.','LOOPS_ARTIFACT_RECOVERY_REQUIRED',
+      'Use loops_artifact cleanup-inspect, then cleanup-recover with a unique recoveryId for each retained owner lease. Normal operations resume only after interrupted-run state is durably committed.');
+  }
+  assertArtifactRecoveryOperation(operation:string,args:readonly unknown[]){
+    if(!this.artifactRecoveryOnly)return;
+    if(operation==='artifact'&&args[0]&&typeof args[0]==='object'&&
+      ['cleanup-inspect','cleanup-recover'].includes((args[0] as ArtifactRequest).action))return;
+    // Public recovery results can be wrapped and paged by the normal document
+    // transport without touching run, graph, memory or artifact references.
+    if(['documentWrap','documentSnapshot','documentRead','documentAcquire','documentRelease'].includes(operation))return;
+    throw this.artifactRecoveryRequired();
+  }
+  private finishArtifactStartupRecovery(){
+    if(!this.artifactRecoveryOnly||(this.storage as Partial<SqliteStorage>).artifactHasGcLease?.())return;
+    const committed=this.storage.indexed?this.storage.indexed.readWorkingState():this.storage.read();
+    if(!committed)throw new Error('The committed state is unavailable during artifact cleanup recovery.');
+    this.state=committed;
+    this.normalizeRestartState();
+    // A failed commit leaves recovery-only mode in place. A repeated explicit
+    // cleanup-recover reads its immutable receipt and retries this checkpoint.
+    this.persist(undefined,true);
+    this.artifactRecoveryOnly=false;
+  }
+  private persist(run?:Run,recoveryCommit=false){
     if(this.storageFailure)throw this.storageFailure;
     try{
+      if(this.artifactRecoveryOnly&&!recoveryCommit)throw this.artifactRecoveryRequired();
       if(run&&this.storage.indexed)this.storage.indexed.writeRun(run);
       else if(run&&this.storage.writeRun)this.storage.writeRun(run);
       else if(this.storage.indexed)this.storage.indexed.writeWorkingState(this.state);
@@ -219,6 +252,7 @@ export class Engine{
     throw requestError('Artifact inventory exceeded its bounded recovery page limit.','LOOPS_ARTIFACT_RECOVERY');
   }
   artifact(actor:Actor,input:ArtifactRequest){
+    this.assertArtifactRecoveryOperation('artifact',[input]);
     this.ensureAuthor(actor);
     const owner:ArtifactOwner={agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId};
     const store=this.artifactStore(),port=this.artifactPort();
@@ -302,7 +336,15 @@ export class Engine{
       case 'cleanup-inspect':case 'cleanup-recover':{
         result=store.withCoordinationLease(()=>{
           actor.check();const lease=port.artifactCleanupLease(owner);
-          if(!lease)return {lease:null};
+          if(!lease){
+            if(input.action==='cleanup-recover'&&this.artifactRecoveryOnly){
+              if(!input.recoveryId)throw requestError('Explicit cleanup recovery requires a unique recoveryId.','LOOPS_ARTIFACT_RECOVERY');
+              const receipt=port.artifactRecoveryReceipt(owner,input.recoveryId);
+              if(!receipt||receipt.targetType!=='cleanup')throw requestError('No owner-scoped cleanup recovery receipt matches recoveryId.','LOOPS_ARTIFACT_RECOVERY');
+              return {lease:null,recoveryReceipt:receipt};
+            }
+            return {lease:null};
+          }
           const inventory=this.cleanupReadback(owner);
           if(input.action==='cleanup-inspect')return {lease,...inventory};
           if(!input.recoveryId)throw requestError('Explicit cleanup recovery requires a unique recoveryId.','LOOPS_ARTIFACT_RECOVERY');
@@ -310,6 +352,7 @@ export class Engine{
         });break;
       }
     }
+    if(input.action==='cleanup-recover')this.finishArtifactStartupRecovery();
     actor.check();return {kind:'loops-artifact-result' as const,action:input.action,result};
   }
   documentWrap(actor:Actor,value:unknown,links:DocumentLinks={...emptyDocumentLinks(),unknown:true}){return this.documentStore(actor).wrap(actor,value,links);}
@@ -575,7 +618,7 @@ export class Engine{
     this.closing=true;this.clearQueued();
     try{
       for(const [id,active] of this.active){const r=this.cachedState.runs[id];r.state='interrupted';r.error='Gateway service stopped during execution.';r.uncertainty='A dispatched host call may have completed.';active.controller.abort(new Error(r.error));}
-      if(!this.storageFailure)this.persist();
+      if(!this.storageFailure&&!this.artifactRecoveryOnly&&!(this.storage as Partial<SqliteStorage>).artifactHasGcLease?.())this.persist();
     }finally{
       await Promise.allSettled([...this.active.values()].map(x=>x.promise));
       await this.storage.close?.();

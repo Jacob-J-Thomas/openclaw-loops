@@ -411,6 +411,7 @@ parentPort.on('message',async message=>{
       case 'artifact-snapshot':result=artifacts.snapshot(message.payload);break;
       case 'artifact-begin-gc':result=artifacts.beginGc(message.payload);break;
       case 'artifact-gc-lease':result=artifacts.gcLease(message.payload);break;
+      case 'artifact-has-gc-lease':result=!!database.prepare('SELECT 1 FROM artifact_gc LIMIT 1').get();break;
       case 'artifact-recovery-inventory':result=artifacts.recoveryInventory(message.payload);break;
       case 'artifact-recovery-receipt':result=artifacts.recoveryReceipt(message.payload);break;
       case 'artifact-gc-receipt':result=artifacts.gcReceipt(message.payload);break;

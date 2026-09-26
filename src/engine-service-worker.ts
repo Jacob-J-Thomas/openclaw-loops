@@ -72,6 +72,7 @@ if(engine)port.on('message',(message:ServiceRequest)=>{
       }
       if(closing)throw requestError('Loops service is stopping.','LOOPS_SERVICE_UNAVAILABLE');
       if(!engineMethods.includes(message.operation))throw requestError('Unknown service operation.');
+      engine!.assertArtifactRecoveryOperation(message.operation,message.args);
       const method=engine![message.operation] as unknown as (actor:Actor,...args:unknown[])=>unknown;
       const result=method.call(engine,actorFor(message.actor),...message.args);
       // Snapshot synchronous results before another message can mutate state.
