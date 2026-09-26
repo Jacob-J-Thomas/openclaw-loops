@@ -28,6 +28,7 @@ const routeTrace=Type.Union([
 const summary=Type.Object({id:text,slug:text,name:text,revision:Type.Integer({minimum:0})},strict);
 const issues=Type.Array(Type.Object({nodeId:Type.Optional(text),message:text},strict));
 const grantGeneration=Type.String({minLength:1,maxLength:64});
+const memoryWriteGrant=Type.Object({runId:text,ownerKey:text,loopId:text,revision:integer,grantGeneration,policySha256:text},strict);
 const runRow=Type.Object({id:text,slug:text,revision:integer,state:runState,createdAt:text,updatedAt:text,executions:integer},strict);
 const loopRecord=Type.Object({
   definition:DefinitionSchema,enabledRevision:nullableRevision,grants:DefinitionFields.capabilities,
@@ -50,8 +51,9 @@ const runData=Type.Object({
   executionSettings:Type.Optional(Type.Object({model:Type.Optional(text),reasoning:Type.Optional(text),authProfileId:Type.Optional(text),agentModels:Type.Optional(Type.Record(text,text))},strict)),
   cleanupPending:Type.Optional(Type.Boolean()),parentRunId:Type.Optional(text),testMode:Type.Optional(Type.Boolean()),context:Type.Optional(ContextStateSchema),
   grantGeneration:Type.Optional(grantGeneration),
+  memoryWriteGrant:Type.Optional(memoryWriteGrant),
   definition:DefinitionSchema,input:Type.Record(text,Type.Unknown()),state:runState,cursor:text,outputs:Type.Record(text,Type.Unknown()),
-  trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text),rejectedResponse:Type.Optional(Type.Object({preview:text,bytes:integer,sha256:text,truncated:Type.Boolean()},strict)),route:Type.Optional(routeTrace)},strict)),
+  trace:Type.Array(Type.Object({nodeId:text,kind:text,iteration:Type.Optional(integer),memoryMutationId:Type.Optional(text),state:attemptState,startedAt:text,endedAt:Type.Optional(text),output:Type.Optional(text),error:Type.Optional(text),rejectedResponse:Type.Optional(Type.Object({preview:text,bytes:integer,sha256:text,truncated:Type.Boolean()},strict)),route:Type.Optional(routeTrace)},strict)),
   executions:integer,activeMs:Type.Number({minimum:0}),createdAt:text,updatedAt:text,result:Type.Optional(Type.Unknown()),error:Type.Optional(text),
   errorDetail:Type.Optional(error),pending:Type.Optional(text),uncertainty:Type.Optional(text),review:Type.Optional(review),
 },strict);

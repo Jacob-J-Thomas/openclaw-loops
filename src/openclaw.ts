@@ -13,17 +13,24 @@ import type {RunReceipt} from './receipts.js';
 export function createBridge(api:OpenClawPluginApi){
   const current=()=>api.runtime.config.current() as typeof api.config;
   const configuredModel=(agentId:string)=>{const model=api.runtime.modelConfig.resolveDefaultModelForAgent({cfg:current(),agentId});return `${model.provider}/${model.model}`;};
-  const checkActor=(agentId:string,sessionKey:string,sessionId:string)=>{
+  const sessionStore=(agentId:string)=>api.runtime.agent.session.resolveStorePath(current().session?.store,{agentId});
+  // Work admissions need the host's session lifecycle, not just its stable ID.
+  // Keep this internal: historical reads remain owned by agent/key/session ID.
+  const workLifecycle=new WeakMap<Actor,string|undefined>();
+  const checkActor=(agentId:string,sessionKey:string,sessionId:string,storePath:string,assertCurrent?:()=>void)=>{
     const cfg=current();if(cfg.plugins?.enabled===false||cfg.plugins?.entries?.['loops-poc']?.enabled===false)throw requestError('Loops plugin is disabled.','LOOPS_DISABLED');
-    const entry=api.runtime.agent.session.getSessionEntry({agentId,sessionKey,readConsistency:'latest'});
+    if(sessionStore(agentId)!==storePath)throw requestError('Conversation store changed.','LOOPS_SESSION_CHANGED');
+    const entry=api.runtime.agent.session.getSessionEntry({storePath,agentId,sessionKey,readConsistency:'latest'});
     if(!entry||entry.sessionId!==sessionId)throw requestError('Conversation identity changed or is unavailable.','LOOPS_SESSION_CHANGED','Select a currently authorized conversation before trying again.');
+    assertCurrent?.();
   };
   function actor(context:FeatureInvocationContext):Actor{
     const c=context.source==='command'?context.command:context.source==='tool'?context.tool:context.action;
     const {agentId,sessionKey}=c;if(!agentId||!sessionKey)throw requestError('A host-resolved agent and chat session are required.','LOOPS_SESSION_REQUIRED');
     if(context.source==='command'&&!context.command.isAuthorizedSender)throw requestError('Unauthorized command caller.','HOST_POLICY_DENIED');
     if(context.source==='session-action'&&!context.action.client?.scopes.some(s=>s==='operator.admin'||s==='operator.write'||s==='operator.read'))throw requestError('Authenticated operator session required.','HOST_POLICY_DENIED');
-    const entry=api.runtime.agent.session.getSessionEntry({agentId,sessionKey,readConsistency:'latest'});
+    const storePath=sessionStore(agentId);
+    const entry=api.runtime.agent.session.getSessionEntry({storePath,agentId,sessionKey,readConsistency:'latest'});
     const sessionId=context.source==='session-action'?entry?.sessionId:context.source==='tool'?context.tool.sessionId:context.command.sessionId;
     if(!sessionId)throw requestError('Host did not provide a conversation ID. Open a chat session first.','LOOPS_SESSION_REQUIRED');
     const model=configuredModel(agentId);
@@ -34,9 +41,27 @@ export function createBridge(api:OpenClawPluginApi){
     // from its text or from the session's model/account attribution.
     const canManage=context.source==='session-action'?!!context.action.client?.scopes.some(s=>s==='operator.admin'||s==='operator.write'):
       context.source==='command'&&context.command.isAuthorizedSender&&(!context.command.gatewayClientScopes||context.command.gatewayClientScopes.some(s=>s==='operator.admin'||s==='operator.write'));
-    const a:Actor={agentId,sessionKey,sessionId,source:context.source,human,canManage,check:()=>checkActor(agentId,sessionKey,sessionId),...requester?{requester}:{},model,
+    if(context.source==='tool'&&!context.tool.assertInvocationCurrent)throw requestError('A current host tool invocation is required.','HOST_POLICY_DENIED');
+    const assertCurrent=context.source==='tool'?context.tool.assertInvocationCurrent:context.source==='command'?context.command.assertOwnerCurrent:undefined;
+    const a:Actor={agentId,sessionKey,sessionId,source:context.source,human,canManage,check:()=>checkActor(agentId,sessionKey,sessionId,storePath,assertCurrent),...requester?{requester}:{},model,
       ...context.source==='tool'&&context.signal?{signal:context.signal}:{}};
-    a.check();return a;
+    a.check();workLifecycle.set(a,entry?.lifecycleRevision);return a;
+  }
+  async function withCurrentWork<T>(actor:Actor,run:(actor:Actor)=>Promise<T>):Promise<T>{
+    const storePath=sessionStore(actor.agentId);
+    const checkWork=()=>{
+      actor.signal?.throwIfAborted();
+      actor.check();
+      if(!workLifecycle.has(actor))throw requestError('A current host invocation is required for effect work.','HOST_POLICY_DENIED');
+      const entry=api.runtime.agent.session.getSessionEntry({storePath,agentId:actor.agentId,sessionKey:actor.sessionKey,readConsistency:'latest'});
+      if(!entry||entry.sessionId!==actor.sessionId||entry.lifecycleRevision!==workLifecycle.get(actor))throw requestError('Conversation lifecycle changed before effect work.','LOOPS_SESSION_CHANGED','Start a new invocation in the current conversation before trying again.');
+    };
+    checkWork();
+    return api.runtime.agent.session.runWithWorkAdmission({storePath,sessionKey:actor.sessionKey,signal:actor.signal},async signal=>{
+      const joinedSignal=actor.signal?AbortSignal.any([actor.signal,signal]):signal;
+      const joined:Actor={...actor,signal:joinedSignal,check:()=>{joinedSignal.throwIfAborted();checkWork();}};
+      joined.check();return run(joined);
+    });
   }
   function capabilities(a:Actor,settings:InferenceSettings={}):InferenceCapabilities{
     a.check();const cfg=current(),agentId=settings.agentId??a.agentId,model=settings.model??configuredModel(agentId),separator=model?.indexOf('/')??-1;
@@ -76,7 +101,7 @@ export function createBridge(api:OpenClawPluginApi){
       return JSON.parse(JSON.stringify({...result,settings:{requested,transmittedToHost:transmitted,applied:'unknown'}})) as Json;
     },
   };
-  return {actor,host};
+  return {actor,host,withCurrentWork};
 }
 export const help='Use /loops list | /loops run <slug> [text or JSON object] [--request-id <id>] | /loops status <run-id> | /loops resume <run-id> | /loops cancel <run-id> | /loops review <run-id> approve|reject. Each command starts a new run; reuse an explicit --request-id only to retry the same admission. Review requires an authenticated human operator.';
 export function parseCommand(context:PluginCommandContext,maxInputBytes=defaultBudgets.inputBytes){

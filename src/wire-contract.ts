@@ -54,6 +54,8 @@ export function withRecursiveDataSchemaWire(input:TSchema):TSchema{
     const properties=schema.properties;
     const inputItems=properties?.inputSchema?.items;
     if(schemaObject(inputItems)&&inputItems.properties?.schema!==undefined)inputItems.properties.schema=structuredClone(DataSchemaWireRef) as JsonSchema;
+    const memoryItems=properties?.memorySchemas?.items;
+    if(schemaObject(memoryItems)&&memoryItems.properties?.schema!==undefined)memoryItems.properties.schema=structuredClone(DataSchemaWireRef) as JsonSchema;
     if(properties?.outputSchema!==undefined)properties.outputSchema=structuredClone(DataSchemaWireRef) as JsonSchema;
     for(const child of Object.values(properties??{}))if(schemaObject(child))visit(child);
     if(Array.isArray(schema.items)){for(const child of schema.items)if(schemaObject(child))visit(child);}

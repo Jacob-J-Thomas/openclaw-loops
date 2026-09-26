@@ -2,7 +2,7 @@ import {describe,expect,it,vi} from 'vitest';
 import {Value} from 'typebox/value';
 import {Ajv2020} from 'ajv/dist/2020.js';
 import {dataSchemaIssues,validateDataValue,type DataSchema} from '../src/data-schema.js';
-import {DataSchemaDrafts,hasActiveDataSchemaDrafts,inputSchemaScope,outputSchemaScope} from '../src/data-schema-editor.js';
+import {DataSchemaDrafts,hasActiveDataSchemaDrafts,inputSchemaScope,memorySchemaScope,outputSchemaScope} from '../src/data-schema-editor.js';
 import {validateGraph,validateInput,type Definition} from '../src/graph.js';
 import {Engine,type Actor,type HostCapabilities,type Storage} from '../src/engine.js';
 import {examples} from '../src/examples.js';
@@ -18,6 +18,15 @@ function definition():Definition{
   return value;
 }
 describe('bounded recursive data schemas',()=>{
+  it('hydrates memory schemas into the same draft history and active invalid gate',()=>{
+    const base=definition();base.memorySchemas=[{id:'note',version:1,schema:{type:'object',properties:{payload:{type:'array',items:{type:'string'}}},additionalProperties:false}}];
+    const drafts=new DataSchemaDrafts(),path=[...memorySchemaScope(base.id,'note',1),'properties','payload','items'],key=JSON.stringify(path);
+    const before=drafts.snapshot(base);expect(before.paths.has(key)).toBe(true);
+    drafts.set(key,'[');expect(hasActiveDataSchemaDrafts(base,drafts)).toBe(true);
+    drafts.restore(before);expect(drafts.get(key)).toBe('[');expect(hasActiveDataSchemaDrafts(base,drafts)).toBe(true);
+    const removed=structuredClone(base);removed.memorySchemas=[];drafts.reconcile(removed);expect(hasActiveDataSchemaDrafts(removed,drafts)).toBe(false);
+    drafts.restore(before);expect(hasActiveDataSchemaDrafts(base,drafts)).toBe(true);
+  });
   it('hydrates unvisited input, nested output, and Repeat-body paths before an immutable history snapshot',()=>{
     const base=definition(),summary=base.nodes.find(node=>node.kind==='inference');if(!summary||summary.kind!=='inference')throw Error();
     summary.outputSchema={type:'array',items:{type:'object',properties:{status:{type:'string'}},additionalProperties:false}};

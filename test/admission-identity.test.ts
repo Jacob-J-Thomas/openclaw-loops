@@ -37,14 +37,14 @@ describe('durable admission identities',()=>{
     const root=fixture(),file=join(root,'loops.sqlite'),previous=await legacy('sv-SE'),old=open(file,previous.state);await old.close();
     // This is a constructed legacy fixture; exact previous-artifact upgrade
     // and downgrade refusal are qualified separately against installed builds.
-    const database=new DatabaseSync(file);database.exec('PRAGMA user_version=2;');
+    const database=new DatabaseSync(file);database.exec('DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; PRAGMA user_version=2;');
     const tables=['metadata','loops','revisions','runs','admissions','retired_admissions','attempts','outputs','events'];
     const rows=(db:DatabaseSync)=>Object.fromEntries(tables.map(table=>[table,db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
     const before=rows(database);database.close();
     const upgraded=open(file);expect(upgraded.store.read()).toEqual(previous.state);expect(upgraded.store.integrity()).toEqual([{integrity_check:'ok'}]);
-    const backups=()=>readdirSync(root).filter(name=>name.startsWith('loops.sqlite.before-schema-3-')&&name.endsWith('.bak'));expect(backups()).toHaveLength(1);
+    const backups=()=>readdirSync(root).filter(name=>name.startsWith('loops.sqlite.before-schema-4-')&&name.endsWith('.bak'));expect(backups()).toHaveLength(1);
     const backup=new DatabaseSync(join(root,backups()[0]),{readOnly:true}),current=new DatabaseSync(file,{readOnly:true});
-    try{expect(backup.prepare('PRAGMA user_version').get()?.user_version).toBe(2);expect(current.prepare('PRAGMA user_version').get()?.user_version).toBe(3);expect(rows(backup)).toEqual(before);expect(rows(current)).toEqual(before);}finally{backup.close();current.close();}
+    try{expect(backup.prepare('PRAGMA user_version').get()?.user_version).toBe(2);expect(current.prepare('PRAGMA user_version').get()?.user_version).toBe(4);expect(rows(backup)).toEqual(before);expect(rows(current)).toEqual(before);}finally{backup.close();current.close();}
     expect((await upgraded.engine.run(actor,'identity',reordered,'legacy')).id).toBe(previous.run.id);expect(upgraded.adapter.modelInfo).not.toHaveBeenCalled();await upgraded.close();
     const reopened=open(file);expect(reopened.store.read()).toEqual(previous.state);expect(backups()).toHaveLength(1);
   });

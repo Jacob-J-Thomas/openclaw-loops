@@ -17,13 +17,29 @@ import {applyContextPatch,assertContextState,contextBytes,initialContext,project
 import {EvaluationFailure,commitEvaluation,evaluate as evaluateDeterministically,isCommittedEvaluation,type Evaluator} from './evaluation.js';
 import {validateDataValue,type DataSchema} from './data-schema.js';
 import {lifecycleMutation,lifecycleValue,selected,selectedIfPresent,selectRetainedSource,validateLifecycle,type ContextLifecycle} from './context-lifecycle.js';
+import {MemoryCore,type MemoryInvocation,type MemoryRemovalPlan,type MemoryRepository} from './memory-core.js';
+import {memorySchemaValidator,assertNoMemorySchemaRedefinition} from './memory-definition.js';
+import type {MemoryNodeOperation} from './memory-node.js';
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type RouteTrace={port:string;caseId?:string;observed:string;truncated?:boolean;available?:true}|{port:string;caseId?:string;available:false};
-export type NodeEvidence={nodeId:string;kind:string;iteration?:number;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:RouteTrace};
+export type NodeEvidence={nodeId:string;kind:string;iteration?:number;memoryMutationId?:string;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:RouteTrace};
 export type ExecutionSettings=Pick<Actor,'model'|'reasoning'|'authProfileId'>&{agentModels?:Record<string,string>};
-export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;definition:Definition;input:Record<string,Json>;context?:ContextState;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
+export type MemoryWriteGrant={runId:string;ownerKey:string;loopId:string;revision:number;grantGeneration:string;policySha256:string};
+export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;memoryWriteGrant?:MemoryWriteGrant;definition:Definition;input:Record<string,Json>;context?:ContextState;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
+export function assertRunMemoryWriteGrant(run:Run){
+  const grant=run.memoryWriteGrant;
+  if(grant===undefined)return; // Historical same-run continuation cannot synthesize authority; an explicit new retry admission can.
+  if(run.testMode||run.requestFingerprintVersion!==2||!Number.isSafeInteger(run.definition.revision)||run.definition.revision<1||
+    !run.definition.nodes.flatMap(node=>[node,...childNodes(node)]).some(node=>node.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(node.memory.operation))||
+    typeof grant!=='object'||grant===null||Array.isArray(grant)||Object.keys(grant).sort().join(',')!=='grantGeneration,loopId,ownerKey,policySha256,revision,runId'||
+    typeof grant.grantGeneration!=='string'||grant.grantGeneration.length<1||grant.grantGeneration.length>64||
+    typeof grant.policySha256!=='string'||!/^[a-f0-9]{64}$/.test(grant.policySha256)||
+    grant.runId!==run.id||grant.ownerKey!==JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId])||grant.loopId!==run.definition.id||
+    grant.revision!==run.definition.revision||grant.grantGeneration!==(run.grantGeneration??'legacy')||
+    grant.policySha256!==fingerprintJson(run.definition.memoryPolicy??null))throw requestError('Saved memory write grant is invalid.','LOOPS_MEMORY_DENIED');
+}
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
 const legacyGrantGeneration='legacy';
 export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
@@ -70,6 +86,7 @@ export class Engine{
   private set state(value:State){this.cachedState=value;}
   readonly budgets:Budgets;
   private queued=new Map<string,Actor>();
+  private queuedAbort=new Map<string,()=>void>();
   private physical=new Map<string,Set<Promise<unknown>>>();
   private closing=false;
   private deadlines=new Map<string,number>();
@@ -85,7 +102,7 @@ export class Engine{
       // loop must not regain those grants when its publication is re-enabled.
       record.grantGeneration??=record.revoked?randomUUID():legacyGrantGeneration;
     }
-    for(const run of Object.values(this.state.runs)){const record=this.state.loops[run.definition.id];if(record&&!run.testMode)record.revisions![run.definition.revision]??=structuredClone(run.definition);}
+    for(const run of Object.values(this.state.runs)){assertRunMemoryWriteGrant(run);const record=this.state.loops[run.definition.id];if(record&&!run.testMode)record.revisions![run.definition.revision]??=structuredClone(run.definition);}
     for(const r of Object.values(this.state.runs)){
       const settling=r.cleanupPending===true;
       if(settling){
@@ -183,8 +200,25 @@ export class Engine{
   documentResolve(actor:Actor,reference:Parameters<DocumentStore['resolve']>[1]){return this.documentStore(actor).resolve(actor,reference);}
   documentContextValue(actor:Actor,id:string){return this.documentStore(actor).contextValue(actor,id);}
   private ensureAuthor(actor:Actor){actor.check();if(actor.source!=='tool'&&!((actor.source==='session-action'||actor.source==='command')&&(actor.human||actor.canManage)))throw requestError('Loop changes require an authorized agent tool or an operator with write access through the Loops UI or a command.');}
+  private memoryHasEffects(definition:Definition){return definition.nodes.flatMap(node=>[node,...childNodes(node)]).some(node=>node.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(node.memory.operation));}
+  private issueMemoryWriteGrant(actor:Actor,run:Run){
+    // An unpublished Test (including a retry) cannot acquire a persisted
+    // Memory write grant. Saved revisions use a fresh grant per admission.
+    if(run.testMode||run.definition.revision<1||!this.memoryHasEffects(run.definition))return;
+    this.ensureAuthor(actor); // An actual host-admitted writer creates this exact plugin-owned run grant.
+    run.memoryWriteGrant={runId:run.id,ownerKey:ownerKey(run.owner),loopId:run.definition.id,revision:run.definition.revision,
+      grantGeneration:run.grantGeneration??legacyGrantGeneration,policySha256:fingerprintJson(run.definition.memoryPolicy??null)};
+  }
+  private assertMemoryWriteGrant(actor:Actor,run:Run){
+    this.allowedRun(actor,run);
+    assertRunMemoryWriteGrant(run);
+    const grant=run.memoryWriteGrant;
+    if(!grant||grant.runId!==run.id||grant.ownerKey!==ownerKey(run.owner)||grant.loopId!==run.definition.id||
+      grant.revision!==run.definition.revision||grant.grantGeneration!==(run.grantGeneration??legacyGrantGeneration)||
+      grant.policySha256!==fingerprintJson(run.definition.memoryPolicy??null))throw requestError('This run has no current plugin-owned memory write grant.','LOOPS_MEMORY_DENIED');
+  }
   private own(actor:Actor,id:string){
-    actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');
+    actor.check();const run=this.state.runs[id]??this.storage.indexed?.readRun(id,ownerKey(actor));if(!run||ownerKey(run.owner)!==ownerKey(actor))throw requestError('Run not found in this session.');assertRunMemoryWriteGrant(run);
     // Older full restarts copied a parent's decision into a fresh pending review.
     // Repair cold records on authorized access without scanning historical outputs.
     // Earlier review nodes can legitimately have decisions in a multi-review run.
@@ -266,6 +300,7 @@ export class Engine{
     if((previous?.definition.revision??0)!==expectedRevision||d.revision!==expectedRevision)throw requestError('Save conflict: reload the current revision before saving.','LOOPS_REVISION_CONFLICT','Reload the current definition, then merge or retry against its current revision.');
     if(previous?.deletedAt)throw requestError('Loop was deleted; recover it explicitly before editing.');
     this.assertSlugAvailable(d.id,d.slug);
+    if(previous)assertNoMemorySchemaRedefinition(Object.values(previous.revisions??{}).map(revision=>revision.memorySchemas??[]),d.memorySchemas);
     d.revision=expectedRevision+1;const issues=this.validate(actor,d).issues;
     // Validate and check the caller before committing either definition or grants.
     // A rejected publish leaves the previous revision and activation untouched.
@@ -345,6 +380,7 @@ export class Engine{
     const checkedInput=validateInput(definition,input,this.budgets),agentModels=this.pinAgentModels(actor,definition);
     const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,requestFingerprintVersion:2,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{},...Object.keys(agentModels).length?{agentModels}:{}},input:checkedInput,...definition.schemaVersion===3?{context:initialContext(checkedInput)}:{},state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
     if(draft)run.testMode=true;else run.grantGeneration=this.state.loops[definition.id].grantGeneration??legacyGrantGeneration;
+    if(!draft)this.issueMemoryWriteGrant(actor,run);
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
   }
   async retry(actor:Actor,id:string,mode:'checkpoint'|'retry-node'|'restart',requestId:string){
@@ -359,6 +395,7 @@ export class Engine{
     if(mode==='checkpoint'&&(previous.uncertainty||previous.trace.some(t=>['running','interrupted','cancelled','failed'].includes(t.state))))throw requestError('The current attempt is not a committed checkpoint. Inspect its outcome, then explicitly retry the node or restart.');
     const run:Run={...structuredClone(previous),id:randomUUID(),requestKey:key,requestFingerprint:fingerprint,requestFingerprintVersion:2,parentRunId:id,state:'running',createdAt:now(),updatedAt:now(),trace:[],activeMs:0,executions:0};
     if(!run.testMode)run.grantGeneration=this.state.loops[run.definition.id].grantGeneration??legacyGrantGeneration;
+    delete run.memoryWriteGrant;this.issueMemoryWriteGrant(actor,run);
     delete run.error;delete run.errorDetail;delete run.uncertainty;delete run.pending;delete run.result;delete run.cleanupPending;
     if(mode==='restart'){run.outputs={};delete run.review;run.cursor=run.definition.nodes.find(n=>n.kind==='input')!.id;if(run.definition.schemaVersion===3)run.context=initialContext(run.input);}else delete run.outputs[run.cursor];
     this.state.runs[run.id]=run;this.persist(run);return this.dispatch(actor,run);
@@ -377,7 +414,7 @@ export class Engine{
     }
     return agentModels;
   }
-  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);if(!this.releaseParked(r,'next',{}))return this.status(actor,id);return this.dispatch(actor,r);}
+  async resume(actor:Actor,id:string){const r=this.own(actor,id);if(r.state!=='waiting')throw requestError(r.state==='review'?'A human review requires Approve or Reject; Continue cannot approve it.':'Only a manual Wait can be continued.');this.allowedRun(actor,r);if(r.memoryWriteGrant)this.ensureAuthor(actor);if(!this.releaseParked(r,'next',{}))return this.status(actor,id);return this.dispatch(actor,r);}
   async review(actor:Actor,id:string,decision:'approve'|'reject'){
     this.ensureHuman(actor);const r=this.own(actor,id);if(r.state!=='review')throw requestError('Run is not awaiting human review.');this.allowedRun(actor,r);
     if(!this.releaseParked(r,decision,{decision},{decision,at:now(),requester:actor.requester??'authenticated-operator'}))return this.status(actor,id);return this.dispatch(actor,r);
@@ -436,15 +473,26 @@ export class Engine{
     return output;
   }
   private occupied(){return new Set([...this.active.keys(),...this.physical.keys()]).size;}
-  private dropQueued(id:string){const actor=this.queued.get(id);this.queued.delete(id);if(actor)this.options.releaseActor?.(actor);}
+  private dropQueued(id:string){const actor=this.queued.get(id),listener=this.queuedAbort.get(id);if(actor&&listener)actor.signal?.removeEventListener('abort',listener);this.queuedAbort.delete(id);this.queued.delete(id);if(actor)this.options.releaseActor?.(actor);}
   private clearQueued(){for(const id of this.queued.keys())this.dropQueued(id);}
-  private drain(){if(this.closing)return;for(const [id,actor] of this.queued){if(this.occupied()>=(this.options.concurrency??1))break;this.queued.delete(id);try{const run=this.state.runs[id];if(run?.state==='queued')void this.dispatch(actor,run).catch(()=>{});}finally{this.options.releaseActor?.(actor);}}}
+  private drain(){if(this.closing)return;for(const [id,actor] of this.queued){if(this.occupied()>=(this.options.concurrency??1))break;
+    const listener=this.queuedAbort.get(id);if(listener)actor.signal?.removeEventListener('abort',listener);this.queuedAbort.delete(id);this.queued.delete(id);
+    try{const run=this.state.runs[id];if(run?.state==='queued')void this.dispatch(actor,run).catch(()=>{});}finally{this.options.releaseActor?.(actor);}
+  }}
   private trackPhysical(id:string,promise:Promise<unknown>){const pending=this.physical.get(id)??new Set();pending.add(promise);this.physical.set(id,pending);const run=this.state.runs[id];const cleanup=()=>{pending.delete(promise);if(!pending.size){this.physical.delete(id);if(run.cleanupPending){run.cleanupPending=false;if(!this.closing)this.checkpoint(run);}this.drain();}};void promise.then(cleanup,cleanup).catch(()=>{});}
 
   private async dispatch(actor:Actor,r:Run):Promise<Run>{
     if(this.active.has(r.id))return structuredClone(r);
     if(this.closing)throw requestError('Loops service is stopping.','LOOPS_SERVICE_UNAVAILABLE');
-    if(this.occupied()>=(this.options.concurrency??1)){r.state='queued';this.queued.set(r.id,actor);this.options.retainActor?.(actor);try{this.checkpoint(r);}catch(error){this.dropQueued(r.id);throw error;}return structuredClone(r);}
+    if(this.occupied()>=(this.options.concurrency??1)){
+      r.state='queued';this.queued.set(r.id,actor);this.options.retainActor?.(actor);
+      try{this.checkpoint(r);}catch(error){this.dropQueued(r.id);throw error;}
+      const abort=()=>{if(this.queued.get(r.id)!==actor)return;this.dropQueued(r.id);r.state='cancelled';r.error='Invoking host work ended before queued execution began.';r.updatedAt=now();
+        try{this.checkpoint(r);}catch{/* persist() has already stopped execution on an unverifiable storage commit. */}
+      };
+      this.queuedAbort.set(r.id,abort);actor.signal?.addEventListener('abort',abort,{once:true});if(actor.signal?.aborted)abort();
+      return structuredClone(r);
+    }
     r.state='running';this.checkpoint(r);
     const {agentModels:_agentModels,...execution}=r.executionSettings??{};actor={...actor,...execution};
     const controller=new AbortController();const remaining=r.definition.limits.timeoutMs===undefined?undefined:r.definition.limits.timeoutMs-r.activeMs;
@@ -464,6 +512,7 @@ export class Engine{
   }
   private async pump(actor:Actor,r:Run,signal:AbortSignal):Promise<Run>{
     const ctx:BindingContext={input:r.input,nodes:r.outputs};
+    let pendingMemoryMutationId:string|undefined;
     const assertBudget=(context:ContextState|undefined,outputs:Record<string,Json>)=>{
       if(!context)return;
       const limit=this.budgets.inputBytes+r.definition.limits.maxOutputBytes;
@@ -490,9 +539,11 @@ export class Engine{
         begin:(node,iteration)=>{this.begin(r,node,iteration);return r.trace.length-1;},
         finish:(sequence,output)=>this.finish(r,r.trace[sequence],output),setOutput:(id,output)=>{assertBudget(r.context,{...r.outputs,[id]:output});r.outputs[id]=output;},validateOutput,commitContext,
         lifecycle:node=>this.lifecycle(actor,r,node,contextFor(node),signal,assertBudget),
+        memory:node=>this.memoryNode(actor,r,node,contextFor(node),signal,evidence.memoryMutationId!),
       };
       const dispatched=nodeContract(n.kind).execute(n,execution);
       const outcome=dispatched instanceof Promise?await dispatched:dispatched;
+      if(n.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(n.memory.operation))pendingMemoryMutationId=evidence.memoryMutationId;
       const result=outcome.park?outcome.output:validateOutput(n,outcome.output),port=outcome.port??'next';
       if(outcome.route){const route=outcome.route,identity={port:route.port,...route.caseId?{caseId:route.caseId}:{}};if(route.available){const observed=textPage(display(route.observed),0,512);evidence.route={...identity,available:true,observed:observed.text,...observed.nextOffset===null?{}:{truncated:true}};}else evidence.route={...identity,available:false};}
       if(outcome.park){
@@ -514,16 +565,77 @@ export class Engine{
       r.outputs[n.id]=result;if(nextContext)r.context=nextContext;
       if(r.state==='running')r.cursor=this.next(r,n.id,port);
       this.checkpoint(r);
+      pendingMemoryMutationId=undefined;
     }}catch(error){
       delete r.pending;delete r.result;
       if(r.state!=='cancelled'&&r.state!=='interrupted'){r.state='failed';r.errorDetail=errorDetail(error,{phase:'execution',nodeId:r.trace.findLast(t=>t.state==='running')?.nodeId,model:actor.model});r.error=r.errorDetail.message;}
+      const uncertainMutationId=pendingMemoryMutationId??(error instanceof LoopError&&error.code==='LOOPS_MEMORY_UNCERTAIN'?r.trace.findLast(t=>t.kind==='memory'&&t.state==='running')?.memoryMutationId:undefined);
+      if(uncertainMutationId)r.uncertainty=`Memory mutation ${uncertainMutationId} may have committed. Inspect its mutation receipt and key before explicit recovery; the effect will not replay automatically.`;
       if(signal.aborted&&!r.uncertainty)r.uncertainty='A dispatched host call may have completed; this run will not replay it.';
       for(const t of r.trace)if(t.state==='running'){t.state=r.state==='cancelled'?'cancelled':r.state==='interrupted'?'interrupted':'failed';t.error=r.error??'Cancelled';t.endedAt=now();}
       this.checkpoint(r);
     }
     return r;
   }
-  private begin(r:Run,n:{id:string;kind:string},iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{}};r.trace.push(e);this.checkpoint(r);return e;}
+  private begin(r:Run,n:GraphNode,iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const memoryEffect=n.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(n.memory.operation);const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{},...memoryEffect?{memoryMutationId:hash(`${r.id}:${r.trace.length}:${n.id}`)}:{}};r.trace.push(e);this.checkpoint(r);return e;}
+  private memoryCore(r:Run){
+    const repository=this.storage as Storage&Partial<MemoryRepository>;
+    if(!repository.get||!repository.page||!repository.mutation||!repository.commit||!repository.commitBatch)throw requestError('Plugin-owned memory storage is unavailable.','LOOPS_MEMORY_STORAGE_UNAVAILABLE');
+    const record=this.state.loops[r.definition.id];
+    const entries=[...Object.values(record?.revisions??{}).flatMap(revision=>revision.memorySchemas??[]),...(r.definition.memorySchemas??[])];
+    return new MemoryCore(repository as MemoryRepository,memorySchemaValidator(entries));
+  }
+  private memoryInvocation(actor:Actor,r:Run,nodeId:string,signal?:AbortSignal,effect=false):MemoryInvocation{
+    if(r.testMode)throw requestError('Memory requires a saved, enabled loop revision; unpublished tests cannot read or write memory.','LOOPS_MEMORY_DISABLED');
+    return {owner:r.owner,loopId:r.definition.id,loopRevision:r.definition.revision,runId:r.id,nodeId,grantGeneration:r.grantGeneration??legacyGrantGeneration,policy:r.definition.memoryPolicy,assertAuthorized:()=>{if(effect)this.assertMemoryWriteGrant(actor,r);else this.allowedRun(actor,r);},...signal?{signal}:{}};
+  }
+  private memoryNode(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'memory'}>,ctx:BindingContext,signal:AbortSignal,mutationId:string):Json{
+    const config=node.memory,key=bind(config.key,ctx);
+    const effect=['write','update','forget','retention-apply','reset-apply'].includes(config.operation);
+    const invocation=this.memoryInvocation(actor,r,node.id,signal,effect);
+    if(effect)this.assertMemoryWriteGrant(actor,r);
+    if(typeof key!=='string')throw requestError('Memory key must resolve to text.','LOOPS_MEMORY_KEY');
+    const value=config.value===undefined?undefined:bind(config.value,ctx);
+    const version=config.expectedVersion===undefined?undefined:bind(config.expectedVersion,ctx);
+    const plan=config.plan===undefined?undefined:bind(config.plan,ctx);
+    return this.memoryCall(this.memoryCore(r),invocation,config.operation,key,mutationId,value,version,plan,config.limit);
+  }
+  private memoryCall(core:MemoryCore,inv:MemoryInvocation,operation:MemoryNodeOperation,key:string,mutationId:string,value?:Json,version?:Json,plan?:Json,limit?:number):Json{
+    switch(operation){
+      case 'consume':return core.consume(inv,key) as unknown as Json;
+      case 'inspect':return core.inspect(inv,key) as unknown as Json;
+      case 'search':return core.search(inv,key,undefined,limit) as unknown as Json;
+      case 'write':return core.write(inv,key,value!,mutationId) as unknown as Json;
+      case 'update':if(!Number.isSafeInteger(version)||Number(version)<1)throw requestError('Memory update requires a positive expected version.','LOOPS_MEMORY_CONFLICT');return core.update(inv,key,value!,Number(version),mutationId) as unknown as Json;
+      case 'forget':if(!Number.isSafeInteger(version)||Number(version)<1)throw requestError('Memory forget requires a positive expected version.','LOOPS_MEMORY_CONFLICT');return core.forget(inv,key,Number(version),mutationId) as unknown as Json;
+      case 'mutation':return {receipts:core.mutation(inv,key)??null} as Json;
+      case 'retention-preview':return core.removalPreview(inv,key,'retention') as unknown as Json;
+      case 'reset-preview':return core.removalPreview(inv,key,'reset') as unknown as Json;
+      case 'retention-apply':case 'reset-apply':{
+        const mode=operation==='retention-apply'?'retention':'reset';
+        const selected=typeof plan==='string'?core.removalPreview(inv,key,mode):plan as MemoryRemovalPlan;
+        if(typeof plan==='string'&&selected.planId!==plan)throw requestError('Memory removal changed since preview. No values were removed.','LOOPS_MEMORY_CONFLICT');
+        if(!selected||typeof selected!=='object'||selected.mode!==mode||selected.prefix!==key)
+          throw requestError('Memory removal plan does not match this node’s authored operation and key prefix. No values were removed.','LOOPS_MEMORY_CONFLICT');
+        return {receipts:core.applyRemoval(inv,selected,mutationId)} as unknown as Json;
+      }
+    }
+  }
+  memoryQuery(actor:Actor,input:{runId:string;nodeId:string;operation:'consume'|'search'|'inspect'|'mutation'|'retention-preview'|'reset-preview';key:string;cursor?:string;limit?:number}){
+    const run=this.own(actor,input.runId),node=run.definition.nodes.find(item=>item.id===input.nodeId);
+    if(!node||node.kind!=='memory')throw requestError('Memory query requires an authored Memory node in this run.','LOOPS_MEMORY_DENIED');
+    const core=this.memoryCore(run),inv=this.memoryInvocation(actor,run,node.id);
+    let result:Json;
+    switch(input.operation){
+      case 'consume':result=core.consume(inv,input.key) as unknown as Json;break;
+      case 'inspect':result=core.inspect(inv,input.key) as unknown as Json;break;
+      case 'search':result=core.search(inv,input.key,input.cursor,input.limit) as unknown as Json;break;
+      case 'mutation':result={receipts:core.mutation(inv,input.key)??null};break;
+      case 'retention-preview':result=core.removalPreview(inv,input.key,'retention') as unknown as Json;break;
+      case 'reset-preview':result=core.removalPreview(inv,input.key,'reset') as unknown as Json;break;
+    }
+    return {kind:'loops-memory-result' as const,operation:input.operation,result};
+  }
   private finish(r:Run,e:NodeEvidence,result:Json){const output=display(result);if(Buffer.byteLength(output)>r.definition.limits.maxOutputBytes)throw executionError(`Output-size limit exceeded at ${e.nodeId}.`,'LOOPS_OUTPUT_LIMIT');if(r.definition.schemaVersion===1&&r.trace.reduce((size,t)=>size+Buffer.byteLength(t.output??''),0)+Buffer.byteLength(output)>48000)throw executionError('Run evidence output budget exceeded.','LOOPS_OUTPUT_LIMIT');e.output=output;e.state='completed';e.endedAt=now();}
   private async lifecycle(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'context-lifecycle'}>,ctx:BindingContext,signal:AbortSignal,assertBudget:(context:ContextState|undefined,outputs:Record<string,Json>)=>void):Promise<{output:Json;context:ContextState}>{
     if(!r.context)throw executionError('Context lifecycle requires a version 3 run context.','LOOPS_CONTEXT_UNAVAILABLE');

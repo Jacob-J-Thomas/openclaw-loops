@@ -8,6 +8,7 @@ import type {DataSchema} from './data-schema.js';
 import {SwitchSchema,TypedConditionNodeSchema,evaluateSwitch,evaluateTypedCondition,type RouteEvidence,type SwitchNode,type TypedConditionNode} from './branching.js';
 import type {ContextState} from './context.js';
 import {ContextLifecycleSchema} from './context-lifecycle.js';
+import {MemoryNodeConfigSchema,type MemoryNodeConfig} from './memory-node.js';
 export type {Json,NodeValue} from './node-values.js';
 
 export const identifierSchema=Type.String({pattern:'^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$'});
@@ -43,7 +44,9 @@ type EvaluateNode={id:string;kind:'evaluate';label:string;value:NodeValue;evalua
 type GateNode={id:string;kind:'gate';label:string;evaluationId:string;context?:ContextNodeConfig;outputSchema?:DataSchema};
 const lifecycleSchema=Type.Object({...identity,kind:Type.Literal('context-lifecycle'),lifecycle:ContextLifecycleSchema},strict);
 type LifecycleNode=Static<typeof lifecycleSchema>&{context?:ContextNodeConfig;outputSchema?:DataSchema};
-export type GraphNode=BaseGraphNode|EvaluateNode|GateNode|LifecycleNode|(TypedConditionNode&{context?:ContextNodeConfig;outputSchema?:DataSchema})|(SwitchNode&{context?:ContextNodeConfig;outputSchema?:DataSchema});
+const memorySchema=Type.Object({...identity,kind:Type.Literal('memory'),memory:MemoryNodeConfigSchema},strict);
+type MemoryNode={id:string;kind:'memory';label:string;memory:MemoryNodeConfig;context?:ContextNodeConfig;outputSchema?:DataSchema};
+export type GraphNode=BaseGraphNode|EvaluateNode|GateNode|LifecycleNode|MemoryNode|(TypedConditionNode&{context?:ContextNodeConfig;outputSchema?:DataSchema})|(SwitchNode&{context?:ContextNodeConfig;outputSchema?:DataSchema});
 const contextExtension=Type.Object({context:Type.Optional(ContextNodeConfigSchema)},strict);
 const withContext=(schema:{properties:Record<string,TSchema>})=>Type.Object({...schema.properties,...outputExtension,...contextExtension.properties},strict);
 const evaluatorSchema=Type.Union([
@@ -60,7 +63,8 @@ const contextTypedConditionSchema=withContext(TypedConditionNodeSchema);
 const contextSwitchSchema=withContext(SwitchSchema);
 const contextRepeatSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:Type.Tuple([contextSchemas.inference,contextSchemas.condition]),...contextExtension.properties},strict);
 const contextLifecycleSchema=withContext(lifecycleSchema);
-export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextTypedConditionSchema,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail,contextSwitchSchema,evaluateSchema,gateSchema,contextLifecycleSchema]));
+const contextMemorySchema=withContext(memorySchema);
+export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextTypedConditionSchema,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail,contextSwitchSchema,evaluateSchema,gateSchema,contextLifecycleSchema,contextMemorySchema]));
 export type Predicate=Static<typeof PredicateSchema>;
 export type NodeKind=GraphNode['kind'];
 export type NodeOf<K extends NodeKind>=Extract<GraphNode,{kind:K}>;
@@ -85,6 +89,7 @@ export type NodeExecutionContext={
   validateOutput:(node:GraphNode,output:Json)=>Json;
   commitContext:(node:GraphNode,output:Json)=>void;
   lifecycle:(node:Extract<GraphNode,{kind:'context-lifecycle'}>)=>Promise<{output:Json;context:ContextState}>;
+  memory:(node:Extract<GraphNode,{kind:'memory'}>)=>Json;
 };
 type NodeContract<K extends NodeKind=NodeKind>={
   schema:TSchema;
@@ -120,6 +125,9 @@ export const nodeContracts:{[K in NodeKind]:NodeContract<K>}={
   'context-lifecycle':{schema:lifecycleSchema,ports:['next'],capabilities:[],terminal:false,bindings:node=>[...(node.lifecycle.value===undefined?[]:[{text:node.lifecycle.value}]),...(node.lifecycle.instructions===undefined?[]:[{text:node.lifecycle.instructions}])],outputFields:()=>['operation','sourceId','contextVersion','lossy','source'],
     execute:async(node,context)=>await context.lifecycle(node),
     editor:{title:'Context lifecycle',icon:'CTX',description:node=>node.lifecycle.operation,create:id=>({id,kind:'context-lifecycle',label:'Context lifecycle',lifecycle:{operation:'inject',target:'/lifecycle',paths:['/input'],value:{literalJson:'null'}}})}},
+  memory:{schema:memorySchema,ports:['next'],capabilities:[],terminal:false,bindings:node=>[{text:node.memory.key},...node.memory.value===undefined?[]:[{text:node.memory.value}],...node.memory.expectedVersion===undefined?[]:[{text:node.memory.expectedVersion}],...node.memory.plan===undefined?[]:[{text:node.memory.plan}]],outputFields:()=>['key','value','version','deleted','items','nextCursor','total','planId','candidates','receipts','mutationId'],
+    execute:(node,context)=>({output:context.memory(node)}),
+    editor:{title:'Memory',icon:'MEM',description:node=>node.memory.operation,create:id=>({id,kind:'memory',label:'Memory',memory:{operation:'consume',key:'notes'}})}},
   condition:{schema:schemas.condition,ports:['true','false'],capabilities:[],terminal:false,bindings:node=>('condition'in node?[{text:node.condition.value},...node.condition.expected?[{text:node.condition.expected}]:[]]:predicateBindings(node.predicate)),outputFields:()=>['value'],
     execute:(node,context)=>{if('condition'in node){const evaluated=evaluateTypedCondition(node.condition,value=>context.resolve(value,node));const port=evaluated.passed?'true':'false';return {output:{value:evaluated.passed},port,route:evaluated.available?{port,available:true,observed:evaluated.observed}:{port,available:false}};}const passed=context.compare(node.predicate,node);return {output:{value:passed},port:passed?'true':'false'};},
     editor:{title:'Condition',icon:'IF',description:node=>'condition'in node?node.condition.operator:node.predicate.op,create:id=>({id,kind:'condition',label:'Condition',predicate:{left:'{{input.text}}',op:'equals',right:'yes'}})}},

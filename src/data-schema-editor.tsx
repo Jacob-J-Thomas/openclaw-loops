@@ -9,6 +9,7 @@ export type SchemaEdit={rename?:SchemaRename;removeInputIndex?:number};
 export type SchemaDraftLocationSnapshot={paths:Map<string,string>;inputIds:string[]};
 export const inputSchemaScope=(definitionId:string,fieldId:string)=>[definitionId,'input',fieldId];
 export const outputSchemaScope=(definitionId:string,nodeId:string)=>[definitionId,'output',nodeId];
+export const memorySchemaScope=(definitionId:string,schemaId:string,version:number)=>[definitionId,'memory-schema',schemaId,String(version)];
 const draftKey=(scope:string[])=>JSON.stringify(scope);
 
 const activeScopeKeys=(definition:Definition,drafts:DataSchemaDrafts):Set<string>=>{
@@ -21,6 +22,7 @@ const activeScopeKeys=(definition:Definition,drafts:DataSchemaDrafts):Set<string
   };
   definition.inputSchema.forEach((field,index)=>visit(field.schema as DataSchema|undefined,inputSchemaScope(definition.id,drafts.inputFieldId(index))));
   for(const node of definition.nodes.flatMap(node=>[node,...childNodes(node)]))visit(node.outputSchema,outputSchemaScope(definition.id,node.id));
+  for(const entry of definition.memorySchemas??[])visit(entry.schema,memorySchemaScope(definition.id,entry.id,entry.version));
   return keys;
 };
 
