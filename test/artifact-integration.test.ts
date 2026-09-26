@@ -3,6 +3,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 import {Engine,type Actor,type HostCapabilities} from '../src/engine.js';
 import {SqliteStorage} from '../src/storage.js';
 import {parseDefinition,validateGraph,type Definition} from '../src/graph.js';
@@ -25,6 +26,48 @@ function capture(engine:Engine,bytes:Uint8Array,operationId:string=randomUUID())
 function page(engine:Engine,ref:ArtifactReference,offset:number,limit=2){return engine.artifact(actor,{action:'page',artifactId:ref.id,offset,limit}).result as {reference:ArtifactReference;offset:number;dataBase64:string;nextOffset:number|null};}
 
 describe('authored artifact graph and public custody operations',()=>{
+  it.each([2,3] as const)('preserves version-%i ordinary JSON markers while retaining exact published children',async schemaVersion=>{
+    const {root,file,engine}=setup();
+    const ordinary:Definition={schemaVersion,id:`ordinary-json-${schemaVersion}`,slug:`ordinary-json-${schemaVersion}`,name:'Ordinary JSON',description:'',revision:0,
+      inputSchema:[{name:'value',label:'Value',type:'json',required:true}],nodes:[{id:'input',kind:'input',label:'Input'},
+        {id:'return',kind:'return',label:'Return',value:'{{input.value}}'}],edges:[{id:'a',source:'input',target:'return',port:'next'}],
+      layout:{},capabilities:[],limits:{maxExecutions:4,maxOutputBytes:4096}};
+    expect(engine.save(actor,ordinary,0,true).issues).toEqual([]);
+    const marker={kind:'loops-artifact',id:randomUUID(),sha256:'a'.repeat(64),mediaType:'application/octet-stream',bytes:3,
+      ownerScope:'b'.repeat(64),runId:'business-order',nodeId:'invoice',createdAt:'2026-09-24T00:00:00.000Z',expiresAt:'2026-10-24T00:00:00.000Z'};
+    const inert={kind:'loops-artifact',label:'ordinary business record',detail:marker};
+    const plain=await engine.run(actor,ordinary.slug,{value:inert},`ordinary-${schemaVersion}`);
+    expect(plain).toMatchObject({state:'completed',result:inert});
+    if(schemaVersion===2){
+      let boundary:unknown='leaf';for(let depth=0;depth<100;depth++)boundary={next:boundary};
+      expect(await engine.run(actor,ordinary.slug,{value:boundary},'json-depth-100')).toMatchObject({state:'completed',result:boundary});
+      await expect(engine.run(actor,ordinary.slug,{value:{next:boundary}},'json-depth-101')).rejects.toThrow(/valid JSON/);
+    }
+    const noLinks=new DatabaseSync(file,{readOnly:true});
+    try{expect(noLinks.prepare('SELECT count(*) AS n FROM artifact_links WHERE run_id=?').get(plain.id)).toEqual({n:0});}
+    finally{noLinks.close();}
+    expect(()=>engine.artifact(actor,{action:'page',artifactId:marker.id,offset:0,limit:1})).toThrow();
+    const literal:Definition={...ordinary,id:`ordinary-literal-${schemaVersion}`,slug:`ordinary-literal-${schemaVersion}`,
+      nodes:[ordinary.nodes[0],{id:'return',kind:'return',label:'Return',value:{literalJson:JSON.stringify(inert)}}]};
+    expect(engine.save(actor,literal,0,true).issues).toEqual([]);
+    expect(await engine.run(actor,literal.slug,{value:null},`literal-${schemaVersion}`)).toMatchObject({state:'completed',result:inert});
+
+    const ref=capture(engine,Uint8Array.of(0,255,7));
+    const carried={...inert,payload:{reference:ref}};
+    const run=await engine.run(actor,ordinary.slug,{value:carried},`carried-${schemaVersion}`);
+    expect(run).toMatchObject({state:'completed',result:carried});
+    const links=new DatabaseSync(file,{readOnly:true});
+    try{
+      expect(links.prepare('SELECT count(*) AS n FROM artifact_links WHERE run_id=? AND artifact_id=? AND active=1').get(run.id,ref.id)).toEqual({n:schemaVersion===3?4:3});
+      expect(links.prepare('SELECT count(*) AS n FROM artifact_links WHERE run_id=? AND artifact_id=?').get(run.id,marker.id)).toEqual({n:0});
+    }finally{links.close();}
+    // Completed runs retain exact links for inspection; retention policy may
+    // later clean up their bytes. Parked runs are protected separately below.
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
+    expect(reopened.status(actor,run.id).result).toEqual(carried);
+    expect(Buffer.from(page(reopened,ref,0,3).dataBase64,'base64')).toEqual(Buffer.from([0,255,7]));
+  });
   it('captures a browser-shaped binary file, binds its typed reference, and reads the exact bytes after restart',async()=>{
     const {root,file,engine}=setup(),bytes=Uint8Array.from([0,255,1,0,128,42,0]);
     const authored=definition();expect(parseDefinition(authored)).toEqual(authored);expect(validateGraph(authored)).toEqual([]);
@@ -35,6 +78,14 @@ describe('authored artifact graph and public custody operations',()=>{
     expect(run).toMatchObject({state:'completed',result:ref});
     expect(run.outputs.file).toEqual({reference:ref});
     await engine.close();engines.splice(engines.indexOf(engine),1);
+    const guarded=new SqliteStorage(file);
+    try{
+      const saved=guarded.readRun(run.id,JSON.stringify([actor.agentId,actor.sessionKey,actor.sessionId]))!;
+      const changed={...ref,sha256:'0'.repeat(64)};
+      expect(()=>guarded.writeRun({...saved,input:{file:changed}})).toThrow(/artifact/i);
+      expect(()=>guarded.writeRun({...saved,outputs:{...saved.outputs,file:{reference:changed}}})).toThrow(/artifact/i);
+      expect(guarded.readRun(run.id,JSON.stringify([actor.agentId,actor.sessionKey,actor.sessionId]))?.outputs.file).toEqual({reference:ref});
+    }finally{await guarded.close();}
     const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
     expect(reopened.status(actor,run.id).result).toEqual(ref);
     const chunks:Buffer[]=[];let next:number|null=0;while(next!==null){const part=page(reopened,ref,next);chunks.push(Buffer.from(part.dataBase64,'base64'));next=part.nextOffset;}

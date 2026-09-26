@@ -18,7 +18,11 @@ capacity until authorized cleanup frees it. SQLite custody metadata has
 separate per-owner quotas. A successful capture returns an opaque typed
 reference containing its
 SHA-256, byte length, media type, owner-scope digest, and run/node provenance.
-The reference is an identifier, not a permission grant.
+The reference is an identifier, not a permission grant. Ordinary JSON with a
+similar shape remains data; artifact inputs and Artifact nodes validate the
+exact current owner-scoped publication before using it. A published reference
+carried in ordinary JSON can still protect its bytes from cleanup while the
+run or Memory record retains it.
 
 `list` pages owner-scoped metadata with `nextCursor`. `metadata` reads one
 reference and its current status. `page` reads at most 65,536 binary bytes as

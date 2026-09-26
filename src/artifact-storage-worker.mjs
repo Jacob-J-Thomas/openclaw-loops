@@ -163,31 +163,74 @@ function runOpaque(database,runId,scope){
   }
   return {all,input};
 }
-function findRefs(value,nodeId,found,depth=0,opaque=new Set()){
+function publishedReference(database,scope,value){
+  if(!validReference(value)||value.ownerScope!==scope)return undefined;
+  const item=database.prepare('SELECT status,record FROM artifact_items WHERE id=? AND scope=?').get(value.id,scope);
+  if(!item||item.status!=='published'||canonicalHash(JSON.parse(item.record))!==canonicalHash(value))return undefined;
+  return value;
+}
+function findRefs(database,scope,value,nodeId,found,depth=0,opaque=new Set()){
   if(depth>100)throw conflict('Artifact reference nesting exceeds the limit.');
-  if(Array.isArray(value)){for(const item of value)findRefs(item,nodeId,found,depth+1,opaque);return;}
+  if(Array.isArray(value)){for(const item of value)findRefs(database,scope,item,nodeId,found,depth+1,opaque);return;}
   if(!value||typeof value!=='object')return;
   if(value.kind==='loops-artifact'){
     if(opaque.has(canonicalHash(value)))return;
-    if(!validReference(value))throw conflict('Malformed artifact reference in a saved value.');
-    const key=`${nodeId}\0${value.id}`,prior=found.get(key);
-    if(prior&&!same(prior.reference,value))throw conflict('Conflicting artifact reference identities.');
-    found.set(key,{nodeId,reference:value});return;
+    // Ordinary JSON may contain a business object with this discriminator.
+    // Only an exact, current, owner-scoped publication acquires custody.
+    if(publishedReference(database,scope,value)){
+      const key=`${nodeId}\0${value.id}`,prior=found.get(key);
+      if(prior&&canonicalHash(prior.reference)!==canonicalHash(value))throw conflict('Conflicting artifact reference identities.');
+      found.set(key,{nodeId,reference:value});return;
+    }
   }
-  for(const child of Object.values(value))findRefs(child,nodeId,found,depth+1,opaque);
+  for(const child of Object.values(value))findRefs(database,scope,child,nodeId,found,depth+1,opaque);
 }
-function checkpointRefs(run,opaque={all:new Set(),input:new Set()}){
+function checkpointRefs(database,run,opaque={all:new Set(),input:new Set()}){
+  const scope=scopeFor(run.owner);
   const found=new Map();
-  findRefs(run.input,'input',found,0,opaque.input);
-  findRefs(run.context,'context',found,0,opaque.all);
-  for(const [nodeId,value] of Object.entries(run.outputs??{}))findRefs(value,nodeId,found,0,opaque.all);
-  findRefs(run.result,'result',found,0,opaque.all);
+  // Graph input validates each field independently. The scanner must not
+  // charge the enclosing input object as an extra nesting level.
+  for(const value of Object.values(run.input??{}))findRefs(database,scope,value,'input',found,0,opaque.input);
+  // Journal/source metadata is provenance, not live context data.
+  findRefs(database,scope,run.context?.value,'context',found,0,opaque.all);
+  for(const [nodeId,value] of Object.entries(run.outputs??{}))findRefs(database,scope,value,nodeId,found,0,opaque.all);
+  findRefs(database,scope,run.result,'result',found,0,opaque.all);
   return [...found.values()];
 }
-function memoryRefs(record){
+function memoryRefs(database,record){
   const found=new Map();
-  if(!record.deleted)findRefs(record.value,'memory',found);
+  if(!record.deleted)findRefs(database,record.scope,record.value,'memory',found);
   return [...found.values()].map(item=>item.reference);
+}
+function assertAuthoritativeReference(database,scope,runId,nodeId,value){
+  if(!validReference(value)||value.ownerScope!==scope)throw conflict('Invalid authored artifact reference.');
+  const item=database.prepare('SELECT status,record FROM artifact_items WHERE id=? AND scope=?').get(value.id,scope);
+  if(!item||canonicalHash(JSON.parse(item.record))!==canonicalHash(value))throw conflict('Authored artifact reference has no exact owner-scoped publication.');
+  if(item.status==='published')return;
+  // Completed history may display a file that was explicitly cleaned up.
+  // A new input or Artifact output cannot revive its retired custody.
+  if(item.status==='retired'&&database.prepare('SELECT 1 FROM artifact_links WHERE scope=? AND run_id=? AND node_id=? AND artifact_id=? AND active=0').get(scope,runId,nodeId,value.id))return;
+  throw conflict('Authored artifact reference is not published.');
+}
+function assertAuthoredReferences(database,run,scope){
+  for(const field of run.definition.inputSchema??[]){
+    const value=run.input?.[field.name];
+    if(field.type==='artifact'&&value&&typeof value==='object'&&!Array.isArray(value)&&value.kind==='loops-artifact')
+      assertAuthoritativeReference(database,scope,run.id,'input',value);
+  }
+  for(const node of run.definition.nodes??[]){
+    if(node.kind!=='artifact'||!Object.hasOwn(run.outputs??{},node.id))continue;
+    const output=run.outputs[node.id];
+    if(!output||typeof output!=='object'||Array.isArray(output))throw conflict('Invalid authored Artifact node output.');
+    if(node.artifact.operation==='capture'){
+      if(!exact(output,['reference']))throw conflict('Invalid authored Artifact capture output.');
+      assertAuthoritativeReference(database,scope,run.id,node.id,output.reference);
+    }else{
+      if(!exact(output,['references'])||!Array.isArray(output.references)||output.references.length<1||output.references.length>256)
+        throw conflict('Invalid authored Artifact import output.');
+      for(const reference of output.references)assertAuthoritativeReference(database,scope,run.id,node.id,reference);
+    }
+  }
 }
 
 // Schema 4 predates artifact custody. Keep its existing JSON values opaque at
@@ -268,8 +311,6 @@ function proveRunOpaque(database,run,scope,newRun){
       }
     }
   }
-  const before=runOpaque(database,run.id,scope),inputFound=new Map();
-  findRefs(run.input,'input',inputFound,0,before.input);
   for(const node of run.definition.nodes??[]){
     for(const record of committedMemoryRecords(run,node)){
       if(!record||typeof record!=='object'||record.scope!==scope||record.loopId!==run.definition.id||typeof record.key!=='string'||!Number.isSafeInteger(record.version))continue;
@@ -454,13 +495,15 @@ export function artifactStore(database){
       });
     },
     reconcileRun:(run,{newRun=false}={})=>{
-      const scope=checkOwner(run.owner),opaque=proveRunOpaque(database,run,scope,newRun),desired=checkpointRefs(run,opaque),old=database.prepare('SELECT node_id,artifact_id FROM artifact_links WHERE scope=? AND run_id=? AND active=1').all(scope,run.id);
+      const scope=checkOwner(run.owner),opaque=proveRunOpaque(database,run,scope,newRun);
+      assertAuthoredReferences(database,run,scope);
+      const desired=checkpointRefs(database,run,opaque),old=database.prepare('SELECT node_id,artifact_id FROM artifact_links WHERE scope=? AND run_id=? AND active=1').all(scope,run.id);
       const wanted=new Set(desired.map(item=>`${item.nodeId}\0${item.reference.id}`));
       for(const link of old)if(!wanted.has(`${link.node_id}\0${link.artifact_id}`))database.prepare('UPDATE artifact_links SET active=0 WHERE scope=? AND run_id=? AND node_id=? AND artifact_id=?').run(scope,run.id,link.node_id,link.artifact_id);
       for(const {nodeId,reference} of desired){
         if(reference.ownerScope!==scope)throw conflict('Artifact owner scope does not match the run.');
         const item=database.prepare('SELECT status,record FROM artifact_items WHERE id=? AND scope=?').get(reference.id,scope);
-        if(!item||!same(JSON.parse(item.record),reference))throw conflict('Run references an unpublished or changed artifact.');
+        if(!item||canonicalHash(JSON.parse(item.record))!==canonicalHash(reference))throw conflict('Run references an unpublished or changed artifact.');
         if(item.status==='retired'){
           // A historical run may continue to display an expired reference, but
           // a new run or node must not revive custody after confirmed deletion.
@@ -478,12 +521,11 @@ export function artifactStore(database){
     reconcileMemory:(record)=>{
       const {scope,loopId,key}=record;
       if(!digest.test(scope)||typeof loopId!=='string'||typeof key!=='string')throw conflict('Invalid memory artifact owner scope.');
-      const desired=memoryRefs(record),old=database.prepare('SELECT artifact_id FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=?').all(scope,loopId,key);
+      const desired=memoryRefs(database,record),old=database.prepare('SELECT artifact_id FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=?').all(scope,loopId,key);
       if(old.length||desired.length)assertNoGc(database);
       for(const ref of desired){
-        if(ref.ownerScope!==scope)throw conflict('Artifact owner scope does not match memory.');
         const item=database.prepare('SELECT status,record FROM artifact_items WHERE id=? AND scope=?').get(ref.id,scope);
-        if(!item||item.status!=='published'||!same(JSON.parse(item.record),ref))throw conflict('Memory references an unpublished or changed artifact.');
+        if(!item||item.status!=='published'||canonicalHash(JSON.parse(item.record))!==canonicalHash(ref))throw conflict('Memory references an unpublished or changed artifact.');
       }
       database.prepare('DELETE FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=?').run(scope,loopId,key);
       for(const ref of desired){
@@ -547,7 +589,17 @@ export function validateArtifactStore(database){
   for(const link of database.prepare('SELECT scope,run_id,node_id,artifact_id,active FROM artifact_links').iterate()){
     const item=database.prepare('SELECT scope,status,record FROM artifact_items WHERE id=?').get(link.artifact_id);
     const run=database.prepare('SELECT record FROM runs WHERE id=?').get(link.run_id);
-    if(!item||item.scope!==link.scope||!uuid.test(link.artifact_id)||typeof link.run_id!=='string'||!link.run_id||typeof link.node_id!=='string'||!link.node_id||![0,1].includes(link.active)||link.active===1&&item.status!=='published'||link.active===1&&!run||link.active===1&&!checkpointRefs(JSON.parse(run.record),runOpaque(database,link.run_id,link.scope)).some(found=>found.nodeId===link.node_id&&found.reference.id===link.artifact_id&&same(found.reference,JSON.parse(item.record))))throw corrupt('run link');
+    if(!item||item.scope!==link.scope||!uuid.test(link.artifact_id)||typeof link.run_id!=='string'||!link.run_id||typeof link.node_id!=='string'||!link.node_id||![0,1].includes(link.active)||link.active===1&&item.status!=='published'||link.active===1&&!run||link.active===1&&!checkpointRefs(database,JSON.parse(run.record),runOpaque(database,link.run_id,link.scope)).some(found=>found.nodeId===link.node_id&&found.reference.id===link.artifact_id&&canonicalHash(found.reference)===canonicalHash(JSON.parse(item.record))))throw corrupt('run link');
+  }
+  for(const row of database.prepare('SELECT id,owner_key,record FROM runs').iterate()){
+    const run=JSON.parse(row.record),scope=checkOwner(run.owner);
+    if(row.owner_key!==JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]))throw corrupt('run owner');
+    try{assertAuthoredReferences(database,run,scope);}catch{throw corrupt('authored run reference');}
+    const expected=checkpointRefs(database,run,runOpaque(database,row.id,scope))
+      .map(item=>`${item.nodeId}\0${item.reference.id}`).sort();
+    const actual=database.prepare('SELECT node_id,artifact_id FROM artifact_links WHERE scope=? AND run_id=? AND active=1').all(scope,row.id)
+      .map(item=>`${item.node_id}\0${item.artifact_id}`).sort();
+    if(!same(actual,expected))throw corrupt('active run reference links');
   }
   for(const row of database.prepare('SELECT scope,loop_id,memory_key,version,value_sha256,record FROM artifact_memory_opaque').iterate()){
     const original=JSON.parse(row.record);
@@ -556,12 +608,12 @@ export function validateArtifactStore(database){
   for(const row of database.prepare('SELECT scope,loop_id,key,deleted,record FROM memory_records').iterate()){
     const opaque=database.prepare('SELECT record FROM artifact_memory_opaque WHERE scope=? AND loop_id=? AND memory_key=?').get(row.scope,row.loop_id,row.key);
     if(opaque&&same(JSON.parse(opaque.record),JSON.parse(row.record)))continue;
-    const expected=memoryRefs(JSON.parse(row.record));
+    const expected=memoryRefs(database,JSON.parse(row.record));
     const links=database.prepare('SELECT artifact_id FROM artifact_memory_links WHERE scope=? AND loop_id=? AND memory_key=? ORDER BY artifact_id').all(row.scope,row.loop_id,row.key).map(item=>item.artifact_id);
     if(!same(links,[...new Set(expected.map(ref=>ref.id))].sort())||row.deleted===1&&links.length)throw corrupt('memory reference links');
     for(const ref of expected){
       const item=database.prepare('SELECT scope,status,record,ever_linked FROM artifact_items WHERE id=?').get(ref.id);
-      if(ref.ownerScope!==row.scope||!item||item.scope!==row.scope||item.status!=='published'||item.ever_linked!==1||!same(JSON.parse(item.record),ref))throw corrupt('memory reference custody');
+      if(ref.ownerScope!==row.scope||!item||item.scope!==row.scope||item.status!=='published'||item.ever_linked!==1||canonicalHash(JSON.parse(item.record))!==canonicalHash(ref))throw corrupt('memory reference custody');
     }
   }
   for(const origin of database.prepare('SELECT origin_id,scope,ref_hash,ref_record,source_kind,source_record FROM artifact_legacy_origins').iterate()){

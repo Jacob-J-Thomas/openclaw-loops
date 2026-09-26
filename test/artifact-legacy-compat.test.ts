@@ -43,17 +43,14 @@ it('carries exact pre-custody Memory JSON through a real Engine consume without 
     const result=await after.run(actor,definition.slug,{},'v5-consume');
     expect(result.state,JSON.stringify({error:result.error,errorDetail:result.errorDetail,trace:result.trace,failures},null,2)).toBe('completed');
     expect(result.result).toEqual({artifact:marker});
-    const saved=upgraded.readRun(result.id,JSON.stringify([actor.agentId,actor.sessionKey,actor.sessionId]))!;
-    for(const changed of [{id:randomUUID()},{ownerScope:'c'.repeat(64)},{sha256:'d'.repeat(64)}]){
-      const altered={...saved,result:{artifact:{...marker,...changed}},updatedAt:new Date().toISOString()};
-      expect(()=>upgraded.writeRun(altered)).toThrow(/artifact/i);
-    }
-    expect(()=>upgraded.writeRun({...saved,input:{injected:marker},updatedAt:new Date().toISOString()})).toThrow(/artifact/i);
     const fresh=await after.test(actor,examples[0],{text:'ordinary'},'fresh-output-forgery');
-    expect(()=>upgraded.writeRun({...fresh,outputs:{...fresh.outputs,forged:{artifact:marker}},updatedAt:new Date().toISOString()})).toThrow(/artifact/i);
-    const forged={...saved,id:randomUUID(),requestKey:'forged-memory-output',requestFingerprint:'f'.repeat(64),requestFingerprintVersion:2 as const,
-      trace:saved.trace.filter(item=>item.nodeId!=='remember'),updatedAt:new Date().toISOString()};
-    expect(()=>upgraded.writeRun(forged)).toThrow(/artifact/i);
+    for(const changed of [{},{id:randomUUID()},{ownerScope:'c'.repeat(64)},{sha256:'d'.repeat(64)}]){
+      const inert={...marker,...changed};
+      expect(()=>upgraded.writeRun({...fresh,outputs:{...fresh.outputs,forged:{artifact:inert}},updatedAt:new Date().toISOString()})).not.toThrow();
+    }
+    const inertLinks=new DatabaseSync(file,{readOnly:true});
+    try{expect(inertLinks.prepare('SELECT count(*) AS n FROM artifact_links WHERE run_id=?').get(fresh.id)).toEqual({n:0});}
+    finally{inertLinks.close();}
     const search=structuredClone(definition);search.revision=1;
     search.nodes[1]={id:'remember',kind:'memory',label:'Remember',memory:{operation:'search',key:'notes'}};
     search.nodes[2]={id:'return',kind:'return',label:'Return',value:'{{nodes.remember.items}}'};
@@ -173,7 +170,11 @@ it.each([1,2,3,4])('keeps a schema-%i Run input opaque through direct upgrade an
     const retried=await after.retry(actor,runId,'restart','retry-legacy-input');
     expect(retried.state).toBe('completed');expect(retried.input.value).toEqual({artifact:marker});
     expect(retried.result).toEqual({artifact:marker});
-    await expect(after.test(actor,definition,{value:{artifact:marker}},'fresh-forgery')).rejects.toThrow(/artifact/i);
+    const fresh=await after.test(actor,definition,{value:{artifact:marker}},'fresh-ordinary-json');
+    expect(fresh).toMatchObject({state:'completed',result:{artifact:marker}});
+    const links=new DatabaseSync(file,{readOnly:true});
+    try{expect(links.prepare('SELECT count(*) AS n FROM artifact_links WHERE run_id=?').get(fresh.id)).toEqual({n:0});}
+    finally{links.close();}
     const first=after.retention(actor,{keepLatest:0});
     expect(first.candidates.map(item=>item.id)).not.toContain(runId);
     expect(first.protected.ancestry).toBeGreaterThan(0);

@@ -103,14 +103,18 @@ describe('SQLite artifact reservations, run links and cleanup leases',()=>{
     },at+1000).removed).toBe(2);
   });
 
-  it('rolls back stale and faulted Memory link transactions and rejects foreign custody',()=>{
+  it('rolls back stale and faulted Memory links while foreign-shaped JSON stays inert',()=>{
     const {file,storage,custody}=setup(),{memory,invocation}=memoryFor(storage);
     const ref=custody.put(owner,{runId:'capture-one',nodeId:'upload'},Uint8Array.of(7),'application/octet-stream',0,at);
     publish(storage,ref,'one');
     const foreignRef=custody.put(foreign,{runId:'capture-foreign',nodeId:'upload'},Uint8Array.of(8),'application/octet-stream',0,at);
     storage.artifactReserve(foreign,[foreignRef],'foreign');storage.artifactPublished(foreign,[foreignRef],'foreign');
-    expect(()=>memory.write(invocation,'files.bad',{artifact:foreignRef},'memory_foreign',at)).toThrow();
-    expect(()=>memory.inspect(invocation,'files.bad')).toThrow(/absent/);
+    memory.write(invocation,'files.bad',{artifact:foreignRef},'memory_foreign',at);
+    expect(memory.consume(invocation,'files.bad',at+1).value).toEqual({artifact:foreignRef});
+    expect(storage.artifactProtectedSnapshot(owner).has(foreignRef.id)).toBe(false);
+    const foreignLinks=new DatabaseSync(file,{readOnly:true});
+    try{expect(foreignLinks.prepare('SELECT count(*) AS n FROM artifact_memory_links WHERE artifact_id=?').get(foreignRef.id)).toEqual({n:0});}
+    finally{foreignLinks.close();}
     const fault=new DatabaseSync(file);disposals.push(()=>fault.close());
     fault.exec("CREATE TRIGGER reject_memory_artifact BEFORE INSERT ON artifact_memory_links BEGIN SELECT RAISE(ABORT,'Injected Memory link failure'); END;");
     expect(()=>memory.write(invocation,'files.one',{artifact:ref},'memory_fault',at+1)).toThrow();
@@ -149,6 +153,19 @@ describe('SQLite artifact reservations, run links and cleanup leases',()=>{
     damaged.exec('PRAGMA journal_mode=DELETE');damaged.close();
     const before=readFileSync(file);
     expect(()=>new SqliteStorage(file)).toThrow(/memory reference links/);
+    await disposed(file);
+    expect(readFileSync(file)).toEqual(before);
+  });
+  it('rejects a missing active Run custody link before writable cold admission',async()=>{
+    const {file,storage,custody}=setup(),saved=await run(storage);
+    const ref=custody.put(owner,{runId:saved.id,nodeId:'held'},Uint8Array.of(0,255,19),'application/octet-stream',0,at);
+    publish(storage,ref,'cold_run_link');storage.writeRun({...saved,outputs:{...saved.outputs,held:{reference:ref}}});
+    await storage.close();
+    const damaged=new DatabaseSync(file);
+    damaged.prepare('DELETE FROM artifact_links WHERE run_id=? AND artifact_id=? AND active=1').run(saved.id,ref.id);
+    damaged.exec('PRAGMA journal_mode=DELETE');damaged.close();
+    const before=readFileSync(file);
+    expect(()=>new SqliteStorage(file)).toThrow(/active run reference links/);
     await disposed(file);
     expect(readFileSync(file)).toEqual(before);
   });
@@ -209,7 +226,11 @@ describe('SQLite artifact reservations, run links and cleanup leases',()=>{
     expect(storage.artifactReleaseUnlinked(owner,ref.id,operationId,new Date(at+2).toISOString())).toEqual(release);
     expect(storage.artifactReferenceStatus(owner,ref.id)).toMatchObject({operationId,status:'released',everLinked:false,releasedAt:new Date(at+1).toISOString()});
     expect(storage.artifactProtectedSnapshot(owner).has(ref.id)).toBe(false);
-    expect(()=>storage.writeRun({...saved,outputs:{...saved.outputs,unused:ref}})).toThrow(/released artifact/i);
+    storage.writeRun({...saved,outputs:{...saved.outputs,unused:ref}});
+    const releasedLinks=new DatabaseSync(file,{readOnly:true});
+    try{expect(releasedLinks.prepare('SELECT count(*) AS n FROM artifact_links WHERE artifact_id=?').get(ref.id)).toEqual({n:0});}
+    finally{releasedLinks.close();}
+    expect(storage.artifactReferenceStatus(owner,ref.id)?.status).toBe('released');
     const graphOrigin=custody.put(owner,{runId:saved.id,nodeId:'artifact_node'},Uint8Array.of(5),'application/octet-stream',0,at);
     publish(storage,graphOrigin,'graph_origin');
     expect(()=>storage.artifactReleaseUnlinked(owner,graphOrigin.id,'graph_origin')).toThrow(/standalone capture/i);
@@ -436,7 +457,8 @@ describe('SQLite artifact reservations, run links and cleanup leases',()=>{
     expect(storage.artifactCleanupLease(owner)).toBeUndefined();
     expect(custody.list(owner).items).toEqual([]);
     storage.writeRun({...saved,updatedAt:new Date(at+2000).toISOString(),outputs:{...saved.outputs,file_output:ref}});
-    expect(()=>storage.writeRun({...saved,outputs:{...saved.outputs,file_output:ref,another_node:ref}})).toThrow(/Retired artifact/);
+    storage.writeRun({...saved,outputs:{...saved.outputs,file_output:ref,another_node:ref}});
+    expect(storage.artifactReferenceStatus(owner,ref.id)?.status).toBe('retired');
     const ledger=new DatabaseSync(file,{readOnly:true});
     try{expect(ledger.prepare('SELECT status FROM artifact_items WHERE id=?').get(ref.id)).toEqual({status:'retired'});expect(ledger.prepare('SELECT active FROM artifact_links WHERE artifact_id=?').get(ref.id)).toEqual({active:0});expect(ledger.prepare('SELECT count(*) AS count FROM artifact_gc_receipts').get()).toEqual({count:1});}
     finally{ledger.close();}
@@ -523,10 +545,15 @@ describe('SQLite artifact reservations, run links and cleanup leases',()=>{
     const migrated=new DatabaseSync(file,{readOnly:true});
     try{expect(migrated.prepare('SELECT count(*) AS n FROM artifact_memory_opaque').get()).toEqual({n:1});expect(migrated.prepare('SELECT count(*) AS n FROM artifact_memory_links').get()).toEqual({n:0});}
     finally{migrated.close();}
-    expect(()=>new MemoryCore(upgraded,{check:(id,version)=>id==='note'&&version===1}).update(invocation,'research.lookalike',{artifact:lookalike},1,'mutation_rebind',at+3)).toThrow();
-    new MemoryCore(upgraded,{check:(id,version)=>id==='note'&&version===1}).update(invocation,'research.lookalike',{text:'now v5'},1,'mutation_plain',at+4);
+    const migratedMemory=new MemoryCore(upgraded,{check:(id,version)=>id==='note'&&version===1});
+    migratedMemory.update(invocation,'research.lookalike',{artifact:lookalike},1,'mutation_rebind',at+3);
+    expect(migratedMemory.consume(invocation,'research.lookalike',at+3).value).toEqual({artifact:lookalike});
+    const inertLinks=new DatabaseSync(file,{readOnly:true});
+    try{expect(inertLinks.prepare("SELECT count(*) AS n FROM artifact_memory_links WHERE memory_key='research.lookalike'").get()).toEqual({n:0});}
+    finally{inertLinks.close();}
+    migratedMemory.update(invocation,'research.lookalike',{text:'now v5'},2,'mutation_plain',at+4);
     const cleared=new DatabaseSync(file,{readOnly:true});
-    try{expect(cleared.prepare("SELECT version FROM artifact_memory_opaque WHERE memory_key='research.lookalike'").get()).toEqual({version:1});expect(cleared.prepare("SELECT version FROM memory_records WHERE key='research.lookalike'").get()).toEqual({version:2});}
+    try{expect(cleared.prepare("SELECT version FROM artifact_memory_opaque WHERE memory_key='research.lookalike'").get()).toEqual({version:1});expect(cleared.prepare("SELECT version FROM memory_records WHERE key='research.lookalike'").get()).toEqual({version:3});}
     finally{cleared.close();}
     await upgraded.close();
     const corrupt=new DatabaseSync(file);corrupt.exec("INSERT INTO artifact_operations VALUES ('"+'a'.repeat(64)+"','00000000-0000-0000-0000-000000000000','reserved',1); PRAGMA journal_mode=DELETE;");corrupt.close();

@@ -23,8 +23,14 @@ claim a cross-filesystem transaction.
 
 `artifact_links` records each run/node use. Every `writeRun`, whole-state write
 and retention removal reconciles links inside the same SQLite transaction as
-the run checkpoint. It accepts only a published, byte-identical reference in
-the current owner scope. Reserved or published references that have never
+the run checkpoint. Ordinary JSON stays data even if it contains a
+`kind: "loops-artifact"` business object. Only a canonical-exact, published
+reference in the current owner scope acquires a custody link; unknown, changed
+and foreign lookalikes confer no artifact authority. Explicit artifact inputs
+and Artifact-node outputs require valid published custody, including on direct
+storage writes. Cold admission verifies active links in both directions.
+Completed history may retain an exact retired reference with its previously
+inactive link, without reviving it. Reserved or published references that have never
 been linked stay protected. Unlinked history is retained as inactive link
 rows. The engine/public bridge must put artifact references into the persisted
 run input, context, outputs or result, then use the existing checkpoint path;
