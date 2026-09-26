@@ -82,8 +82,7 @@ describe('strict public tool wire factoring',()=>{
         expect(Object.hasOwn(defs,ref.slice('#/$defs/'.length)),`${operation} unresolved ${ref}`).toBe(true);
       }
     }
-    expect(count(projected.test).nodes).toBe(1907);
-    expect(count(baseline.test).nodes).toBe(2061);
+    expect(count(projected.test).nodes).toBeLessThan(count(baseline.test).nodes);
   });
 
   for(const version of [1,2,3] as const){

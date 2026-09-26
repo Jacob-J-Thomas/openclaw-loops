@@ -38,7 +38,7 @@ describe('durable admission identities',()=>{
     const root=fixture(),file=join(root,'loops.sqlite'),previous=await legacy('sv-SE'),old=open(file,previous.state);await old.close();
     // This is a constructed legacy fixture; exact previous-artifact upgrade
     // and downgrade refusal are qualified separately against installed builds.
-    const database=new DatabaseSync(file);database.exec('DROP TABLE artifact_links; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; PRAGMA user_version=2;');
+    const database=new DatabaseSync(file);database.exec('DROP TABLE artifact_links; DROP TABLE artifact_memory_links; DROP TABLE artifact_memory_opaque; DROP TABLE artifact_legacy_run_refs; DROP TABLE artifact_legacy_origins; DROP TABLE artifact_items; DROP TABLE artifact_operations; DROP TABLE artifact_gc; DROP TABLE artifact_gc_receipts; DROP TABLE artifact_recovery_receipts; DROP TABLE memory_receipts; DROP TABLE memory_mutations; DROP TABLE memory_records; PRAGMA user_version=2;');
     const tables=['metadata','loops','revisions','runs','admissions','retired_admissions','attempts','outputs','events'];
     const rows=(db:DatabaseSync)=>Object.fromEntries(tables.map(table=>[table,db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
     const before=rows(database);database.close();
