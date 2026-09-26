@@ -46,6 +46,10 @@ describe('dependency bootstrap before lifecycle execution',()=>{
     const inherited={NODE_OPTIONS:`--require ${preload}`,NODE_PATH:probe.root,OPENAI_API_KEY:'sentinel-key',ANTHROPIC_API_KEY:'sentinel-key',HTTP_PROXY:'http://127.0.0.1:1',HTTPS_PROXY:'http://127.0.0.1:1',npm_config_userconfig:join(probe.root,'personal.npmrc'),NPM_CONFIG_REGISTRY:'https://invalid.example',OPENCLAW_CONFIG_PATH:join(probe.root,'personal.json')};
     const originalLock=hash(readFileSync(join(probe.root,'package-lock.json')));
     for(const mode of ['toolchain','ci']){
+      if(mode==='ci'){
+        const adjacentNpm=join(probe.root,'.dev-profile','toolchains','node-24.16.0','node_modules','node','bin','npm');
+        writeFileSync(adjacentNpm,'#!/bin/sh\necho wrong-adjacent-npm\n',{mode:0o700});
+      }
       const result=launch(probe,mode,'24.16.0',inherited);
       expect(result.status,`${mode}: ${result.stderr}`).toBe(0);
       const value=observed(probe.root,mode==='toolchain'?'install':'ci');

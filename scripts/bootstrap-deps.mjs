@@ -125,7 +125,7 @@ const quote=value=>`'${value.replaceAll("'", "'\"'\"'")}'`;
 function npmEnvironment(nodeBinary){
   const bin=containedDirectory(join(privateRoot,'stages',`commands-${randomUUID()}`));
   writeFileSync(join(bin,'npm'),`#!/bin/sh\nexec ${quote(nodeBinary)} ${quote(npmCli)} "$@"\n`,{flag:'wx',mode:0o700});
-  env.PATH=`${dirname(nodeBinary)}:${bin}:/usr/bin:/bin:/usr/sbin:/sbin`;
+  env.PATH=`${bin}:${dirname(nodeBinary)}:/usr/bin:/bin:/usr/sbin:/sbin`;
   return bin;
 }
 
