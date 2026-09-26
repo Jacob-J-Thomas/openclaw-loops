@@ -13,7 +13,7 @@ const roots:string[]=[],engines:Engine[]=[];
 afterEach(async()=>{for(const engine of engines.splice(0).reverse())await engine.close();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 const actor:Actor={agentId:'main',sessionKey:'agent:main:artifact',sessionId:'artifact-session',source:'tool',human:false,check:()=>{}};
 const host:HostCapabilities={check:()=>{},complete:async()=>({text:'unused'}),modelInfo:async()=>({})};
-function setup(){const root=mkdtempSync(join(tmpdir(),'loops-artifact-integration-'));roots.push(root);const file=join(root,'loops.sqlite');const engine=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(engine);return {root,file,engine};}
+function setup(inputBytes?:number){const root=mkdtempSync(join(tmpdir(),'loops-artifact-integration-'));roots.push(root);const file=join(root,'loops.sqlite');const engine=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts'),...inputBytes===undefined?{}:{budgets:{inputBytes}}});engines.push(engine);return {root,file,engine};}
 function definition(mode:'capture'|'import'='capture',park=false):Definition{
   const artifact=mode==='capture'?{operation:'capture' as const,value:'{{input.file}}',retentionDays:30}:{operation:'import' as const,bundle:'{{input.bundle}}',retentionDays:30};
   const nodes:Definition['nodes']=[{id:'input',kind:'input',label:'Input'},{id:'file',kind:'artifact',label:'File',artifact},...park?[{id:'wait',kind:'wait',label:'Wait',message:'hold'} as const]:[],{id:'return',kind:'return',label:'Return',value:mode==='capture'?'{{nodes.file.reference}}':'{{nodes.file.references}}'}];
@@ -24,6 +24,16 @@ function capture(engine:Engine,bytes:Uint8Array,operationId:string=randomUUID())
   return engine.artifact(actor,{action:'capture',operationId,data:{dataBase64:Buffer.from(bytes).toString('base64'),mediaType:'application/octet-stream'}}).result as ArtifactReference;
 }
 function page(engine:Engine,ref:ArtifactReference,offset:number,limit=2){return engine.artifact(actor,{action:'page',artifactId:ref.id,offset,limit}).result as {reference:ArtifactReference;offset:number;dataBase64:string;nextOffset:number|null};}
+const fileValue={dataBase64:Buffer.from([0,255,13]).toString('base64'),mediaType:'application/octet-stream'};
+const referenceOutputSchema={type:'object' as const,properties:{reference:{type:'object' as const,additionalProperties:true}},required:['reference'],additionalProperties:false};
+function publishedOperation(file:string,run:Awaited<ReturnType<Engine['run']>>){
+  const operationId=run.trace.find(entry=>entry.kind==='artifact')?.artifactOperationId;
+  if(!operationId)throw new Error('Missing Artifact operation ID in the persisted run trace.');
+  const sql=new DatabaseSync(file,{readOnly:true});
+  try{expect(sql.prepare('SELECT status FROM artifact_operations WHERE operation_id=?').get(operationId)).toEqual({status:'published'});}
+  finally{sql.close();}
+  return operationId;
+}
 
 describe('authored artifact graph and public custody operations',()=>{
   it.each([2,3] as const)('preserves version-%i ordinary JSON markers while retaining exact published children',async schemaVersion=>{
@@ -139,5 +149,89 @@ describe('authored artifact graph and public custody operations',()=>{
     const rejected=await engine.run(actor,'artifact-loop',{bundle:missing},'missing-external');
     expect(rejected).toMatchObject({state:'failed',errorDetail:{code:'LOOPS_ARTIFACT_DEPENDENCY_MISSING'}});
     expect(engine.artifact(actor,{action:'list'}).result).toEqual(before);
+  });
+  it.each(['append','merge'] as const)('edits and runs an Artifact output schema with a context %s patch',async mode=>{
+    const {root,file,engine}=setup(),draft=definition();
+    expect(engine.save(actor,draft,0,false).issues).toEqual([]);
+    const bucket=mode==='append'?'[]':'{}';
+    const nodes:Definition['nodes']=[
+      {id:'input',kind:'input',label:'Input',context:{version:1,projection:{mode:'omit'},patch:{mode:'replace',target:'/bucket',source:{kind:'literal',value:{literalJson:bucket}}}}},
+      {id:'file',kind:'artifact',label:'File',artifact:{operation:'capture',value:'{{input.file}}',retentionDays:30},outputSchema:referenceOutputSchema,
+        context:{version:1,projection:{mode:'omit'},patch:{mode,target:'/bucket',source:mode==='append'?{kind:'output',path:'/reference'}:{kind:'output'}}}},
+      {id:'return',kind:'return',label:'Return',value:'{{nodes.file.reference}}'},
+    ];
+    const edited=engine.edit(actor,draft.id,1,{nodes},true);
+    expect(edited.issues).toEqual([]);expect(edited.record.definition.revision).toBe(2);
+    const run=await engine.run(actor,draft.slug,{file:fileValue},`context-${mode}`);
+    expect(run.state).toBe('completed');
+    const ref=run.result as ArtifactReference;
+    expect(run.context?.value.bucket).toEqual(mode==='append'?[ref]:{reference:ref});
+    expect(run.context?.journal.map(entry=>entry.nodeId)).toEqual(['input','file']);
+    expect(Buffer.from(page(engine,ref,0,3).dataBase64,'base64')).toEqual(Buffer.from([0,255,13]));
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
+    expect(reopened.status(actor,run.id).context?.value.bucket).toEqual(mode==='append'?[ref]:{reference:ref});
+  });
+  it('retains a published operation and uncertainty when output validation fails after file creation',async()=>{
+    const {root,file,engine}=setup(),authored=definition();
+    authored.nodes[1]={id:'file',kind:'artifact',label:'File',artifact:{operation:'capture',value:'{{input.file}}',retentionDays:30},
+      outputSchema:{type:'object',properties:{reference:{type:'string'}},required:['reference'],additionalProperties:false}};
+    expect(engine.save(actor,authored,0,true).issues).toEqual([]);
+    const run=await engine.run(actor,authored.slug,{file:fileValue},'schema-after-publication');
+    expect(run).toMatchObject({state:'failed',errorDetail:{code:'LOOPS_OUTPUT_SCHEMA_INVALID'}});
+    expect(run.uncertainty).toMatch(/Artifact operation/);
+    const operationId=publishedOperation(file,run);
+    const item=(engine.artifact(actor,{action:'list'}).result as {items:Array<{reference:ArtifactReference}>}).items[0].reference;
+    expect(Buffer.from(page(engine,item,0,3).dataBase64,'base64')).toEqual(Buffer.from([0,255,13]));
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
+    expect(reopened.status(actor,run.id)).toMatchObject({state:'failed',uncertainty:run.uncertainty});
+    expect(publishedOperation(file,run)).toBe(operationId);
+    const sql=new DatabaseSync(file,{readOnly:true});
+    try{expect(sql.prepare('SELECT count(*) AS n FROM artifact_operations').get()).toEqual({n:1});}
+    finally{sql.close();}
+  });
+  it('records context-budget failure after publication without replaying the file effect',async()=>{
+    const {root,file,engine}=setup(256),authored=definition();
+    expect(engine.budgets.inputBytes).toBe(256);
+    authored.limits.maxOutputBytes=512;
+    authored.inputSchema=[];
+    authored.nodes=[
+      {id:'input',kind:'input',label:'Input',context:{version:1,projection:{mode:'omit'},patch:{mode:'replace',target:'/bucket',source:{kind:'literal',value:{literalJson:'[]'}}}}},
+      {id:'file',kind:'artifact',label:'File',artifact:{operation:'capture',value:{literalJson:JSON.stringify(fileValue)},retentionDays:30},
+        outputSchema:referenceOutputSchema,context:{version:1,projection:{mode:'omit'},patch:{mode:'append',target:'/bucket',source:{kind:'output',path:'/reference'}}}},
+      {id:'return',kind:'return',label:'Return',value:'{{nodes.file.reference}}'},
+    ];
+    expect(engine.save(actor,authored,0,true).issues).toEqual([]);
+    const run=await engine.run(actor,authored.slug,{},'budget-after-publication');
+    expect(run,`committed context/output bytes: ${Buffer.byteLength(JSON.stringify({context:run.context,outputs:run.outputs}))}`).toMatchObject({state:'failed',errorDetail:{code:'LOOPS_OUTPUT_LIMIT'}});
+    expect(run.error).toMatch(/Combined context and output evidence/);
+    expect(run.uncertainty).toMatch(/Artifact operation/);
+    const operationId=publishedOperation(file,run);
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts'),budgets:{inputBytes:256}});engines.push(reopened);
+    const cold=reopened.status(actor,run.id);
+    expect(cold).toMatchObject({state:'failed',uncertainty:run.uncertainty});
+    expect(cold.trace.find(entry=>entry.kind==='artifact')?.artifactOperationId).toBe(operationId);
+    expect(publishedOperation(file,run)).toBe(operationId);
+    const sql=new DatabaseSync(file,{readOnly:true});
+    try{expect(sql.prepare('SELECT count(*) AS n FROM artifact_operations').get()).toEqual({n:1});}
+    finally{sql.close();}
+  });
+  it('does not invent a new publication when validation fails after reusing a captured reference',async()=>{
+    const {root,file,engine}=setup(),ref=capture(engine,Uint8Array.of(0,255,31)),authored=definition();
+    authored.nodes[1]={id:'file',kind:'artifact',label:'File',artifact:{operation:'capture',value:'{{input.file}}',retentionDays:30},
+      outputSchema:{type:'object',properties:{reference:{type:'string'}},required:['reference'],additionalProperties:false}};
+    expect(engine.save(actor,authored,0,true).issues).toEqual([]);
+    const run=await engine.run(actor,authored.slug,{file:ref},'reuse-schema-failure');
+    expect(run).toMatchObject({state:'failed',errorDetail:{code:'LOOPS_OUTPUT_SCHEMA_INVALID'}});
+    expect(run.uncertainty).toBeUndefined();
+    const sql=new DatabaseSync(file,{readOnly:true});
+    try{expect(sql.prepare('SELECT count(*) AS n FROM artifact_operations').get()).toEqual({n:1});}
+    finally{sql.close();}
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
+    expect(reopened.status(actor,run.id)).toMatchObject({state:'failed'});
+    expect(Buffer.from(page(reopened,ref,0,3).dataBase64,'base64')).toEqual(Buffer.from([0,255,31]));
   });
 });

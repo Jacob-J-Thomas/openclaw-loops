@@ -82,7 +82,6 @@ export function validateGraph(d:Definition):Issue[] {
   }
   if(d.schemaVersion===3)for(const node of d.nodes.flatMap(node=>[node,...childNodes(node)])){
     if(node.kind==='evaluate'){const issue=evaluatorConfigurationIssue(node.evaluator);if(issue)error(issue,node.id);}
-    if(node.kind==='artifact'&&(node.outputSchema!==undefined||node.context?.patch.mode!=='omit'&&node.context?.patch!==undefined))error('Artifact effects cannot have an output schema or context patch after the durable publication.',node.id);
     if(node.outputSchema!==undefined)for(const diagnostic of dataSchemaIssues(node.outputSchema))error(`Output schema ${diagnostic.instancePath||'/'}: ${diagnostic.message}`,node.id);
     if(node.kind==='inference'&&node.outputSchema!==undefined&&node.output!=='json')error('Inference output schemas require JSON output mode.',node.id);
     if(node.kind==='inference'&&node.structuredGeneration==='native'&&(node.output!=='json'||node.outputSchema===undefined))error('Native structured generation requires JSON output and a valid output schema.',node.id);

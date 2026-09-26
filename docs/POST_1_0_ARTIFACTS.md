@@ -5,6 +5,10 @@ Run panel captures a file chosen in the browser, then passes only its typed
 reference to the run. An Artifact node can attach that reference or capture a
 new file value. It can also import a portable bundle. The node's durable output
 contains a `reference` or `references` field for later bindings and inspection.
+Artifact nodes can validate that output with an authored output schema and can
+append or merge it into v3 context. If validation or context application fails
+after bytes were published, the failed run retains the operation ID and an
+uncertainty record for explicit inspection; it does not replay the effect.
 Version 1 and 2 definitions retain their original input and node contracts.
 
 The `loops_artifact` tool and `artifact` command/action share the current
