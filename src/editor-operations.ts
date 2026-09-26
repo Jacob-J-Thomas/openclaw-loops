@@ -22,6 +22,10 @@ function remapContextLiteral(node:GraphNode,previous:string,next:string){
   if(source&&source.mode!=='omit'&&source.source.kind==='literal'&&typeof source.source.value==='string')source.source.value=remapBindingTokens(source.source.value,previous,next);
 }
 
+// Invalid imported Memory policies remain editable drafts. Inspect the outer
+// collection shape before graph edits; do not repair or discard its raw value.
+const memoryNodeRecord=(value:unknown):value is Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+
 export function copyDefinition(definition:Definition,id:string,templateDefaults?:Pick<Definition['limits'],'maxExecutions'|'maxOutputBytes'>):Definition{
   const copy={...structuredClone(definition),id,slug:id,revision:0};
   return templateDefaults?{...copy,schemaVersion:definition.schemaVersion===3?3:2,limits:{...copy.limits,...templateDefaults}}:copy;
@@ -70,9 +74,20 @@ export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:
     for(const child of duplicate.body)remapContextLiteral(child,previous,duplicate.body[0].id);
   }
   const position=definition.layout[nodeId]??{x:0,y:0};
-  const memoryPolicy=definition.memoryPolicy?.enabled&&original.kind==='memory'&&definition.memoryPolicy.nodes[original.id]
-    ?{...definition.memoryPolicy,nodes:{...definition.memoryPolicy.nodes,[duplicate.id]:structuredClone(definition.memoryPolicy.nodes[original.id])}}:definition.memoryPolicy;
+  const policy=definition.memoryPolicy,policyNodes=policy?.enabled?policy.nodes:undefined;
+  const memoryPolicy=policy?.enabled&&original.kind==='memory'&&memoryNodeRecord(policyNodes)&&Object.hasOwn(policyNodes,original.id)
+    ?{...policy,nodes:{...policyNodes,[duplicate.id]:structuredClone(policyNodes[original.id])}} as Definition['memoryPolicy']:policy;
   return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}},...memoryPolicy?{memoryPolicy}:{}};
+}
+export function deleteGraphNode(definition:Definition,id:string):Definition{
+  const layout={...definition.layout};delete layout[id];
+  const policy=definition.memoryPolicy,policyNodes=policy?.enabled?policy.nodes:undefined;
+  let memoryPolicy=policy;
+  if(policy?.enabled&&memoryNodeRecord(policyNodes)&&Object.hasOwn(policyNodes,id)){
+    const remaining={...policyNodes};delete remaining[id];
+    memoryPolicy={...policy,nodes:remaining} as Definition['memoryPolicy'];
+  }
+  return {...definition,nodes:definition.nodes.filter(node=>node.id!==id),edges:definition.edges.filter(edge=>edge.source!==id&&edge.target!==id),layout,...memoryPolicy?{memoryPolicy}:{}};
 }
 export function bindingChoices(definition:Definition,consumer:GraphNode):string[]{
   const reachableWithout=(blocked:string)=>{
