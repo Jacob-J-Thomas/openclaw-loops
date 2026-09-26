@@ -56,11 +56,12 @@
     "additionalProperties": false
   },
   "controlUi": {
-    "entry": "dist/control-ui/737dc2cf4dc981f75fb7a514a6f3df88bc6e9782edd0f6c5f3d49be384921261/index.js"
+    "entry": "dist/control-ui/2281be2be6c9d17eb35ea0b53eeab916553e6c7742daa31a89509d0e7e95b9b7/index.js"
   },
   "contracts": {
     "tools": [
       "loops_archive",
+      "loops_artifact",
       "loops_browse",
       "loops_cancel",
       "loops_capabilities",
