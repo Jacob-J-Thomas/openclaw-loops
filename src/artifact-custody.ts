@@ -49,8 +49,10 @@ function reference(value:unknown):asserts value is ArtifactReference{
     !integer(value.bytes)||!string(value.runId)||!string(value.nodeId)||!iso(value.createdAt)||!iso(value.expiresAt)||Date.parse(value.expiresAt)<Date.parse(value.createdAt))throw corrupt();
 }
 function canonicalBase64(value:unknown,max:number):Uint8Array{
-  if(typeof value!=='string'||value.length>Math.ceil(max/3)*4+4||! /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value))throw corrupt();
+  if(typeof value!=='string'||value.length>Math.ceil(max/3)*4+4)throw corrupt();
   const bytes=Buffer.from(value,'base64');
+  // Exact re-encoding is both a canonical spelling check and a bounded linear
+  // replacement for a repeating-group regex that overflows on full-size files.
   if(bytes.length>max||bytes.toString('base64')!==value)throw corrupt();
   return bytes;
 }

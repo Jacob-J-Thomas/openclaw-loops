@@ -17,6 +17,25 @@ function setup(budget?:ConstructorParameters<typeof ArtifactCustody>[1]){
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
 
 describe('artifact custody core',()=>{
+  it('imports and re-exports a canonical full-size embedded file while rejecting malformed and oversize bytes',()=>{
+    const source=setup().store,target=setup().store,bytes=Buffer.alloc(8*1024*1024,0x4b);
+    bytes[0]=0;bytes[bytes.length-1]=255;
+    const original=source.put(owner,origin,bytes,'application/octet-stream');
+    const bundle=source.export(owner,[{id:original.id,mode:'embedded'}]);
+    expect(bundle.artifacts[0]).toMatchObject({bytes:bytes.length,sha256:sha(bytes)});
+    const imported=target.import(foreign,{runId:'full-size-import',nodeId:'file'},bundle);
+    expect(imported).toHaveLength(1);
+    expect(createHash('sha256').update(target.readPage(foreign,imported[0].id,bytes.length-65536,65536).bytes).digest('hex'))
+      .toBe(createHash('sha256').update(bytes.subarray(bytes.length-65536)).digest('hex'));
+    const roundtrip=target.export(foreign,[{id:imported[0].id,mode:'embedded'}]);
+    expect(roundtrip.artifacts[0]).toMatchObject({bytes:bytes.length,sha256:original.sha256});
+    expect(sha(Buffer.from((roundtrip.artifacts[0] as {dataBase64:string}).dataBase64,'base64'))).toBe(original.sha256);
+    const malformed=structuredClone(bundle) as ArtifactBundle;
+    if(malformed.artifacts[0].mode==='embedded')malformed.artifacts[0].dataBase64='AA!=';
+    expect(()=>target.import(foreign,{runId:'bad-base64',nodeId:'file'},malformed)).toThrow(/embedded artifact bytes are invalid/i);
+    expect(()=>source.put(owner,origin,Buffer.alloc(bytes.length+1),'application/octet-stream')).toThrow(/limit/i);
+    expect(target.list(foreign).items).toEqual(imported);
+  });
   it('round trips binary bytes and provenance across restart with bounded byte/metadata pages',()=>{
     const {directory,store}=setup({maxPageBytes:3});
     const bytes=Uint8Array.from([0,255,7,0,128,10,11]);

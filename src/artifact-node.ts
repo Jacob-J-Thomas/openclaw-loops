@@ -11,12 +11,15 @@ export const ArtifactNodeConfigSchema=Type.Union([
 export type ArtifactNodeConfig={operation:'capture';value:NodeValue;retentionDays:number}|{operation:'import';bundle:NodeValue;external?:NodeValue;retentionDays:number};
 export type FileInput={dataBase64:string;mediaType:string;name?:string};
 const mime=/^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
-const base64=/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const plain=(value:unknown):value is Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype;
 export function decodeFileInput(value:unknown,maxBytes:number):{bytes:Uint8Array;mediaType:string}{
-  if(!plain(value)||Object.keys(value).some(key=>!['dataBase64','mediaType','name'].includes(key))||typeof value.dataBase64!=='string'||!base64.test(value.dataBase64)||value.dataBase64.length>Math.ceil(maxBytes/3)*4+4||typeof value.mediaType!=='string'||!mime.test(value.mediaType)||value.name!==undefined&&(typeof value.name!=='string'||value.name.length>255))throw requestError('File input requires canonical Base64 bytes and a valid media type.','LOOPS_ARTIFACT_INPUT');
+  if(!plain(value)||Object.keys(value).some(key=>!['dataBase64','mediaType','name'].includes(key))||typeof value.dataBase64!=='string'||value.dataBase64.length>Math.ceil(maxBytes/3)*4+4||typeof value.mediaType!=='string'||!mime.test(value.mediaType)||value.name!==undefined&&(typeof value.name!=='string'||value.name.length>255))throw requestError('File input requires canonical Base64 bytes and a valid media type.','LOOPS_ARTIFACT_INPUT');
   const bytes=Buffer.from(value.dataBase64,'base64');
-  if(bytes.length>maxBytes||bytes.toString('base64')!==value.dataBase64)throw requestError('File bytes exceed the configured limit or are not canonical Base64.','LOOPS_ARTIFACT_SIZE');
+  if(bytes.length>maxBytes)throw requestError('File bytes exceed the configured limit or are not canonical Base64.','LOOPS_ARTIFACT_SIZE');
+  // Buffer's decoder tolerates malformed Base64. The exact round trip rejects
+  // every noncanonical alphabet, padding and trailing-bit form without running
+  // a repeating-group regular expression over an 8 MiB file's encoded text.
+  if(bytes.toString('base64')!==value.dataBase64)throw requestError('File input requires canonical Base64 bytes and a valid media type.','LOOPS_ARTIFACT_INPUT');
   return {bytes,mediaType:value.mediaType};
 }
 export function decodeExternalFiles(value:Json|undefined,maxBytes:number):Record<string,Uint8Array>{

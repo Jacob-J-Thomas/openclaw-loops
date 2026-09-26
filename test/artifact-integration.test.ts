@@ -8,6 +8,7 @@ import {Engine,type Actor,type HostCapabilities} from '../src/engine.js';
 import {SqliteStorage} from '../src/storage.js';
 import {parseDefinition,validateGraph,type Definition} from '../src/graph.js';
 import type {ArtifactReference} from '../src/artifact-custody.js';
+import {decodeFileInput} from '../src/artifact-node.js';
 
 const roots:string[]=[],engines:Engine[]=[];
 afterEach(async()=>{for(const engine of engines.splice(0).reverse())await engine.close();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
@@ -36,6 +37,32 @@ function publishedOperation(file:string,run:Awaited<ReturnType<Engine['run']>>){
 }
 
 describe('authored artifact graph and public custody operations',()=>{
+  it('captures and pages the full 8 MiB file limit without a Base64 validator stack overflow',async()=>{
+    const {root,file,engine}=setup(),bytes=Buffer.alloc(8*1024*1024,0x4b);
+    bytes[0]=0;bytes[bytes.length-1]=255;
+    const ref=capture(engine,bytes,'full-size-capture');
+    expect(ref).toMatchObject({bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
+    const first=page(engine,ref,0,65536),last=page(engine,ref,bytes.length-65536,65536);
+    expect(Buffer.from(first.dataBase64,'base64')).toEqual(bytes.subarray(0,65536));
+    expect(Buffer.from(last.dataBase64,'base64')).toEqual(bytes.subarray(bytes.length-65536));
+    const embedded=engine.artifact(actor,{action:'export',selections:[{id:ref.id,mode:'embedded'}]}).result as {artifacts:Array<{dataBase64:string}>};
+    expect(createHash('sha256').update(Buffer.from(embedded.artifacts[0].dataBase64,'base64')).digest('hex')).toBe(ref.sha256);
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
+    expect(Buffer.from(page(reopened,ref,bytes.length-65536,65536).dataBase64,'base64')).toEqual(bytes.subarray(bytes.length-65536));
+  });
+  it('preserves canonical Base64 and decoded-byte error boundaries at the 8 MiB limit',()=>{
+    const file=(dataBase64:string)=>({dataBase64,mediaType:'application/octet-stream'});
+    for(const malformed of ['AA!=','Zh==','AQID=',' AQID']){
+      let failure:unknown;
+      try{decodeFileInput(file(malformed),8*1024*1024);}catch(error){failure=error;}
+      expect(failure).toMatchObject({detail:{code:'LOOPS_ARTIFACT_INPUT'}});
+    }
+    const oversized=Buffer.alloc(8*1024*1024+1,0x4b).toString('base64');
+    let failure:unknown;
+    try{decodeFileInput(file(oversized),8*1024*1024);}catch(error){failure=error;}
+    expect(failure).toMatchObject({detail:{code:'LOOPS_ARTIFACT_SIZE'}});
+  });
   it.each([2,3] as const)('preserves version-%i ordinary JSON markers while retaining exact published children',async schemaVersion=>{
     const {root,file,engine}=setup();
     const ordinary:Definition={schemaVersion,id:`ordinary-json-${schemaVersion}`,slug:`ordinary-json-${schemaVersion}`,name:'Ordinary JSON',description:'',revision:0,
