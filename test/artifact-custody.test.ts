@@ -47,6 +47,23 @@ describe('artifact custody core',()=>{
     expect(()=>store.readPage(owner,ref.id,0,0)).toThrow(/bounds/i);
   });
 
+  it('shares byte and item capacity across owners without changing existing custody on refusal',()=>{
+    for(const budget of [
+      {maxArtifactBytes:3,maxTotalBytes:4,maxBundleBytes:3,maxArtifacts:2},
+      {maxArtifactBytes:2,maxTotalBytes:4,maxBundleBytes:2,maxArtifacts:1},
+    ]){
+      const {directory,store}=setup(budget),bytes=Uint8Array.from(budget.maxArtifacts===2?[0,255,7]:[0,255]);
+      const ref=store.put(owner,origin,bytes,'application/octet-stream');
+      const committed=readdirSync(directory).filter(name=>name.startsWith('batch-'));
+      expect(()=>store.put(foreign,origin,Uint8Array.from([3,4]),'application/octet-stream')).toThrow(/quota/i);
+      expect(readdirSync(directory).filter(name=>name.startsWith('batch-'))).toEqual(committed);
+      const reopened=new ArtifactCustody(directory,budget);
+      expect(reopened.list(foreign).total).toBe(0);
+      expect(reopened.list(owner).items).toEqual([ref]);
+      expect([...reopened.readPage(owner,ref.id).bytes]).toEqual([...bytes]);
+    }
+  });
+
   it('rejects corrupt payloads and symlinks without replacing evidence',()=>{
     const {directory,store}=setup();
     const ref=store.put(owner,origin,Uint8Array.from([1,2,3]),'application/octet-stream');

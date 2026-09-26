@@ -12,8 +12,11 @@ agent-and-chat-session authority. `capture` accepts canonical Base64 bytes and
 a media type in `data`, with a stable `operationId`. Large JSON input can first
 be staged with `loops_upload` and supplied as its completed upload reference.
 The public request never supplies a filesystem path. A single file is limited
-to 8 MiB, while custody has a 64 MiB owner quota and bounded item and metadata
-quotas. A successful capture returns an opaque typed reference containing its
+to 8 MiB. Each plugin-owned custody directory has a shared physical limit of
+64 MiB and 256 files across owners; a different owner's files can consume that
+capacity until authorized cleanup frees it. SQLite custody metadata has
+separate per-owner quotas. A successful capture returns an opaque typed
+reference containing its
 SHA-256, byte length, media type, owner-scope digest, and run/node provenance.
 The reference is an identifier, not a permission grant.
 
