@@ -7,7 +7,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {Engine,type Actor,type HostCapabilities} from '../src/engine.js';
 import {SqliteStorage} from '../src/storage.js';
 import {parseDefinition,validateGraph,type Definition} from '../src/graph.js';
-import type {ArtifactReference} from '../src/artifact-custody.js';
+import type {ArtifactBundle,ArtifactReference} from '../src/artifact-custody.js';
 import {decodeFileInput} from '../src/artifact-node.js';
 
 const roots:string[]=[],engines:Engine[]=[];
@@ -37,6 +37,65 @@ function publishedOperation(file:string,run:Awaited<ReturnType<Engine['run']>>){
 }
 
 describe('authored artifact graph and public custody operations',()=>{
+  it('imports a full 16 MiB portable bundle through the public action at the default Run input budget',async()=>{
+    const {root,file,engine}=setup();
+    const first=Buffer.alloc(8*1024*1024,0x4b),second=Buffer.alloc(8*1024*1024,0xa7);
+    const firstId=randomUUID(),secondId=randomUUID();
+    const bundle:ArtifactBundle={format:'loops-artifacts-v1',artifacts:[
+      {sourceId:firstId,sha256:createHash('sha256').update(first).digest('hex'),bytes:first.length,mediaType:'application/octet-stream',sourceRunId:'portable-origin',sourceNodeId:'file-a',mode:'embedded',dataBase64:first.toString('base64')},
+      {sourceId:secondId,sha256:createHash('sha256').update(second).digest('hex'),bytes:second.length,mediaType:'application/octet-stream',sourceRunId:'portable-origin',sourceNodeId:'file-b',mode:'external'},
+    ]};
+    const data={bundle,external:{[secondId]:second.toString('base64')}},operationId='public-full-bundle';
+    expect(Buffer.byteLength(JSON.stringify(data))).toBeGreaterThan(20*1024*1024);
+    const imported=engine.artifact(actor,{action:'import',operationId,data}).result as ArtifactReference[];
+    expect(imported).toHaveLength(2);
+    expect(imported.map(item=>item.bytes)).toEqual([first.length,second.length]);
+    expect(imported.map(item=>item.sha256).sort()).toEqual(bundle.artifacts.map(item=>item.sha256).sort());
+    expect(engine.artifact(actor,{action:'import',operationId,data}).result).toEqual(imported);
+    const importedFirst=imported.find(item=>item.sha256===bundle.artifacts[0].sha256)!,importedSecond=imported.find(item=>item.sha256===bundle.artifacts[1].sha256)!;
+    expect(Buffer.from(page(engine,importedFirst,0,64).dataBase64,'base64')).toEqual(first.subarray(0,64));
+    expect(Buffer.from(page(engine,importedSecond,second.length-64,64).dataBase64,'base64')).toEqual(second.subarray(second.length-64));
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
+    expect(reopened.artifact(actor,{action:'import',operationId,data}).result).toEqual(imported);
+    for(const reference of imported)expect(reopened.artifact(actor,{action:'release-unused',artifactId:reference.id,operationId}).result).toMatchObject({status:'released'});
+    const plan=reopened.artifact(actor,{action:'cleanup-preview',policy:{olderThanDays:0}}).result as {planId:string;candidates:ArtifactReference[]};
+    expect(plan.candidates.map(item=>item.id).sort()).toEqual(imported.map(item=>item.id).sort());
+    expect(reopened.artifact(actor,{action:'cleanup-apply',policy:{olderThanDays:0},planId:plan.planId}).result).toMatchObject({removed:2});
+  });
+  it('keeps public import replay and failed dependency validation effect-free',()=>{
+    const {file,engine}=setup(),bytes=Buffer.from([0,255,7]);
+    const sourceId=randomUUID(),bundle:ArtifactBundle={format:'loops-artifacts-v1',artifacts:[{sourceId,sha256:createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length,mediaType:'application/octet-stream',sourceRunId:'origin',sourceNodeId:'file',mode:'embedded',dataBase64:bytes.toString('base64')}]};
+    const operationId='public-import-idempotent',first=engine.artifact(actor,{action:'import',operationId,data:{bundle}}).result as ArtifactReference[];
+    const foreign:Actor={...actor,sessionKey:'agent:main:other-artifact-session',sessionId:'other-artifact-session'};
+    expect(()=>engine.artifact(foreign,{action:'page',artifactId:first[0].id,offset:0,limit:1})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_ARTIFACT_NOT_FOUND'})}));
+    const changed=Buffer.from([0,255,8]),different={...bundle,artifacts:[{...bundle.artifacts[0],sha256:createHash('sha256').update(changed).digest('hex'),dataBase64:changed.toString('base64')}]};
+    expect(()=>engine.artifact(actor,{action:'import',operationId,data:{bundle:different}})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_ARTIFACT_CONFLICT'})}));
+    const missing={...bundle,artifacts:[{...bundle.artifacts[0],mode:'external' as const}]};delete (missing.artifacts[0] as {dataBase64?:string}).dataBase64;
+    expect(()=>engine.artifact(actor,{action:'import',operationId:'missing-dependency',data:{bundle:missing}})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_ARTIFACT_DEPENDENCY_MISSING'})}));
+    expect(()=>engine.artifact(actor,{action:'import',operationId:'oversized-json',data:{bundle,external:{[sourceId]:'A'.repeat(24*1024*1024)}}})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_ARTIFACT_SIZE'})}));
+    expect(engine.artifact(actor,{action:'import',operationId,data:{bundle}}).result).toEqual(first);
+    expect(()=>engine.artifact(actor,{action:'capture',operationId,data:{dataBase64:bytes.toString('base64'),mediaType:'application/octet-stream'}})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_ARTIFACT_CONFLICT'})}));
+    const captureOperationId='capture-first',captured=capture(engine,bytes,captureOperationId);
+    expect(()=>engine.artifact(actor,{action:'import',operationId:captureOperationId,data:{bundle}})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_ARTIFACT_CONFLICT'})}));
+    expect(captured.runId).toBe(`capture-${captureOperationId}`);
+    const sql=new DatabaseSync(file,{readOnly:true});try{expect(sql.prepare('SELECT count(*) AS n FROM artifact_operations').get()).toEqual({n:2});}finally{sql.close();}
+  });
+  it('retains public import uncertainty after file publication until explicit owner recovery',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-public-import-fault-'));roots.push(root);
+    const file=join(root,'loops.sqlite'),storage=new SqliteStorage(file),engine=new Engine(storage,host,{artifactDirectory:join(root,'artifacts')});engines.push(engine);
+    const bytes=Buffer.from([0,255,31]),sourceId=randomUUID(),operationId='public-import-published-uncertain';
+    const bundle:ArtifactBundle={format:'loops-artifacts-v1',artifacts:[{sourceId,sha256:createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length,mediaType:'application/octet-stream',sourceRunId:'origin',sourceNodeId:'file',mode:'embedded',dataBase64:bytes.toString('base64')}]};
+    storage.artifactPublished=()=>{throw new Error('Injected acknowledgement loss after file publication.');};
+    expect(()=>engine.artifact(actor,{action:'import',operationId,data:{bundle}})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_ARTIFACT_UNCERTAIN'})}));
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
+    const inspected=reopened.artifact(actor,{action:'publication-inspect',operationId}).result as {operation:{status:string;references:Array<{reference:ArtifactReference}>};readback:Array<{status:string}>};
+    expect(inspected.operation.status).toBe('reserved');expect(inspected.readback.map(item=>item.status)).toEqual(['published']);
+    expect(()=>reopened.artifact(actor,{action:'import',operationId,data:{bundle}})).toThrow(expect.objectContaining({detail:expect.objectContaining({code:'LOOPS_ARTIFACT_UNCERTAIN'})}));
+    expect(reopened.artifact(actor,{action:'publication-recover',operationId,recoveryId:randomUUID()}).result).toMatchObject({outcome:'published'});
+    expect(reopened.artifact(actor,{action:'import',operationId,data:{bundle}}).result).toEqual([inspected.operation.references[0].reference]);
+  });
   it('captures and pages the full 8 MiB file limit without a Base64 validator stack overflow',async()=>{
     const {root,file,engine}=setup(),bytes=Buffer.alloc(8*1024*1024,0x4b);
     bytes[0]=0;bytes[bytes.length-1]=255;

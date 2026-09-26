@@ -22,6 +22,10 @@ let engine,store,effects=0;
 try{
   await build({stdin:{contents:"export {Engine} from './src/engine.ts'; export {SqliteStorage} from './src/storage.ts'; export {DocumentStore} from './src/document-store.ts'; export {examples} from './src/examples.ts';",resolveDir:resolve('.')},outfile:join(code,'code.mjs'),bundle:true,platform:'node',format:'esm',target:'node24'});
   copyFileSync('src/storage-worker.mjs',join(code,'storage-worker.mjs'));
+  // The storage worker imports this sibling at module load. Omitting it makes
+  // the synchronous startup query time out before the ENOSPC fixture begins.
+  copyFileSync('src/artifact-storage-worker.mjs',join(code,'artifact-storage-worker.mjs'));
+  assert(existsSync(join(code,'storage-worker.mjs'))&&existsSync(join(code,'artifact-storage-worker.mjs')),'The disposable worker dependency set is incomplete.');
   const {Engine,SqliteStorage,DocumentStore,examples}=await import(pathToFileURL(join(code,'code.mjs')).href);
   const actor={agentId:'main',sessionKey:'agent:main:filesystem-fault',sessionId:'synthetic-filesystem-fault',source:'tool',human:false,check:()=>{}};
   const host={check:()=>{},modelInfo:async()=>({}),complete:async()=>{effects++;return {text:'Explicit recovery completed.'};}};

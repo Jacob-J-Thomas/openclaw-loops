@@ -20,7 +20,9 @@ import {SwitchEditor,TypedConditionEditor,typedConditionFrom,typedRewriteHint,ha
 import {ContextEditor} from './context-editor.js';
 import {DataSchemaEditor,hasActiveDataSchemaDrafts,inputSchemaScope,outputSchemaScope,moveDataSchemaDrafts,DataSchemaDrafts,type SchemaEdit,type SchemaDraftLocationSnapshot} from './data-schema-editor.js';
 import {ControlledEvaluationEditor,type EvaluationDraft} from './evaluation-editor.js';
-import {RunLauncher,publishedDefinition} from './run-launcher.js';
+import {RunLauncher,captureWithRecoveryId,publishedDefinition} from './run-launcher.js';
+import type {FileRelease} from './run-launcher.js';
+import {LoopError} from './errors.js';
 import {RunInspection} from './run-inspection.js';
 import {RunRefreshGate} from './run-refresh.js';
 import {clearRunView,readRunView,resolveRunView,saveRunView,type RunViewState} from './run-view-state.js';
@@ -241,19 +243,37 @@ export function Editor({host}:{host:ControlUiHost}){
   const connectionTargets=(definition?.nodes.filter(node=>node.kind!=='input'&&node.id!==connectionSourceNode?.id)??[]);
   const effectiveConnectionTarget=connectionTargets.find(node=>node.id===connectionTarget)?.id??connectionTargets[0]?.id??'';
   const runAction=(action:()=>Promise<RunReceipt>,origin?:HTMLElement|null)=>perform(async()=>{const actionScope=runRefreshGate.current(),releaseFocus=captureRunControlFocus(origin);setBusy(true);try{const result=await action(),restoreFocus=releaseFocus();if(lastSession.current===sessionKey&&runRefreshGate.completeMutation(actionScope)){if(restoreFocus)runSelectRef.current?.focus();selectRun(result.id);await refresh();}}finally{if(releaseFocus()&&lastSession.current===sessionKey&&runRefreshGate.matches(actionScope))runSelectRef.current?.focus();setBusy(false);}});
-  const start=({target,definition:targetDefinition,input}:{target:'published'|'draft';definition:Definition;input:Record<string,Json>},origin?:HTMLElement)=>{if(target==='draft'&&(hasActiveEvaluationDrafts(targetDefinition,evaluationDrafts.current)||hasActiveDataSchemaDrafts(targetDefinition,schemaDrafts.current)||hasActiveCaseDrafts(targetDefinition,caseDrafts.current))){setError('Finish invalid evaluator, enum, or Switch case JSON before testing this draft.');return;}selectRun('');void runAction(()=>target==='draft'?feature.invoke('test',{definition:targetDefinition,input,requestId:crypto.randomUUID()},options):feature.invoke('run',{slug:targetDefinition.slug,input,requestId:crypto.randomUUID()},options),origin);};
+  const start=({target,definition:targetDefinition,input}:{target:'published'|'draft';definition:Definition;input:Record<string,Json>},origin?:HTMLElement):Promise<void>=>{if(target==='draft'&&(hasActiveEvaluationDrafts(targetDefinition,evaluationDrafts.current)||hasActiveDataSchemaDrafts(targetDefinition,schemaDrafts.current)||hasActiveCaseDrafts(targetDefinition,caseDrafts.current))){setError('Finish invalid evaluator, enum, or Switch case JSON before testing this draft.');return Promise.resolve();}selectRun('');return runAction(()=>target==='draft'?feature.invoke('test',{definition:targetDefinition,input,requestId:crypto.randomUUID()},options):feature.invoke('run',{slug:targetDefinition.slug,input,requestId:crypto.randomUUID()},options),origin);};
   const stageFile=async(file:File):Promise<Json>=>{
     if(file.size>8*1024*1024)throw new Error('File exceeds the 8 MiB artifact limit.');
     const bytes=new Uint8Array(await file.arrayBuffer()),parts:string[]=[];
     for(let offset=0;offset<bytes.length;offset+=32768)parts.push(String.fromCharCode(...bytes.subarray(offset,offset+32768)));
-    const response=await feature.invoke('artifact',{action:'capture',operationId:crypto.randomUUID(),data:{dataBase64:btoa(parts.join('')),mediaType:file.type||'application/octet-stream',name:file.name.slice(0,255)}},options);
-    return response.result as Json;
+    const operationId=crypto.randomUUID();
+    return captureWithRecoveryId(operationId,async()=>{
+      const response=await feature.invoke('artifact',{action:'capture',operationId,data:{dataBase64:btoa(parts.join('')),mediaType:file.type||'application/octet-stream',name:file.name.slice(0,255)}},options);
+      return response.result as Json;
+    });
   };
-  const releaseFile=async(value:Json):Promise<void>=>{
+  const releaseFile=async(value:Json):Promise<FileRelease>=>{
     if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Captured file reference is invalid.');
     const reference=value as Record<string,Json>,id=reference.id,runId=reference.runId;
     if(typeof id!=='string'||typeof runId!=='string'||!runId.startsWith('capture-'))throw new Error('Only an unused standalone file capture can be released here.');
-    await feature.invoke('artifact',{action:'release-unused',artifactId:id,operationId:runId.slice('capture-'.length)},options);
+    const operationId=runId.slice('capture-'.length);
+    try{
+      const response=await feature.invoke('artifact',{action:'release-unused',artifactId:id,operationId},options);
+      const result=response.result as Record<string,unknown>|null;
+      if(!result||typeof result!=='object'||Array.isArray(result)||result.id!==id||result.operationId!==operationId||typeof result.status!=='string'||!['released','retired'].includes(result.status)||typeof result.releasedAt!=='string')throw new Error('File release acknowledgement is incomplete; inspect custody before replacing it.');
+      return 'released';
+    }catch(error){
+      if(!(error instanceof LoopError)||error.detail.code!=='LOOPS_ARTIFACT_CONFLICT')throw error;
+      const response=await feature.invoke('artifact',{action:'metadata',artifactId:id},options);
+      const result=response.result as Record<string,unknown>|null;
+      if(!result||typeof result!=='object'||Array.isArray(result)||!result.reference||typeof result.reference!=='object'||Array.isArray(result.reference))throw error;
+      const actual=result.reference as Record<string,unknown>;
+      const fields=['kind','id','sha256','mediaType','bytes','ownerScope','runId','nodeId','createdAt','expiresAt'] as const;
+      if(result.operationId!==operationId||result.status!=='published'||result.everLinked!==true||fields.some(field=>actual[field]!==reference[field])||Object.keys(actual).length!==fields.length)throw error;
+      return 'linked-protected';
+    }
   };
   const downloadArtifact=async(reference:ArtifactReference)=>{
     const chunks:Uint8Array[]=[];let offset=0;

@@ -5,7 +5,7 @@ import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {Value} from 'typebox/value';
 import {SqliteStorage} from '../src/storage.js';
 import type {OpenClawPluginApi,OpenClawPluginToolContext,PluginCommandContext,PluginSessionActionRegistration,OpenClawPluginService,OpenClawPluginCommandDefinition} from 'openclaw/plugin-sdk/plugin-entry';
@@ -1323,6 +1323,29 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     const plan=await toolJson(s,'artifact',{action:'cleanup-preview',policy:{olderThanDays:0}}) as {result:{planId:string;candidates:Array<{id:string}>}};
     expect(plan.result.candidates.map(item=>item.id)).toContain(reference.id);
     expect(await toolJson(s,'artifact',{action:'cleanup-apply',policy:{olderThanDays:0},planId:plan.result.planId})).toMatchObject({result:{removed:1}});
+  });
+  it('fits an explicitly larger document page to session action, command and tool envelopes',async()=>{
+    const s=await setup(),source=JSON.stringify({payload:'A'.repeat(140_000)});
+    const store=new DocumentStore(join(s.root,'loops-poc','documents'));
+    const reference=store.snapshot({agentId:s.agentId,sessionKey:s.key,sessionId:s.sessionId,source:'tool',human:false,check:()=>{}},{payload:'A'.repeat(140_000)},emptyDocumentLinks());
+    const input={documentId:reference.documentId,readerId:reference.readerId,offset:0,limit:60_000};
+    const ui=(await s.action('document',input)) as {result:{text:string;nextOffset:number|null}};
+    expect(ui.result.text).toBe(source.slice(0,60_000));expect(ui.result.nextOffset).toBe(60_000);expect(fitsFeatureJson(ui.result)).toBe(true);
+    const command=await commandJson(s,'document',input) as {text:string;nextOffset:number|null};
+    const tool=await toolJson(s,'document',input) as {text:string;nextOffset:number|null};
+    for(const page of [command,tool]){expect(page.text.length).toBeGreaterThan(0);expect(page.text.length).toBeLessThan(60_000);expect(page.nextOffset).toBe(page.text.length);expect(source.startsWith(page.text)).toBe(true);}
+  });
+  it('shares public portable import across UI, command and tool routes',async()=>{
+    const s=await setup(),bytes=Buffer.from([0,255,9]),sourceId=randomUUID(),operationId='adapter-import-1';
+    const bundle={format:'loops-artifacts-v1',artifacts:[{sourceId,sha256:createHash('sha256').update(bytes).digest('hex'),mediaType:'application/octet-stream',bytes:bytes.length,sourceRunId:'exported-run',sourceNodeId:'file',mode:'embedded',dataBase64:bytes.toString('base64')}]};
+    const ui=await s.action('artifact',{action:'import',operationId,data:{bundle}}) as {result:{result:Array<{id:string;sha256:string}>}};
+    expect(ui.result.result).toHaveLength(1);
+    const reference=ui.result.result[0];
+    expect(reference.sha256).toBe(bundle.artifacts[0].sha256);
+    expect(await commandJson(s,'artifact',{action:'import',operationId,data:{bundle}})).toMatchObject({result:[reference]});
+    expect(await toolJson(s,'artifact',{action:'import',operationId,data:{bundle}})).toMatchObject({result:[reference]});
+    expect(await toolJson(s,'artifact',{action:'page',artifactId:reference.id,offset:0,limit:3})).toMatchObject({result:{dataBase64:bytes.toString('base64')}});
+    expect(await commandJson(s,'artifact',{action:'release-unused',artifactId:reference.id,operationId})).toMatchObject({result:{status:'released'}});
   });
   it('reads an authored SQLite memory value through UI, command and tool adapters',async()=>{
     const s=await setup();

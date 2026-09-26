@@ -20,7 +20,7 @@ import {lifecycleMutation,lifecycleValue,selected,selectedIfPresent,selectRetain
 import {MemoryCore,type MemoryInvocation,type MemoryRemovalPlan,type MemoryRepository} from './memory-core.js';
 import {memorySchemaValidator,assertNoMemorySchemaRedefinition} from './memory-definition.js';
 import type {MemoryNodeOperation} from './memory-node.js';
-import {ArtifactCustody,type ArtifactBundle,type ArtifactOwner,type ArtifactReference,type CleanupPolicy} from './artifact-custody.js';
+import {ArtifactCustody,maxPortableImportTransportBytes,type ArtifactBundle,type ArtifactOwner,type ArtifactReference,type CleanupPolicy} from './artifact-custody.js';
 import {decodeFileInput,decodeExternalFiles} from './artifact-node.js';
 import type {SqliteStorage} from './storage.js';
 
@@ -47,7 +47,7 @@ export function assertRunMemoryWriteGrant(run:Run){
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
 const legacyGrantGeneration='legacy';
 export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
-export type ArtifactRequest={action:'capture'|'list'|'metadata'|'page'|'export'|'release-unused'|'cleanup-preview'|'cleanup-apply'|'publication-inspect'|'publication-recover'|'cleanup-inspect'|'cleanup-recover';data?:unknown;operationId?:string;artifactId?:string;offset?:number;limit?:number;cursor?:string;selections?:Array<{id:string;mode:'embedded'|'external'}>;policy?:CleanupPolicy;planId?:string;recoveryId?:string};
+export type ArtifactRequest={action:'capture'|'import'|'list'|'metadata'|'page'|'export'|'release-unused'|'cleanup-preview'|'cleanup-apply'|'publication-inspect'|'publication-recover'|'cleanup-inspect'|'cleanup-recover';data?:unknown;operationId?:string;artifactId?:string;offset?:number;limit?:number;cursor?:string;selections?:Array<{id:string;mode:'embedded'|'external'}>;policy?:CleanupPolicy;planId?:string;recoveryId?:string};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
 export type RunSummary=Pick<Run,'id'|'state'|'createdAt'|'updatedAt'|'executions'>&{slug:string;revision:number};
 export type RunMetadata=Pick<Run,'id'|'owner'|'requestKey'|'requestFingerprint'|'requestFingerprintVersion'|'state'|'createdAt'|'updatedAt'|'parentRunId'|'cleanupPending'>;
@@ -199,9 +199,10 @@ export class Engine{
   private documentStore(actor:Actor){
     actor.check();
     if(!this.options.documentDirectory)throw requestError('Loops document storage is unavailable.','LOOPS_SERVICE_UNAVAILABLE');
-    // The 8 MiB artifact maximum expands to about 10.7 MiB as JSON Base64.
-    // Other operations retain their own definition/input validation budgets.
-    return this.documents??=new DocumentStore(this.options.documentDirectory,Math.max(this.budgets.definitionBytes*2,this.budgets.inputBytes*2,12*1024*1024));
+    // Public portable import accepts up to 16 MiB of decoded file bytes at
+    // the default Run input budget. Staging has a separate finite JSON cap;
+    // the original operation still enforces its own authority and limits.
+    return this.documents??=new DocumentStore(this.options.documentDirectory,Math.max(this.budgets.definitionBytes*2,this.budgets.inputBytes*2,maxPortableImportTransportBytes));
   }
   private artifactPort():SqliteStorage{
     const port=this.storage as Partial<SqliteStorage>;
@@ -265,10 +266,33 @@ export class Engine{
         if(existing){
           if(existing.status!=='published'||existing.references.length!==1||existing.references[0].status!=='published')throw requestError('Artifact publication is unresolved or was released. Inspect its durable operation before another capture.','LOOPS_ARTIFACT_UNCERTAIN');
           const ref=existing.references[0].reference;
-          if(ref.bytes!==bytes.length||ref.mediaType!==mediaType||ref.sha256!==createHash('sha256').update(bytes).digest('hex'))throw requestError('Artifact operationId already belongs to different bytes.','LOOPS_ARTIFACT_CONFLICT');
+          if(ref.runId!==`capture-${input.operationId}`||ref.nodeId!=='upload'||ref.bytes!==bytes.length||ref.mediaType!==mediaType||ref.sha256!==createHash('sha256').update(bytes).digest('hex'))throw requestError('Artifact operationId already belongs to a different capture.','LOOPS_ARTIFACT_CONFLICT');
           result=this.assertArtifactReference(owner,ref as Json);break;
         }
         result=store.putCoordinated(owner,{runId:`capture-${input.operationId}`,nodeId:'upload'},bytes,mediaType,this.artifactCoordination(owner,input.operationId));break;
+      }
+      case 'import':{
+        if(!input.operationId)throw requestError('Artifact import requires a stable operationId.','LOOPS_ARTIFACT_OPERATION');
+        const data=input.data;
+        if(!data||typeof data!=='object'||Array.isArray(data)||Object.keys(data).some(key=>key!=='bundle'&&key!=='external')||!Object.hasOwn(data,'bundle'))throw requestError('Artifact import requires a portable bundle and optional external dependencies.','LOOPS_ARTIFACT_IMPORT');
+        let serialized:string|undefined;
+        try{serialized=JSON.stringify(data);}catch{/* Cyclic or otherwise unserializable input is not a portable bundle. */}
+        if(!serialized||Buffer.byteLength(serialized)>maxPortableImportTransportBytes)throw requestError('Portable artifact import exceeds the bounded upload envelope.','LOOPS_ARTIFACT_SIZE');
+        const payload=data as {bundle:ArtifactBundle;external?:Json};
+        const external=decodeExternalFiles(payload.external,store.budget.maxArtifactBytes);
+        result=store.withCoordinationLease(()=>{
+          actor.check();
+          const existing=port.artifactOperation(owner,input.operationId!);
+          if(existing){
+            if(existing.status!=='published'||existing.references.some(item=>item.status!=='published'))throw requestError('Artifact publication is unresolved or was released. Inspect its durable operation before another import.','LOOPS_ARTIFACT_UNCERTAIN');
+            if(existing.references.some(item=>item.reference.runId!==`import-${input.operationId}`||item.reference.nodeId!=='upload'))throw requestError('Artifact operationId belongs to a different publication route.','LOOPS_ARTIFACT_CONFLICT');
+            const expected=store.verifyImport(payload.bundle,external).map(item=>JSON.stringify(item)).sort();
+            const actual=existing.references.map(item=>JSON.stringify({sha256:item.reference.sha256,bytes:item.reference.bytes,mediaType:item.reference.mediaType})).sort();
+            if(JSON.stringify(expected)!==JSON.stringify(actual))throw requestError('Artifact operationId already belongs to a different bundle.','LOOPS_ARTIFACT_CONFLICT');
+            return existing.references.map(item=>this.assertArtifactReference(owner,item.reference as Json));
+          }
+          return store.importCoordinated(owner,{runId:`import-${input.operationId}`,nodeId:'upload'},payload.bundle,external,this.artifactCoordination(owner,input.operationId!)).sort((a,b)=>a.id.localeCompare(b.id));
+        });break;
       }
       case 'list':result=store.withCoordinationLease(()=>{
         actor.check();const page=port.artifactRecoveryInventory(owner,input.cursor,input.limit);
@@ -301,7 +325,7 @@ export class Engine{
           if(!status||status.operationId!==input.operationId)throw requestError('Artifact release identity does not match current owner custody.','LOOPS_ARTIFACT_NOT_FOUND');
           if(status.status==='published'){
             const reference=this.publishedArtifactReference(owner,input.artifactId!);
-            if(reference.runId!==`capture-${input.operationId}`||reference.nodeId!=='upload')throw requestError('Only standalone public captures may be released before linking.','LOOPS_ARTIFACT_RELEASE_DENIED');
+            if(![`capture-${input.operationId}`,`import-${input.operationId}`].includes(reference.runId)||reference.nodeId!=='upload')throw requestError('Only standalone public captures or imports may be released before linking.','LOOPS_ARTIFACT_RELEASE_DENIED');
             const readback=store.inspectRecovery(owner,[reference.id])[0];
             if(readback.status!=='published'||canonical(readback.reference)!==canonical(reference))throw requestError('Artifact custody is uncertain; release is blocked.','LOOPS_ARTIFACT_UNCERTAIN');
           }

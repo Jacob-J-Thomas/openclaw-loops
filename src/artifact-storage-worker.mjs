@@ -379,7 +379,7 @@ export function artifactStore(database){
         const item=database.prepare('SELECT status,ever_linked,released_at,record FROM artifact_items WHERE scope=? AND operation_id=? AND id=?').get(scope,operationId,id);
         if(!op||op.status!=='published'||!item)throw conflict('Artifact release requires a published operation and exact reference.');
         const origin=JSON.parse(item.record);
-        if(origin.runId!==`capture-${operationId}`||origin.nodeId!=='upload'||database.prepare('SELECT 1 FROM runs WHERE id=? LIMIT 1').get(origin.runId))throw conflict('Artifact release requires standalone capture provenance without a run.');
+        if(![`capture-${operationId}`,`import-${operationId}`].includes(origin.runId)||origin.nodeId!=='upload'||database.prepare('SELECT 1 FROM runs WHERE id=? LIMIT 1').get(origin.runId))throw conflict('Artifact release requires standalone capture or import provenance without a run.');
         if(item.released_at!==null&&['released','retired'].includes(item.status))return {id,operationId,status:item.status,releasedAt:item.released_at};
         if(item.status!=='published'||item.ever_linked!==0||database.prepare('SELECT 1 FROM artifact_links WHERE artifact_id=? LIMIT 1').get(id)||database.prepare('SELECT 1 FROM artifact_memory_links WHERE artifact_id=? LIMIT 1').get(id))throw conflict('Artifact release requires a never-linked published reference.');
         database.prepare("UPDATE artifact_items SET status='released',released_at=? WHERE scope=? AND operation_id=? AND id=? AND status='published'").run(at,scope,operationId,id);

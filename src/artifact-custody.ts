@@ -19,6 +19,9 @@ export type CleanupPlan = {planId:string;candidates:ArtifactReference[];protecte
 export type ArtifactPublishCoordination={operationId:string;reserve:(refs:readonly ArtifactReference[],operationId:string)=>void;published:(refs:readonly ArtifactReference[],operationId:string)=>void};
 export type ArtifactCleanupCoordination={begin:()=>ReadonlySet<string>;finish:(receipt:CleanupPlan&{removed:number})=>void};
 export type ArtifactRecoveryReadback={id:string;status:'published'|'staged'|'missing'|'uncertain';reference?:ArtifactReference};
+// A complete two-file embedded bundle is about 22.4 MB (21.3 MiB) of Base64 JSON. The
+// extra bounded room covers the 256-entry manifest and optional dependencies.
+export const maxPortableImportTransportBytes=24*1024*1024;
 
 const defaults:ArtifactBudget={maxArtifactBytes:8*1024*1024,maxTotalBytes:64*1024*1024,maxArtifacts:256,maxPageBytes:64*1024,maxBundleBytes:16*1024*1024};
 const uuid=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
@@ -293,6 +296,9 @@ export class ArtifactCustody {
       try{this.commit(records,existing,true);this.syncCallback(()=>coordination.published(refs,coordination.operationId));}catch(error){throw uncertain(error);}
       return refs;
     });
+  }
+  verifyImport(bundle:ArtifactBundle,externalBytes:Readonly<Record<string,Uint8Array>>):Array<{sha256:string;bytes:number;mediaType:string}>{
+    return this.validateImport(bundle,externalBytes).map(item=>({sha256:hash(item.bytes),bytes:item.bytes.length,mediaType:item.mediaType}));
   }
   private validateImport(bundle:ArtifactBundle,externalBytes:Readonly<Record<string,Uint8Array>>):Array<{bytes:Uint8Array;mediaType:string}>{
     if(!plain(externalBytes))throw fail('LOOPS_ARTIFACT_IMPORT','External artifact dependencies are invalid.');

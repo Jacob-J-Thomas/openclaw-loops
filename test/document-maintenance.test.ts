@@ -4,6 +4,9 @@ import {mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSyn
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {DocumentStore} from '../src/document-store.js';
+import {fitsFeatureJson,textPage} from '../src/feature-json.js';
+import {commandPage} from '../src/commands.js';
+import {toolPage} from '../src/tool-replies.js';
 import {emptyDocumentLinks} from '../src/document-maintenance.js';
 import type {Actor} from '../src/engine.js';
 
@@ -20,6 +23,30 @@ function setup() { const root = mkdtempSync(join(tmpdir(), 'loops-maintenance-')
 afterEach(() => { vi.resetAllMocks(); for (const root of roots.splice(0)) rmSync(root, {recursive: true, force: true}); });
 
 describe('explicit transport maintenance', () => {
+  it('pages a large ASCII snapshot without changing its immutable digest or host envelope',()=>{
+    const {store}=setup(),reference=store.snapshot(actor,{payload:'A'.repeat(140_000)},emptyDocumentLinks());
+    const first=store.read(actor,reference.documentId,0,60_000,reference.readerId);
+    expect(first.text).toHaveLength(60_000);expect(first.nextOffset).toBe(60_000);
+    expect(fitsFeatureJson(first)).toBe(true);
+    for(const reduced of [commandPage(first),toolPage(first,'loops_document')]){
+      expect(reduced.text.length).toBeGreaterThan(0);expect(reduced.text.length).toBeLessThan(first.text.length);
+      expect(reduced.nextOffset).toBe(reduced.text.length);
+      expect(first.text.startsWith(reduced.text)).toBe(true);
+    }
+    let text=first.text,offset=first.nextOffset;
+    while(offset!==null){const page=store.read(actor,reference.documentId,offset,60_000,reference.readerId);expect(page.offset).toBe(offset);expect(fitsFeatureJson(page)).toBe(true);text+=page.text;offset=page.nextOffset;}
+    expect(hash(text)).toBe(reference.sha256);
+    expect(JSON.parse(text)).toEqual({payload:'A'.repeat(140_000)});
+    expect(store.read(actor,reference.documentId,0,undefined,reference.readerId).text).toHaveLength(16_000);
+  });
+  it('keeps codepoint offsets exact when a page crosses surrogate pairs and escaping',()=>{
+    const source='A'.repeat(16_000)+'🙂'.repeat(6)+'\\"\u0000'+'終'.repeat(3);
+    const all=Array.from(source),first=textPage(source,15_999,4,60_000),second=textPage(source,first.nextOffset!,60_000,60_000);
+    expect(first.text).toBe(all.slice(15_999,16_003).join(''));
+    expect(first.nextOffset).toBe(16_003);
+    expect(first.text+second.text).toBe(all.slice(15_999).join(''));
+    expect(second.totalCharacters).toBe(all.length);expect(second.nextOffset).toBeNull();
+  });
   it('preserves malformed JSON even when its transport digest and lifecycle are valid', () => {
     const {root, store} = setup(), reference = store.snapshot(actor, {original: true}, emptyDocumentLinks(), false);
     const document = JSON.parse(readFileSync(join(root, `document-${reference.documentId}.json`), 'utf8'));

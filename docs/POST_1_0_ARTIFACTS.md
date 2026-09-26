@@ -15,6 +15,15 @@ The `loops_artifact` tool and `artifact` command/action share the current
 agent-and-chat-session authority. `capture` accepts canonical Base64 bytes and
 a media type in `data`, with a stable `operationId`. Large JSON input can first
 be staged with `loops_upload` and supplied as its completed upload reference.
+`import` accepts `data:{bundle,external?}` and a stable `operationId`; `external`
+maps source artifact IDs to canonical Base64 dependency bytes. The full import
+request is limited to 24 MiB of serialized UTF-8 JSON, independently of the
+default 1 MiB Run input budget. Stage a large `data` field through
+`loops_upload` before invoking the action, command or tool. This permits an
+embedded portable bundle containing two 8 MiB files under the default Run
+budget, while decoded files remain subject to file and shared custody limits.
+Retrying the same `operationId` requires the exact same published bundle; an
+uncertain publication requires inspection and explicit reconciliation.
 The public request never supplies a filesystem path. A single file is limited
 to 8 MiB. Each plugin-owned custody directory has a shared physical limit of
 64 MiB and 256 files across owners; a different owner's files can consume that
@@ -39,7 +48,7 @@ bytes; import requires the exact dependencies separately. Import verifies the
 whole bundle and every dependency before publishing any new reference, binds
 new IDs to the receiving owner and run, and never reads a path from the bundle.
 
-Standalone captures that have never been linked to a run can be explicitly
+Standalone captures or imports that have never been linked to a run can be explicitly
 `release-unused` with their exact artifact and operation IDs. The Run panel
 offers this action for a file chosen but not used. A released file cannot be
 downloaded, exported, or linked to a new run. It remains inspectable as

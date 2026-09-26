@@ -1,9 +1,7 @@
 # Bolt #276 SQLite custody seam
 
-This preparatory migration follows memory schema v4 and tentatively allocates
-schema v5. The integration owner must confirm the version against the actual
-feature-branch baseline before admitting a PR. The migration takes a verified
-mode-0600 SQLite backup, preserves every existing table and identity, and
+This candidate allocates schema v5 after memory schema v4. The migration takes
+a verified mode-0600 SQLite backup, preserves every existing table and identity, and
 validates both memory and artifact tables before acquiring a writable handle.
 Unknown artifact tables under an older schema and malformed rows, links,
 indexes, foreign keys or receipts fail closed. A failed constructor terminates
@@ -32,8 +30,8 @@ storage writes. Cold admission verifies active links in both directions.
 Completed history may retain an exact retired reference with its previously
 inactive link, without reviving it. Reserved or published references that have never
 been linked stay protected. Unlinked history is retained as inactive link
-rows. The engine/public bridge must put artifact references into the persisted
-run input, context, outputs or result, then use the existing checkpoint path;
+rows. The engine/public bridge puts artifact references into the persisted
+run input, context, outputs or result, then uses the existing checkpoint path;
 an unpersisted in-memory reference is not a durable link. Host authorization
 must be checked again before artifact reads or writes.
 
@@ -121,5 +119,6 @@ parked-reference preservation and refusal of missing noncandidates. These
 tests also prove never-linked release, operation-cap refusal, cleanup at that cap, restart readback
 and no receipt growth from repeated empty cleanup. They establish the storage
 protocol only.
-Graph/editor transport, installed-package authorization and real run restart
-acceptance remain separate #276 work.
+Graph/editor transport and the public operation are integrated in source.
+Exact-candidate installed-package authorization, upgrade/rollback and real run
+restart acceptance remain #276 qualification work.

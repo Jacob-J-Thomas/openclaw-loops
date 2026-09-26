@@ -1,6 +1,7 @@
 # Bolt #276 artifact custody integration seam
 
-`ArtifactCustody` is a preparatory plugin-owned binary store. It is separate from
+`ArtifactCustody` is the plugin-owned binary store used by v3 Artifact nodes and
+the shared public `artifact` operation. It is separate from
 `DocumentStore`, which transports JSON results and uploads. The caller supplies
 already-authorized bytes and a trusted absolute plugin-owned root. Public request
 data must not choose a source or destination filesystem path. A reference is an
@@ -137,10 +138,9 @@ rejected before writable admission. The error directs the owner to retire
 settled Run history; no proof is recycled automatically.
 
 The older uncoordinated `put`, `import`, `previewCleanup` and `applyCleanup`
-remain preparatory core primitives for focused tests; the installed engine
-must use the coordinated methods. The core deliberately makes no SQLite
-schema-version claim or migration edit. The persistence owner supplies the
-durable reservation/link/GC-lease seam in its assigned serial migration; the
-graph/editor/public operation owners will wire typed references, byte
-transport and host authority separately. Until those seams and installed-host
-tests exist, this core does not satisfy Bolt #276.
+remain preparatory core primitives for focused tests; the engine uses the
+coordinated methods. The v5 SQLite migration supplies durable reservations,
+links and cleanup leases, and the graph, editor and shared public operation
+wire typed references, byte transport and current host authority. These source
+contracts still require exact-candidate installed-host, migration and fault
+qualification before Bolt #276 is accepted.
