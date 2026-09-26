@@ -52,7 +52,7 @@
     "@types/react-dom": "19.3.0",
     "@typescript/native": "npm:typescript@7.0.2",
     "esbuild": "0.28.2",
-    "eslint": "10.10.0",
+    "eslint": "10.11.0",
     "openclaw": "2026.9.5",
     "playwright-core": "1.63.0",
     "typescript": "npm:@typescript/typescript6@6.0.2",
