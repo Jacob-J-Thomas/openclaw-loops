@@ -13,7 +13,7 @@ export type PortablePackageDraft=Omit<PortablePackage,'digest'>;
 export type PortableTemplateInput=Omit<PortableTemplate,'contentDigest'>;
 export type PortablePackageInput={templates:PortableTemplateInput[];bindings:PortableBinding[]};
 export type PortableBindingDeclaration={name:string;type:BindingType;pointer:string};
-export type ResolvedPortableTemplate={templateId:string;contentDigest:string;definition:PortableJson;dependencies:PortableDependency[]};
+export type ResolvedPortableTemplate={templateId:string;contentDigest:string;definition:PortableJson;dependencies:PortableDependency[];validation?:{valid:boolean;issues:Array<{nodeId?:string;message:string}>}};
 export type PortablePreview={digest:string;resolvedDigest:string;templates:ResolvedPortableTemplate[];bindings:Array<{name:string;type:BindingType;locations:PortableBindingLocation[]}>};
 
 const digestPattern=/^[a-f0-9]{64}$/;
@@ -224,6 +224,18 @@ export function exportPortableTemplate(content:unknown,declarations:unknown,budg
   if(new Set(bindings.map(binding=>binding.name)).size!==bindings.length)fail('Portable binding declarations contain duplicate names.');
   if(new Set(bindings.map(binding=>binding.locations[0]!.pointer)).size!==bindings.length)fail('Portable binding declarations target the same field more than once.');
   for(const binding of bindings)replacePointer(definition,binding.locations[0]!.pointer,{$loopsBinding:binding.name});
+  return createPortablePackage({templates:[{templateId:'loop',content:definition,dependencies:[]}],bindings},budgets);
+}
+
+
+/** Reapply retained binding locations to a later local revision without carrying stale dependencies. */
+export function reexportPortableTemplate(content:unknown,sourceBindings:PortableBinding[],sourceTemplateId:string,budgets:Budgets=defaultBudgets):PortablePackage{
+  checkJson(content,'portable template content',packageBytes(budgets));
+  const definition=clone(content),bindings=sourceBindings.flatMap(binding=>{
+    const locations=binding.locations.filter(location=>location.templateId===sourceTemplateId).map(location=>({templateId:'loop',pointer:location.pointer}));
+    return locations.length?[{name:binding.name,type:binding.type,locations}]:[];
+  });
+  for(const binding of bindings)for(const location of binding.locations){pointerValue(definition,location.pointer);replacePointer(definition,location.pointer,{$loopsBinding:binding.name});}
   return createPortablePackage({templates:[{templateId:'loop',content:definition,dependencies:[]}],bindings},budgets);
 }
 

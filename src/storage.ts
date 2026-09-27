@@ -4,6 +4,7 @@ import {dirname} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {assertRunMemoryWriteGrant,type Storage,type State,type Run,type IndexedRunStorage,type RunMetadata,type RunSummary} from './engine.js';
 import {parseDefinition} from './graph.js';
+import {canonicalDigest,parsePortablePackage,type PortableJson} from './portability.js';
 import {defaultBudgets} from './budgets.js';
 // Policy changes must never make already-saved version 2 evidence unreadable.
 const persistedBudgets={...defaultBudgets,definitionBytes:Number.MAX_SAFE_INTEGER};
@@ -28,6 +29,19 @@ export function validateState(value:unknown):State{
       if(version.id!==id||String(version.revision)!==revision)throw new Error(`Invalid immutable revision: ${id}/${revision}`);
     }
     for(const revision of [record.enabledRevision,record.publishedRevision])if(revision!=null&&record.definition.revision!==revision&&!record.revisions?.[revision])throw new Error(`Missing published revision: ${id}/${revision}`);
+    const provenance=record.portableProvenance;
+    if(provenance){
+      const sourceRecord=state.loops[provenance.sourceRecordId],sourceProvenance=sourceRecord?.portableProvenance,source=sourceProvenance?.sourcePackage;
+      const imported=record.revisions?.[provenance.revision];
+      if(!source||!imported||sourceProvenance?.sourceRecordId!==provenance.sourceRecordId||sourceProvenance.packageDigest!==provenance.packageDigest||sourceProvenance.packageByteLimit!==provenance.packageByteLimit||
+        id!==provenance.sourceRecordId&&provenance.sourcePackage!==undefined||
+        canonicalDigest(imported as unknown as PortableJson)!==provenance.definitionDigest||source.digest!==provenance.packageDigest)throw new Error(`Invalid portable provenance: ${id}`);
+      if(!Number.isSafeInteger(provenance.packageByteLimit)||provenance.packageByteLimit<256||Buffer.byteLength(JSON.stringify(source))>provenance.packageByteLimit)throw new Error(`Invalid portable package budget: ${id}`);
+      const packageValue=parsePortablePackage(source,{...defaultBudgets,definitionBytes:Math.ceil(provenance.packageByteLimit/2),inputBytes:Math.ceil(provenance.packageByteLimit/2)});
+      const template=packageValue.templates.find(item=>item.templateId===provenance.templateId);
+      const bindings=packageValue.bindings.filter(item=>item.locations.some(location=>location.templateId===provenance.templateId));
+      if(!template||template.contentDigest!==provenance.contentDigest||JSON.stringify(template.dependencies)!==JSON.stringify(provenance.dependencies)||JSON.stringify(bindings)!==JSON.stringify(provenance.bindings))throw new Error(`Invalid portable template provenance: ${id}`);
+    }
   }
   for(const [id,run] of Object.entries(state.runs)){
     if(!Value.Check(outputs.completeRun,run))throw new Error(`Invalid saved run structure: ${id}`);

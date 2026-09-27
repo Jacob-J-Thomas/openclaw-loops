@@ -5,6 +5,10 @@ import {canonicalDigest,createPortablePackage,exportPortableTemplate,parsePortab
 import {PortablePackageControls} from '../src/portability-ui.js';
 import {defaultBudgets} from '../src/budgets.js';
 import {Engine,type Actor,type Storage} from '../src/engine.js';
+import {validateState,SqliteStorage} from '../src/storage.js';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {examples} from '../src/examples.js';
 
 const description='A template that can mention credentials or /loops in ordinary text.';
@@ -157,4 +161,122 @@ describe('portable template packages',()=>{
     expect(()=>engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false)).toThrow();
     expect(engine.library(actor).some(loop=>loop.slug.includes('imported'))).toBe(false);
   });
+
+  it('previews valid bounded target slugs even with many collisions',()=>{
+    let state:ReturnType<Storage['read']>;const storage:Storage={read:()=>structuredClone(state),write:value=>{state=structuredClone(value);}};
+    const engine=new Engine(storage,{check:()=>{},complete:vi.fn(),modelInfo:vi.fn()}),actor:Actor={agentId:'main',sessionKey:'agent:main:long-slug',sessionId:'long-slug',source:'tool',human:false,canManage:true,check:()=>{}};
+    const longSlug=`a${'b'.repeat(47)}`,sourceDefinition={...structuredClone(examples[0]),id:'portable-long-source',slug:longSlug,revision:0};
+    engine.save(actor,sourceDefinition,0,false);const source=engine.packageExport(actor,sourceDefinition.id);
+    for(let index=1;index<=10;index++){
+      const preview=engine.packagePreview(actor,source,{}),slug=preview.templates[0]!.definition as {slug:string};
+      expect(slug.slug.length).toBeLessThanOrEqual(48);
+      engine.save(actor,{...structuredClone(examples[0]),id:`portable-collision-${index}`,slug:slug.slug,revision:0},0,false);
+    }
+    const preview=engine.packagePreview(actor,source,{}),slug=(preview.templates[0]!.definition as {slug:string}).slug;
+    expect(slug).toMatch(/-imported-11$/);expect(slug.length).toBeLessThanOrEqual(48);
+    expect(preview.templates[0]!.validation).toMatchObject({valid:true,issues:[]});
+    const imported=engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false);
+    expect(imported.imported[0]!.slug).toBe(slug);
+  });
+
+  it('reports graph diagnostics for resolved drafts while still permitting draft import',()=>{
+    let state:ReturnType<Storage['read']>;const storage:Storage={read:()=>structuredClone(state),write:value=>{state=structuredClone(value);}};
+    const engine=new Engine(storage,{check:()=>{},complete:vi.fn(),modelInfo:vi.fn()}),actor:Actor={agentId:'main',sessionKey:'agent:main:invalid-draft',sessionId:'invalid-draft',source:'tool',human:false,canManage:true,check:()=>{}};
+    const invalid={...structuredClone(examples[0]),id:'portable-invalid',slug:'portable-invalid',revision:0,edges:[]};
+    engine.save(actor,invalid,0,false);const source=engine.packageExport(actor,invalid.id),preview=engine.packagePreview(actor,source,{});
+    expect(preview.templates[0]!.validation?.valid).toBe(false);
+    expect(preview.templates[0]!.validation?.issues.length).toBeGreaterThan(0);
+    const imported=engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false);
+    expect(engine.load(actor,imported.imported[0]!.id).enabledRevision).toBeNull();
+  });
+
+  it('retains one bounded source bundle and per-template provenance after source deletion and restart',()=>{
+    let state:ReturnType<Storage['read']>;const storage:Storage={read:()=>structuredClone(state),write:value=>{state=structuredClone(value);}};
+    const host={check:()=>{},complete:vi.fn(),modelInfo:vi.fn()},actor:Actor={agentId:'main',sessionKey:'agent:main:provenance',sessionId:'provenance',source:'tool',human:false,canManage:true,check:()=>{}};
+    const engine=new Engine(storage,host),first={...structuredClone(examples[0]),id:'portable-dependency',slug:'portable-dependency',revision:1},second={...structuredClone(examples[0]),id:'portable-target',slug:'portable-target',revision:1,name:{$loopsBinding:'target_name'}};
+    const source=createPortablePackage({templates:[{templateId:'dependency',content:first as unknown as PortableJson,dependencies:[]},{templateId:'target',content:second as unknown as PortableJson,dependencies:[{templateId:'dependency',digest:canonicalDigest(first as unknown as PortableJson)}]}],bindings:[{name:'target_name',type:'string',locations:[{templateId:'target',pointer:'/name'}]}]});
+    const preview=engine.packagePreview(actor,source,{target_name:'Bound target'}),imported=engine.packageImport(actor,source,{target_name:'Bound target'},preview.digest,preview.libraryDigest,preview.resolvedDigest,false);
+    const [sourceId,siblingId]=imported.imported.map(item=>item.id);const sourceRecord=engine.load(actor,sourceId!),sibling=engine.load(actor,siblingId!);
+    expect(sourceRecord.portableProvenance?.sourcePackage).toEqual(source);expect(sibling.portableProvenance?.sourcePackage).toBeUndefined();
+    expect(sibling.portableProvenance).toMatchObject({revision:1,templateId:'target',sourceRecordId:sourceId,packageDigest:source.digest,bindings:source.bindings});
+    engine.delete(actor,sourceId!,1);validateState(storage.read());
+    const damaged=structuredClone(storage.read())!;damaged.loops[siblingId!]!.portableProvenance!.sourceRecordId='missing-source';
+    expect(()=>validateState(damaged)).toThrow(/portable provenance/);
+    const reopened=new Engine(storage,host);expect(reopened.packageExport(actor,siblingId!)).toEqual(source);
+    reopened.archive(actor,siblingId!,1,true);expect(reopened.packageExport(actor,siblingId!)).toEqual(source);
+    const changed={...reopened.load(actor,siblingId!).definition,name:'Edited local revision'};reopened.save(actor,changed,1,false);
+    expect(reopened.packageExport(actor,siblingId!).bindings).toEqual([{name:'target_name',type:'string',locations:[{templateId:'loop',pointer:'/name'}]}]);
+  });
+
+  it('keeps an active non-indexed completion attached to durable state during import',async()=>{
+    let state:ReturnType<Storage['read']>;const storage:Storage={read:()=>structuredClone(state),write:value=>{state=structuredClone(value);}};
+    let settle:(value:{text:string})=>void=()=>{};
+    const host={check:()=>{},complete:vi.fn(()=>new Promise<{text:string}>(resolve=>{settle=resolve;})),modelInfo:vi.fn(async()=>({provider:'fake',model:'fake'}))};
+    const actor:Actor={agentId:'main',sessionKey:'agent:main:active-import',sessionId:'active-import',source:'tool',human:false,canManage:true,check:()=>{}};
+    const engine=new Engine(storage,host,{replyTimeoutMs:1}),sourceDefinition={...structuredClone(examples[0]),id:'portable-active',slug:'portable-active',revision:0};
+    engine.save(actor,sourceDefinition,0,true);const source=engine.packageExport(actor,sourceDefinition.id),running=await engine.run(actor,sourceDefinition.slug,{text:'Input'},'portable-running');
+    expect(running.state).toBe('running');const preview=engine.packagePreview(actor,source,{});engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false);
+    settle({text:'Completed after import'});await vi.waitFor(()=>expect(engine.status(actor,running.id).state).toBe('completed'));
+    expect(new Engine(storage,host).status(actor,running.id)).toMatchObject({state:'completed',result:'Completed after import'});
+    await engine.close();
+  });
+
+  it('keeps indexed cancellation authoritative when an import lands during a host call',async()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-portable-cancel-')),file=join(directory,'loops.sqlite');let storage:SqliteStorage|undefined;
+    try{
+      storage=new SqliteStorage(file);let settle:(value:{text:string})=>void=()=>{};
+      const host={check:()=>{},complete:vi.fn(()=>new Promise<{text:string}>(resolve=>{settle=resolve;})),modelInfo:vi.fn(async()=>({provider:'fake',model:'fake'}))};
+      const actor:Actor={agentId:'main',sessionKey:'agent:main:sqlite-import',sessionId:'sqlite-import',source:'tool',human:false,canManage:true,check:()=>{}};
+      const engine=new Engine(storage,host,{replyTimeoutMs:1}),sourceDefinition={...structuredClone(examples[0]),id:'portable-sqlite',slug:'portable-sqlite',revision:0};
+      engine.save(actor,sourceDefinition,0,true);const source=engine.packageExport(actor,sourceDefinition.id),running=await engine.run(actor,sourceDefinition.slug,{text:'Input'},'portable-sqlite-running');
+      expect(running.state).toBe('running');const preview=engine.packagePreview(actor,source,{});engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false);
+      expect(engine.cancel(actor,running.id).state).toBe('cancelled');settle({text:'Late host completion'});
+      await vi.waitFor(()=>{const finished=engine.status(actor,running.id);expect(finished.state).toBe('cancelled');expect(finished.cleanupPending).not.toBe(true);});
+      await engine.close();await storage.close();
+      storage=new SqliteStorage(file);expect(new Engine(storage,host).status(actor,running.id).state).toBe('cancelled');
+    }finally{await storage?.close();rmSync(directory,{recursive:true,force:true});}
+  });
+  it('preserves active and queued run ownership through import and later completion',async()=>{
+    let state:ReturnType<Storage['read']>;const storage:Storage={read:()=>structuredClone(state),write:value=>{state=structuredClone(value);}};
+    const releases:Array<(value:{text:string})=>void>=[];
+    const host={check:()=>{},complete:vi.fn(()=>new Promise<{text:string}>(resolve=>{releases.push(resolve);})),modelInfo:vi.fn(async()=>({provider:'fake',model:'fake'}))};
+    const actor:Actor={agentId:'main',sessionKey:'agent:main:queued-import',sessionId:'queued-import',source:'tool',human:false,canManage:true,check:()=>{}};
+    const engine=new Engine(storage,host,{replyTimeoutMs:1,concurrency:1}),sourceDefinition={...structuredClone(examples[0]),id:'portable-queued',slug:'portable-queued',revision:0};
+    engine.save(actor,sourceDefinition,0,true);const first=await engine.run(actor,sourceDefinition.slug,{text:'First'},'queued-first');
+    const second=await engine.run(actor,sourceDefinition.slug,{text:'Second'},'queued-second');expect(first.state).toBe('running');expect(second.state).toBe('queued');
+    const source=engine.packageExport(actor,sourceDefinition.id),preview=engine.packagePreview(actor,source,{});engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false);
+    releases[0]!({text:'First complete'});await vi.waitFor(()=>expect(releases).toHaveLength(2));
+    releases[1]!({text:'Second complete'});await vi.waitFor(()=>expect(engine.status(actor,second.id).state).toBe('completed'));
+    expect(new Engine(storage,host).status(actor,first.id).state).toBe('completed');expect(new Engine(storage,host).status(actor,second.id).state).toBe('completed');await engine.close();
+  });
+
+  it('rolls back a failed import while a host call is active without orphaning its run',async()=>{
+    let state:ReturnType<Storage['read']>,failOnce=false;const storage:Storage={read:()=>structuredClone(state),write:value=>{if(failOnce){failOnce=false;throw Error('injected import commit failure');}state=structuredClone(value);}};
+    let settle:(value:{text:string})=>void=()=>{};
+    const host={check:()=>{},complete:vi.fn(()=>new Promise<{text:string}>(resolve=>{settle=resolve;})),modelInfo:vi.fn(async()=>({provider:'fake',model:'fake'}))};
+    const actor:Actor={agentId:'main',sessionKey:'agent:main:failed-import',sessionId:'failed-import',source:'tool',human:false,canManage:true,check:()=>{}};
+    const engine=new Engine(storage,host,{replyTimeoutMs:1}),sourceDefinition={...structuredClone(examples[0]),id:'portable-fault',slug:'portable-fault',revision:0};
+    engine.save(actor,sourceDefinition,0,true);const source=engine.packageExport(actor,sourceDefinition.id),running=await engine.run(actor,sourceDefinition.slug,{text:'Input'},'failed-import-run');
+    expect(running.state).toBe('running');const preview=engine.packagePreview(actor,source,{});failOnce=true;
+    expect(()=>engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false)).toThrow(/injected import commit failure/);
+    expect(engine.library(actor).some(item=>item.slug.endsWith('-imported'))).toBe(false);
+    settle({text:'Late completion'});await vi.waitFor(()=>expect(engine.status(actor,running.id).state).not.toBe('running'));
+    const live=engine.status(actor,running.id),reopened=new Engine(storage,host).status(actor,running.id);
+    expect(reopened.state).toBe(live.state);expect(reopened.trace).toEqual(live.trace);await engine.close();
+  });
+
+  it('keeps indexed shutdown interruption attached to a settling imported run',async()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-portable-shutdown-')),file=join(directory,'loops.sqlite');let storage:SqliteStorage|undefined;
+    try{
+      storage=new SqliteStorage(file);let settle:(value:{text:string})=>void=()=>{};
+      const host={check:()=>{},complete:vi.fn(()=>new Promise<{text:string}>(resolve=>{settle=resolve;})),modelInfo:vi.fn(async()=>({provider:'fake',model:'fake'}))};
+      const actor:Actor={agentId:'main',sessionKey:'agent:main:sqlite-shutdown',sessionId:'sqlite-shutdown',source:'tool',human:false,canManage:true,check:()=>{}};
+      const engine=new Engine(storage,host,{replyTimeoutMs:1}),sourceDefinition={...structuredClone(examples[0]),id:'portable-shutdown',slug:'portable-shutdown',revision:0};
+      engine.save(actor,sourceDefinition,0,true);const source=engine.packageExport(actor,sourceDefinition.id),running=await engine.run(actor,sourceDefinition.slug,{text:'Input'},'portable-shutdown-running');
+      expect(running.state).toBe('running');const preview=engine.packagePreview(actor,source,{});engine.packageImport(actor,source,{},preview.digest,preview.libraryDigest,preview.resolvedDigest,false);
+      const closing=engine.close();settle({text:'Late host completion'});await closing;await storage.close();
+      storage=new SqliteStorage(file);expect(new Engine(storage,host).status(actor,running.id).state).toBe('interrupted');
+    }finally{await storage?.close();rmSync(directory,{recursive:true,force:true});}
+  });
+
 });

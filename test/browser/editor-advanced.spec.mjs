@@ -322,7 +322,7 @@ export async function runEditorAdvancedRegression({receiptPath}={}){
     await page.getByLabel('Portable environment bindings JSON').fill('{"portable_name":"Browser bound"}');
     await page.getByRole('button',{name:'Preview import'}).click(); await waitFor(page,'text=Previewed 1 template');
     await page.getByLabel('Environment portable_name').fill('Browser edited binding');
-    await page.getByRole('button',{name:'Import inspected package'}).click(); await waitFor(page,'text=Preview this exact package and environment before importing.');
+    assert.equal(await page.getByRole('button',{name:'Import inspected package'}).isDisabled(),true); await page.getByText('Browser edited binding',{exact:false}).first().waitFor();
     await page.getByRole('button',{name:'Preview import'}).click(); await waitFor(page,'text=Previewed 1 template');
     await page.getByRole('button',{name:'Import inspected package'}).click(); await waitFor(page,'text=Imported 1 template as drafts.'); assert.equal(await page.evaluate(()=>globalThis.__editorRegression.calls.findLast(call=>call.id==='package_import')?.payload.resolvedDigest),'d'.repeat(64));
     assert.deepEqual(await page.evaluate(id=>globalThis.__editorRegression.records.get(id).definition,sourceBeforeImport.id),sourceBeforeImport.definition);

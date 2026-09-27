@@ -35,6 +35,12 @@ const loopRecord=Type.Object({
   revisions:Type.Optional(Type.Record(text,DefinitionSchema)),publishedRevision:Type.Optional(nullableRevision),
   revoked:Type.Optional(Type.Boolean()),archived:Type.Optional(Type.Boolean()),deletedAt:Type.Optional(text),
   grantGeneration:Type.Optional(grantGeneration),
+  portableProvenance:Type.Optional(Type.Object({
+    revision:integer,templateId:text,packageDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),packageByteLimit:Type.Integer({minimum:256,maximum:Number.MAX_SAFE_INTEGER}),contentDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),
+    dependencies:Type.Array(Type.Object({templateId:text,digest:text},strict)),
+    bindings:Type.Array(Type.Object({name:text,type:enums(['string','number','boolean','json']),locations:Type.Array(Type.Object({templateId:text,pointer:text},strict))},strict)),
+    sourceRecordId:text,definitionDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),resolvedDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),sourcePackage:Type.Optional(Type.Unknown()),
+  },strict)),
 },strict);
 const record=Type.Unsafe<LoopRecord>(loopRecord);
 const receipt=Type.Unsafe<RunReceipt>(Type.Object({
