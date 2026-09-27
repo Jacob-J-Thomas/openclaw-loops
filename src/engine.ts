@@ -14,12 +14,14 @@ import {DocumentStore} from './document-store.js';
 import {type DocumentLinks, type MaintenancePolicy, type TransportRelease, emptyDocumentLinks} from './document-maintenance.js';
 import {fingerprintJson} from './fingerprint.js';
 import {applyContextPatch,assertContextState,contextBytes,initialContext,projectContext,type ContextState} from './context.js';
+import {canonicalDigest,exportPortableTemplate,parsePortablePackage,previewPortableImport,reexportPortableTemplate,type PortableBinding,type PortableDependency,type PortableJson,type PortablePackage,type PortablePreview} from './portability.js';
 import {EvaluationFailure,commitEvaluation,evaluate as evaluateDeterministically,isCommittedEvaluation,type Evaluator} from './evaluation.js';
 import {validateDataValue,type DataSchema} from './data-schema.js';
 import {lifecycleMutation,lifecycleValue,selected,selectedIfPresent,selectRetainedSource,validateLifecycle,type ContextLifecycle} from './context-lifecycle.js';
 import {MemoryCore,type MemoryInvocation,type MemoryRemovalPlan,type MemoryRepository} from './memory-core.js';
 import {memorySchemaValidator,assertNoMemorySchemaRedefinition} from './memory-definition.js';
 import type {MemoryNodeOperation} from './memory-node.js';
+
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
@@ -40,7 +42,8 @@ export function assertRunMemoryWriteGrant(run:Run){
     grant.revision!==run.definition.revision||grant.grantGeneration!==(run.grantGeneration??'legacy')||
     grant.policySha256!==fingerprintJson(run.definition.memoryPolicy??null))throw requestError('Saved memory write grant is invalid.','LOOPS_MEMORY_DENIED');
 }
-export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string};
+export type PortableProvenance={revision:number;templateId:string;packageDigest:string;packageByteLimit:number;contentDigest:string;dependencies:PortableDependency[];bindings:PortableBinding[];sourceRecordId:string;definitionDigest:string;resolvedDigest:string;sourcePackage?:PortablePackage};
+export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string;portableProvenance?:PortableProvenance};
 const legacyGrantGeneration='legacy';
 export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
@@ -282,6 +285,66 @@ export class Engine{
     this.ensureAuthor(actor);const content=parseDefinitionContent(value,this.budgets);
     const {schemaVersion=2,...definition}=content;
     return this.saveRevision(actor,{...definition,schemaVersion,id:`loop-${randomUUID()}`,revision:0},0,enabled);
+  }
+  packageExport(actor:Actor,id:string,bindings:unknown=[]):PortablePackage{
+    this.ensureAuthor(actor);const record=this.load(actor,id);
+    const provenance=record.portableProvenance;
+    if(Array.isArray(bindings)&&bindings.length===0&&provenance){
+      const source=this.state.loops[provenance.sourceRecordId]?.portableProvenance?.sourcePackage;
+      if(!source||source.digest!==provenance.packageDigest)throw requestError('Portable provenance is unavailable; the original package cannot be re-exported.','LOOPS_STORAGE_UNAVAILABLE');
+      if(provenance.revision===record.definition.revision)return structuredClone(source);
+      return reexportPortableTemplate(record.definition,provenance.bindings,provenance.templateId,this.budgets);
+    }
+    return exportPortableTemplate(structuredClone(record.definition),bindings,this.budgets);
+  }
+  private packageLibraryDigest(){
+    const collisions=Object.entries(this.state.loops).sort(([left],[right])=>left.localeCompare(right)).map(([id,record])=>{
+      const published=this.published(record);
+      return {id,deleted:record.deletedAt!==undefined,current:{revision:record.definition.revision,slug:record.definition.slug},enabledRevision:record.enabledRevision,publishedRevision:record.publishedRevision??null,published:published?{revision:published.revision,slug:published.slug}:null};
+    });
+    return hash(canonical(collisions));
+  }
+  private preparedPackagePreview(actor:Actor,value:unknown,environment:unknown):PortablePreview&{libraryDigest:string}{
+    this.ensureAuthor(actor);const preview=previewPortableImport(value,environment,this.budgets);
+    const definitions=preview.templates.map(template=>parseDefinition(template.definition,this.budgets));
+    const usedIds=new Set(Object.keys(this.state.loops)),usedSlugs=new Set(Object.values(this.state.loops).filter(record=>!record.deletedAt).flatMap(record=>[record.definition.slug,this.published(record)?.slug].filter((slug):slug is string=>slug!==undefined)));
+    for(let index=0;index<definitions.length;index++){
+      const definition=definitions[index]!,template=preview.templates[index]!;let suffix=1,id:string,slug:string;
+      do{
+        const ending=`-imported${suffix===1?'':`-${suffix}`}`;
+        id=`import-${preview.digest.slice(0,12)}-${index+1}${suffix===1?'':`-${suffix}`}`;
+        slug=`${definition.slug.slice(0,48-ending.length)}${ending}`;
+        suffix++;
+      }while(usedIds.has(id)||usedSlugs.has(slug));
+      usedIds.add(id);usedSlugs.add(slug);
+      const resolved=parseDefinition({...definition,id,slug,revision:0},this.budgets);
+      template.definition=resolved as unknown as PortableJson;
+      const issues=validateGraph(resolved);template.validation={valid:issues.length===0,issues};
+    }
+    const libraryDigest=this.packageLibraryDigest();
+    const resolvedDigest=canonicalDigest({environmentDigest:preview.resolvedDigest,templates:preview.templates.map(template=>({templateId:template.templateId,definition:template.definition,dependencies:template.dependencies}))});
+    return {...preview,resolvedDigest,libraryDigest};
+  }
+  packagePreview(actor:Actor,value:unknown,environment:unknown){return this.preparedPackagePreview(actor,value,environment);}
+  packageImport(actor:Actor,value:unknown,environment:unknown,digest:string,libraryDigest:string,resolvedDigest:string,enabled=false){
+    this.ensureAuthor(actor);const preview=this.preparedPackagePreview(actor,value,environment);
+    if(preview.digest!==digest||preview.libraryDigest!==libraryDigest||preview.resolvedDigest!==resolvedDigest)throw requestError('Portable package, resolved environment, or target library changed since preview. Preview again before importing.','LOOPS_REVISION_CONFLICT');
+    const pending=preview.templates.map(template=>parseDefinition(template.definition,this.budgets));
+    for(const definition of pending){if(this.state.loops[definition.id])throw requestError('Imported loop ID now exists. Preview again before importing.','LOOPS_REVISION_CONFLICT');this.assertSlugAvailable(definition.id,definition.slug);if(enabled)this.checkActivation(actor,definition);}
+    const sourcePackage=parsePortablePackage(value,this.budgets),sourceRecordId=pending[0]!.id;
+    if(sourcePackage.digest!==preview.digest)throw requestError('Portable package changed during import. Preview again.','LOOPS_REVISION_CONFLICT');
+    const packageByteLimit=Math.min(Number.MAX_SAFE_INTEGER,Math.max(this.budgets.definitionBytes,this.budgets.inputBytes)*2);
+    const nextLoops=structuredClone(this.state.loops);
+    for(const [index,definition] of pending.entries()){
+      const saved={...definition,revision:1},templateId=preview.templates[index]!.templateId;
+      const sourceTemplate=sourcePackage.templates.find(template=>template.templateId===templateId)!;
+      const bindings=sourcePackage.bindings.filter(binding=>binding.locations.some(location=>location.templateId===templateId));
+      const portableProvenance:PortableProvenance={revision:1,templateId,packageDigest:sourcePackage.digest,packageByteLimit,contentDigest:sourceTemplate.contentDigest,dependencies:structuredClone(sourceTemplate.dependencies),bindings:structuredClone(bindings),sourceRecordId,definitionDigest:canonicalDigest(saved as unknown as PortableJson),resolvedDigest:preview.resolvedDigest,...(index===0?{sourcePackage}:{})};
+      nextLoops[saved.id]={definition:saved,enabledRevision:enabled?1:null,publishedRevision:enabled?1:null,grants:enabled?[...saved.capabilities]:[],grantGeneration:randomUUID(),revisions:{1:structuredClone(saved)},revoked:false,portableProvenance};
+    }
+    // Preserve the live State and Run objects held by active pumps and physical cleanup.
+    // The single storage commit still rolls back on a failed write.
+    this.state.loops=nextLoops;this.persist();return {digest:preview.digest,resolvedDigest:preview.resolvedDigest,libraryDigest:preview.libraryDigest,imported:pending.map(definition=>({id:definition.id,slug:definition.slug,revision:1,enabled}))};
   }
   edit(actor:Actor,id:string,expectedRevision:number,value:unknown,enabled?:boolean){
     this.ensureAuthor(actor);const previous=this.state.loops[id];if(!previous||previous.deletedAt)throw requestError('Loop not found.');

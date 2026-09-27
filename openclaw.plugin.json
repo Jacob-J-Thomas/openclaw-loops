@@ -56,7 +56,7 @@
     "additionalProperties": false
   },
   "controlUi": {
-    "entry": "dist/control-ui/737dc2cf4dc981f75fb7a514a6f3df88bc6e9782edd0f6c5f3d49be384921261/index.js"
+    "entry": "dist/control-ui/fbfaaa4cfbb47cde08e137d65941c5670c66a70b100bd91d935048fe195b1407/index.js"
   },
   "contracts": {
     "tools": [
@@ -81,6 +81,9 @@
       "loops_maintenance",
       "loops_memory",
       "loops_output",
+      "loops_package_export",
+      "loops_package_import",
+      "loops_package_preview",
       "loops_publish",
       "loops_read",
       "loops_recover",
