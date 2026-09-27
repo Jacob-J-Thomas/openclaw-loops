@@ -35,6 +35,12 @@ const loopRecord=Type.Object({
   revisions:Type.Optional(Type.Record(text,DefinitionSchema)),publishedRevision:Type.Optional(nullableRevision),
   revoked:Type.Optional(Type.Boolean()),archived:Type.Optional(Type.Boolean()),deletedAt:Type.Optional(text),
   grantGeneration:Type.Optional(grantGeneration),
+  portableProvenance:Type.Optional(Type.Object({
+    revision:integer,templateId:text,packageDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),packageByteLimit:Type.Integer({minimum:256,maximum:Number.MAX_SAFE_INTEGER}),contentDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),
+    dependencies:Type.Array(Type.Object({templateId:text,digest:text},strict)),
+    bindings:Type.Array(Type.Object({name:text,type:enums(['string','number','boolean','json']),locations:Type.Array(Type.Object({templateId:text,pointer:text},strict))},strict)),
+    sourceRecordId:text,definitionDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),resolvedDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),sourcePackage:Type.Optional(Type.Unknown()),
+  },strict)),
 },strict);
 const record=Type.Unsafe<LoopRecord>(loopRecord);
 const receipt=Type.Unsafe<RunReceipt>(Type.Object({
@@ -72,6 +78,9 @@ export const outputs={
   library:Type.Unsafe<ReturnType<Engine['library']>>(Type.Array(Type.Object({...summary.properties,description:text,enabledRevision:nullableRevision,publishedRevision:nullableRevision,hasDraft:Type.Boolean(),capabilities:DefinitionFields.capabilities},strict))),
   list:Type.Unsafe<ReturnType<Engine['list']>>(Type.Array(Type.Object({...summary.properties,description:text,inputSchema:DefinitionFields.inputSchema},strict))),
   describe:Type.Unsafe<ReturnType<typeof describe>>(Type.Object({...summary.properties,description:text,inputSchema:DefinitionFields.inputSchema,capabilities:DefinitionFields.capabilities,limits:DefinitionFields.limits,steps:Type.Array(Type.Object({id:text,kind:text,label:text},strict))},strict)),
+  packageExport:Type.Unsafe<ReturnType<Engine['packageExport']>>(Type.Object({kind:Type.Literal('loops-template-package'),formatVersion:Type.Literal(1),digest:Type.String({pattern:'^[a-f0-9]{64}$'}),templates:Type.Array(Type.Unknown()),bindings:Type.Array(Type.Unknown())},strict)),
+  packagePreview:Type.Unsafe<ReturnType<Engine['packagePreview']>>(Type.Object({digest:Type.String({pattern:'^[a-f0-9]{64}$'}),resolvedDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),libraryDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),templates:Type.Array(Type.Unknown()),bindings:Type.Array(Type.Unknown())},strict)),
+  packageImport:Type.Unsafe<ReturnType<Engine['packageImport']>>(Type.Object({digest:Type.String({pattern:'^[a-f0-9]{64}$'}),resolvedDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),libraryDigest:Type.String({pattern:'^[a-f0-9]{64}$'}),imported:Type.Array(Type.Object({id:text,slug:text,revision:integer,enabled:Type.Boolean()},strict))},strict)),
   deletion:Type.Unsafe<ReturnType<Engine['delete']>>(Type.Object({id:text,slug:text,revision:integer,deleted:Type.Boolean()},strict)),
   capabilities:Type.Unsafe<InferenceCapabilities & {budgets:Budgets;concurrency:number}>(Type.Object({
     model:Type.Optional(text),runtime:Type.Optional(text),configured:Type.Union([Type.Boolean(),Type.Literal('unknown')]),authorized:Type.Union([Type.Boolean(),Type.Literal('unknown')]),available:Type.Union([Type.Boolean(),Type.Literal('unknown')]),
