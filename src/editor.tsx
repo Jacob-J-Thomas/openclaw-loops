@@ -20,7 +20,7 @@ import {SwitchEditor,TypedConditionEditor,typedConditionFrom,typedRewriteHint,ha
 import {ContextEditor} from './context-editor.js';
 import {DataSchemaEditor,hasActiveDataSchemaDrafts,inputSchemaScope,outputSchemaScope,moveDataSchemaDrafts,DataSchemaDrafts,type SchemaEdit,type SchemaDraftLocationSnapshot} from './data-schema-editor.js';
 import {ControlledEvaluationEditor,type EvaluationDraft} from './evaluation-editor.js';
-import {RunLauncher,captureWithRecoveryId,publishedDefinition} from './run-launcher.js';
+import {RunLauncher,captureWithRecoveryId,publishedDefinition,type FileCustodyItem,type FileCustodyPage} from './run-launcher.js';
 import type {FileRelease} from './run-launcher.js';
 import {LoopError} from './errors.js';
 import {RunInspection} from './run-inspection.js';
@@ -275,6 +275,25 @@ export function Editor({host}:{host:ControlUiHost}){
       return 'linked-protected';
     }
   };
+  const listCapturedFiles=async(cursor:string):Promise<FileCustodyPage>=>{
+    const response=await feature.invoke('artifact',{action:'list',limit:100,...cursor?{cursor}:{}},options);
+    const result=response.result as {items?:unknown;nextCursor?:unknown};
+    if(!result||!Array.isArray(result.items)||result.items.length>100)throw new Error('Captured file inventory acknowledgement is incomplete.');
+    const items:FileCustodyItem[]=[],seen=new Set<string>();
+    for(const item of result.items){
+      if(!item||typeof item!=='object'||Array.isArray(item))throw new Error('Captured file inventory contains an invalid entry.');
+      const row=item as Record<string,unknown>,reference=row.reference;
+      if(!reference||typeof reference!=='object'||Array.isArray(reference))throw new Error('Captured file inventory contains an invalid reference.');
+      const ref=reference as Record<string,unknown>;
+      if(typeof ref.id!=='string'||typeof ref.runId!=='string'||typeof ref.ownerScope!=='string'||typeof row.operationId!=='string'||typeof row.everLinked!=='boolean'||(row.status!=='published'&&row.status!=='released'))throw new Error('Captured file inventory identity is incomplete.');
+      if(seen.has(ref.id))throw new Error('Captured file inventory contains a duplicate reference.');
+      seen.add(ref.id);
+      if(ref.runId===`capture-${row.operationId}`)items.push({reference:reference as Json,status:row.status,everLinked:row.everLinked,operationId:row.operationId});
+    }
+    if(result.nextCursor!==null&&typeof result.nextCursor!=='string')throw new Error('Captured file inventory cursor is invalid.');
+    if(result.nextCursor===cursor)throw new Error('Captured file inventory cursor did not advance.');
+    return {items,nextCursor:result.nextCursor};
+  };
   const downloadArtifact=async(reference:ArtifactReference)=>{
     const chunks:Uint8Array[]=[];let offset=0;
     while(true){
@@ -326,7 +345,7 @@ export function Editor({host}:{host:ControlUiHost}){
         {issues.length>0&&<div className="lp-issues"><h4>Validation</h4>{issues.map((i,index)=><button key={index} onClick={()=>i.nodeId&&setSelected(i.nodeId)}>{i.nodeId&&<strong>{i.nodeId} · </strong>}{i.message}</button>)}</div>}
       </aside>
     </div>
-    <section className="lp-runs-panel">{definition?<RunLauncher key={JSON.stringify([draftScope,definition.id])} draft={definition} published={published} enabled={enabledRevision!==null} dirty={dirty} invalid={issues.length>0||hasInvalidEvaluationDraft||hasInvalidDataSchemaDraft||hasInvalidCaseDraft} busy={busy} authorized={Boolean(sessionKey)} onRun={start} onStageFile={stageFile} onReleaseFile={releaseFile} onError={error=>setError(displayFailure(error))}/>:<div className="lp-run-input"><h2>Run this loop</h2><p>Choose a loop to run or test.</p></div>}
+    <section className="lp-runs-panel">{definition?<RunLauncher key={JSON.stringify([draftScope,definition.id])} draft={definition} published={published} enabled={enabledRevision!==null} dirty={dirty} invalid={issues.length>0||hasInvalidEvaluationDraft||hasInvalidDataSchemaDraft||hasInvalidCaseDraft} busy={busy} authorized={Boolean(sessionKey)} onRun={start} onStageFile={stageFile} onReleaseFile={releaseFile} onListFiles={listCapturedFiles} onError={error=>setError(displayFailure(error))}/>:<div className="lp-run-input"><h2>Run this loop</h2><p>Choose a loop to run or test.</p></div>}
       <div className="lp-run-inspection"><div className="lp-section-heading"><h2>Run inspection</h2><div><select ref={runSelectRef} aria-label="Select run" value={activeId} onChange={e=>selectRun(e.target.value)}><option value="">Choose a run…</option>{activeId&&!runs.some(item=>item.id===activeId)&&<option value={activeId}>Selected run · {activeId.slice(0,8)}</option>}{runs.map(r=><option key={r.id} value={r.id}>{r.slug} · r{r.revision} · {r.state} · {r.id.slice(0,8)}</option>)}</select><button onClick={()=>void perform(refresh)}>Refresh</button></div></div>
         <div className="lp-history-pages"><button disabled={historyCursor===0} onClick={()=>setHistoryCursor(Math.max(0,historyCursor-100))}>Newer runs</button><span aria-live="polite">{historyTotal?`${historyCursor+1}–${Math.min(historyCursor+100,historyTotal)} of ${historyTotal}`:'No runs'}</span><button disabled={historyCursor+100>=historyTotal} onClick={()=>setHistoryCursor(historyCursor+100)}>Older runs</button></div>
         <HistoryCleanup key={draftScope} disabled={!sessionKey||busy} invoke={(policy,applyPlanId)=>feature.invoke('retention',{policy,...applyPlanId?{applyPlanId}:{}},options)} onApplied={ids=>{if(ids.includes(activeId))selectRun('');void perform(refresh);}}/>

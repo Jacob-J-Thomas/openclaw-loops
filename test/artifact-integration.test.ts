@@ -202,7 +202,7 @@ describe('authored artifact graph and public custody operations',()=>{
     expect(Buffer.from(page(engine,ref,0,3).dataBase64,'base64')).toEqual(Buffer.from(bytes));
   });
   it('releases a standalone unlinked capture for cleanup and refuses reuse, while preserving linked files',async()=>{
-    const {engine}=setup(),bytes=Uint8Array.from([0,255,31,0]);
+    const {root,file,engine}=setup(),bytes=Uint8Array.from([0,255,31,0]);
     const operationId=randomUUID(),unused=capture(engine,bytes,operationId);
     const released=engine.artifact(actor,{action:'release-unused',artifactId:unused.id,operationId}).result;
     expect(released).toMatchObject({status:'released',id:unused.id,operationId});
@@ -222,6 +222,14 @@ describe('authored artifact graph and public custody operations',()=>{
     expect((await engine.run(actor,'artifact-loop',{file:linked},'linked-file')).state).toBe('completed');
     expect(()=>engine.artifact(actor,{action:'release-unused',artifactId:linked.id,operationId:linkedId})).toThrow();
     expect(Buffer.from(page(engine,linked,0,4).dataBase64,'base64')).toEqual(Buffer.from(bytes));
+    const afterId=randomUUID(),after=capture(engine,bytes,afterId);
+    expect(engine.artifact(actor,{action:'release-unused',artifactId:after.id,operationId:afterId}).result).toMatchObject({status:'released'});
+    await engine.close();engines.splice(engines.indexOf(engine),1);
+    const reopened=new Engine(new SqliteStorage(file),host,{artifactDirectory:join(root,'artifacts')});engines.push(reopened);
+    const items=(reopened.artifact(actor,{action:'list'}).result as {items:unknown[]}).items;
+    expect(items).toContainEqual(expect.objectContaining({reference:linked,status:'published',everLinked:true}));
+    expect(items).toContainEqual(expect.objectContaining({reference:after,status:'released',everLinked:false}));
+    expect(reopened.artifact({...actor,sessionId:'foreign'},{action:'list'}).result).toMatchObject({items:[]});
   });
   it('validates every embedded import dependency before publication and returns new typed references',async()=>{
     const {engine}=setup(),bytes=Uint8Array.from([4,0,255,9]);const original=capture(engine,bytes);
