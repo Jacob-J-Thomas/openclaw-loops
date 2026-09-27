@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export OLLAMA_HOST=127.0.0.1:11439
-export OLLAMA_MODELS="$PWD/.dev-profile/ollama-models"
-export OLLAMA_CONTEXT_LENGTH=32768
-export OLLAMA_NUM_PARALLEL=1
-export OLLAMA_MAX_LOADED_MODELS=1
-export OLLAMA_FLASH_ATTENTION=1
-export OLLAMA_KV_CACHE_TYPE=q8_0
-export OLLAMA_NO_CLOUD=1
-exec ollama "$@"
+unset NODE_OPTIONS NODE_PATH
+node_bin="${LOOPS_NODE_BIN:-${npm_node_execpath:-}}"
+if [[ -z "$node_bin" ]]; then
+  for candidate in "$PWD/.dev-profile/toolchains/node-24.16.0/node_modules/node/bin/node" "$PWD/.dev-runtime/node_modules/node/bin/node" "$PWD/.dev-runtime-node26/node_modules/node/bin/node"; do
+    if [[ -x "$candidate" ]]; then node_bin="$candidate"; break; fi
+  done
+fi
+if [[ -z "$node_bin" || ! -x "$node_bin" ]]; then
+  echo 'Set LOOPS_NODE_BIN to a dedicated Node 24.16.0 or 26.1.0 executable.' >&2
+  exit 1
+fi
+exec "$node_bin" scripts/isolated-runtime.mjs ollama "$@"

@@ -55,7 +55,7 @@ jobs:
           LOOPS_LIFECYCLE_PREVIOUS_REF="$base_ref" \
             LOOPS_LIFECYCLE_PREVIOUS_HOST_ROOT="$previous_dir" \
             LOOPS_LIFECYCLE_EXPECTED_PREVIOUS_HOST_VERSION="2026.9.3" \
-            LOOPS_LIFECYCLE_EXPECTED_CURRENT_HOST_VERSION="2026.9.5" \
+            LOOPS_LIFECYCLE_EXPECTED_CURRENT_HOST_VERSION="2026.9.6" \
             node scripts/verify-package-lifecycle.mjs "$previous_archive" "$current_archive"
         env:
           LOOPS_EVIDENCE_DIR: evidence/ci

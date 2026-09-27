@@ -56,6 +56,26 @@ export function formatFailure(detail:LoopErrorData):string{
 export function executionError(message:string,code='LOOPS_EXECUTION_FAILED',recovery='Inspect the failed node and its recorded inputs before explicitly retrying.'){
   return new LoopError({code,message,phase:'execution',retryable:false,recovery});
 }
+// Evaluator failures are plugin-owned. Keep their stable code and node location
+// while never persisting Ajv, worker, or native exception text from a schema.
+const evaluationFailures:Record<string,{message:string;recovery:string}>={
+  LOOPS_EVALUATION_CONFIG_INVALID:{message:'Evaluator configuration is invalid.',recovery:'Correct the evaluator configuration and save a new loop revision before retrying.'},
+  LOOPS_EVALUATION_INPUT_INVALID:{message:'Evaluation input is not valid JSON data.',recovery:'Inspect the value bound to this Evaluate node and correct its source before retrying.'},
+  LOOPS_EVALUATION_LIMIT_INVALID:{message:'Evaluator resource limits are invalid.',recovery:'Correct the evaluator limits before retrying.'},
+  LOOPS_EVALUATION_RESOURCE_LIMIT:{message:'Evaluation exceeded a configured resource limit.',recovery:'Reduce the input or schema size, or correct the configured limit before explicitly retrying.'},
+  LOOPS_EVALUATION_REMOTE_REF:{message:'Evaluator schema contains a forbidden reference.',recovery:'Use local static schema fragments; remove remote, dynamic, and recursive references before retrying.'},
+  LOOPS_EVALUATION_SCHEMA_INVALID:{message:'Evaluator schema is invalid.',recovery:'Correct the JSON Schema and save a new loop revision before retrying.'},
+  LOOPS_EVALUATION_TIMEOUT:{message:'Evaluation exceeded its worker deadline.',recovery:'Inspect the schema and input for costly validation before explicitly retrying.'},
+  LOOPS_EVALUATION_CANCELLED:{message:'Evaluation was cancelled.',recovery:'Inspect the interrupted run before explicitly retrying.'},
+  LOOPS_EVALUATION_WORKER_FAILED:{message:'The evaluator worker failed.',recovery:'Inspect the evaluator configuration and operator diagnostics before explicitly retrying.'},
+  LOOPS_EVALUATION_WORKER_EXITED:{message:'The evaluator worker exited before replying.',recovery:'Inspect the evaluator configuration and operator diagnostics before explicitly retrying.'},
+};
+export function evaluationExecutionError(failureCode:string):LoopError{
+  const known=Object.hasOwn(evaluationFailures,failureCode)?evaluationFailures[failureCode]:undefined;
+  const code=known?failureCode:'LOOPS_EVALUATION_WORKER_FAILED';
+  const safe=known??evaluationFailures.LOOPS_EVALUATION_WORKER_FAILED!;
+  return executionError(safe.message,code,safe.recovery);
+}
 export function errorDetail(error:unknown, context:{phase:string;nodeId?:string;model?:string}):LoopErrorData {
   const location={phase:context.phase,...context.nodeId===undefined?{}:{nodeId:context.nodeId},...context.model===undefined?{}:{model:context.model}};
   if(error instanceof LoopError){const detail={...location,...error.detail};if(detail.nodeId===undefined)delete detail.nodeId;if(detail.model===undefined)delete detail.model;return detail;}

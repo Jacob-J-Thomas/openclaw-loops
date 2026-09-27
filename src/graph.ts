@@ -3,35 +3,47 @@ import { Type, type Static, type TObject } from 'typebox';
 import { Value } from 'typebox/value';
 import {defaultBudgets,legacyBudgets,type Budgets} from './budgets.js';
 import {identifierSchema as key,NodeSchema,ContextNodeSchema,LegacyNodeSchema,nodeContract,childNodes,type GraphNode,type Predicate,type Json} from './node-contracts.js';
-import {assertMutableContextPath,contextPatchLiteral,contextPathForBinding,pathSegments,type ContextNodeConfig} from './context.js';
+import {switchPorts,validateSwitch,validateTypedCondition} from './branching.js';
+import {assertMutableContextPath,bindingTokens,contextBindingSegments,contextPatchLiteral,contextPathForBinding,pathSegments,type ContextNodeConfig} from './context.js';
+import {validateLifecycle} from './context-lifecycle.js';
+import {MemoryPolicySchema,MemorySchemasSchema,validateMemoryDefinition,type MemorySchemaEntry} from './memory-definition.js';
+import {validateMemoryNode} from './memory-node.js';
+import type {MemoryPolicy} from './memory-policy.js';
 import {isJson,literalValue,type NodeValue} from './node-values.js';
+import {evaluatorConfigurationIssue} from './evaluation-authoring.js';
+import {dataSchemaIssues,validateDataValue} from './data-schema.js';
 export {isJson} from './node-values.js';
 export {NodeSchema,PredicateSchema,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 const obj={additionalProperties:false} as const;
+const flatInputFieldSchema=Type.Object({name:key,label:Type.String({minLength:1,maxLength:100}),type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json')]),required:Type.Boolean()},obj);
+const recursiveInputFieldSchema=Type.Object({...flatInputFieldSchema.properties,schema:Type.Optional(Type.Unknown())},obj);
 export const DefinitionFields = {
   schemaVersion:Type.Union([Type.Literal(1),Type.Literal(2),Type.Literal(3)]), id:key, slug:key, name:Type.String({minLength:1,maxLength:100}),
   description:Type.String({maxLength:500}), revision:Type.Integer({minimum:0}),
-  inputSchema:Type.Array(Type.Object({name:key,label:Type.String({minLength:1,maxLength:100}),type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json')]),required:Type.Boolean()},obj)),
+  inputSchema:Type.Array(recursiveInputFieldSchema),
   nodes:Type.Array(ContextNodeSchema,{minItems:2}),
   edges:Type.Array(Type.Object({id:key,source:key,target:key,port:Type.Union([Type.Literal('next'),Type.Literal('true'),Type.Literal('false'),Type.Literal('approve'),Type.Literal('reject')])},obj)),
   layout:Type.Record(key,Type.Object({x:Type.Number({minimum:-10000,maximum:10000}),y:Type.Number({minimum:-10000,maximum:10000})},obj)),
   capabilities:Type.Array(Type.Union([Type.Literal('llm'),Type.Literal('model-info')]),{maxItems:2,uniqueItems:true}),
+  memoryPolicy:Type.Optional(Type.Unsafe<MemoryPolicy>(MemoryPolicySchema)),memorySchemas:Type.Optional(Type.Unsafe<MemorySchemaEntry[]>(MemorySchemasSchema)),
   limits:Type.Object({maxExecutions:Type.Integer({minimum:2}),timeoutMs:Type.Optional(Type.Integer({minimum:1000})),maxOutputBytes:Type.Integer({minimum:128})},obj),
 };
+const {memoryPolicy:_memoryPolicy,memorySchemas:_memorySchemas,...legacyDefinitionFields}=DefinitionFields;
 const v2Layout=Type.Record(key,Type.Object({x:Type.Number({minimum:-Number.MAX_SAFE_INTEGER,maximum:Number.MAX_SAFE_INTEGER}),y:Type.Number({minimum:-Number.MAX_SAFE_INTEGER,maximum:Number.MAX_SAFE_INTEGER})},obj));
+const v3Edges=Type.Array(Type.Object({id:key,source:key,target:key,port:key},obj));
 export const DefinitionVersionSchemas={
-  1:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(1),nodes:Type.Array(LegacyNodeSchema,{minItems:2}),limits:Type.Required(DefinitionFields.limits,obj)},obj),
-  2:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(2),nodes:Type.Array(NodeSchema,{minItems:2}),layout:v2Layout},obj),
-  3:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(3),layout:v2Layout},obj),
+  1:Type.Object({...legacyDefinitionFields,schemaVersion:Type.Literal(1),inputSchema:Type.Array(flatInputFieldSchema),nodes:Type.Array(LegacyNodeSchema,{minItems:2}),limits:Type.Required(DefinitionFields.limits,obj)},obj),
+  2:Type.Object({...legacyDefinitionFields,schemaVersion:Type.Literal(2),inputSchema:Type.Array(flatInputFieldSchema),nodes:Type.Array(NodeSchema,{minItems:2}),layout:v2Layout},obj),
+  3:Type.Object({...DefinitionFields,schemaVersion:Type.Literal(3),edges:v3Edges,layout:v2Layout},obj),
 };
 // Editable state can be temporarily inconsistent while a user changes format.
 // Public validation still enforces the discriminated version schemas below.
-export type Definition=Static<TObject<typeof DefinitionFields>>;
+export type Definition=Omit<Static<TObject<typeof DefinitionFields>>,'edges'>&{edges:Array<{id:string;source:string;target:string;port:string}>};
 export const DefinitionSchema=Type.Unsafe<Definition>(Type.Union([DefinitionVersionSchemas[1],DefinitionVersionSchemas[2],DefinitionVersionSchemas[3]]));
 // Portable graph content excludes server identity and runtime state. Authoring
 // operations take activation as a separate enabled flag, not an imported grant.
 const {schemaVersion:_schemaVersion,id:_id,revision:_revision,...definitionContentFields}=DefinitionFields;
-export const DefinitionContentSchema=Type.Object({...definitionContentFields,schemaVersion:Type.Optional(Type.Union([Type.Literal(2),Type.Literal(3)]))},obj);
+export const DefinitionContentSchema=Type.Object({...definitionContentFields,edges:v3Edges,schemaVersion:Type.Optional(Type.Union([Type.Literal(2),Type.Literal(3)]))},obj);
 export const DefinitionPatchSchema=Type.Partial(DefinitionContentSchema,{...obj,minProperties:1});
 export type DefinitionContent=Static<typeof DefinitionContentSchema>;
 export type DefinitionPatch=Static<typeof DefinitionPatchSchema>;
@@ -45,7 +57,7 @@ export function parseDefinitionPatch(value:unknown,budgets:Budgets=defaultBudget
 }
 export type Capability = Definition['capabilities'][number];
 export type Issue = {nodeId?:string;message:string};
-export const ports=(node:GraphNode):string[]=>[...nodeContract(node.kind).ports];
+export const ports=(node:GraphNode):string[]=>node.kind==='switch'?switchPorts(node):[...nodeContract(node.kind).ports];
 export function parseDefinition(value:unknown,budgets:Budgets=defaultBudgets):Definition {
   if (!Value.Check(DefinitionSchema,value)) throw requestError('Definition does not match schemaVersion 1, 2 or 3.');
   const budget=value.schemaVersion===1?legacyBudgets.definitionBytes:budgets.definitionBytes;
@@ -61,7 +73,18 @@ export function validateGraph(d:Definition):Issue[] {
     ids.add(n.id);
     for(const b of childNodes(n)){if(ids.has(b.id)||d.nodes.some(x=>x.id===b.id))error('Body node IDs must be unique.',n.id);ids.add(b.id);}
   }
+  for(const message of validateMemoryDefinition(d,d.schemaVersion,new Set(d.nodes.filter(node=>node.kind==='memory').map(node=>node.id))))error(message);
+  if(d.schemaVersion===3)for(const node of d.nodes)if(node.kind==='memory'){
+    try{validateMemoryNode(node.memory);}catch(cause){error(cause instanceof Error?cause.message:'Invalid Memory node.',node.id);}
+    if(!d.memoryPolicy?.enabled||!d.memoryPolicy.nodes?.[node.id])error('Memory node requires an enabled authored node policy.',node.id);
+    if(['write','update','forget','retention-apply','reset-apply'].includes(node.memory.operation)&&(node.outputSchema!==undefined||node.context?.patch.mode!=='omit'&&node.context?.patch!==undefined))error('Memory effects cannot have an output schema or context patch after the durable mutation.',node.id);
+  }
   if(d.schemaVersion===3)for(const node of d.nodes.flatMap(node=>[node,...childNodes(node)])){
+    if(node.kind==='evaluate'){const issue=evaluatorConfigurationIssue(node.evaluator);if(issue)error(issue,node.id);}
+    if(node.outputSchema!==undefined)for(const diagnostic of dataSchemaIssues(node.outputSchema))error(`Output schema ${diagnostic.instancePath||'/'}: ${diagnostic.message}`,node.id);
+    if(node.kind==='inference'&&node.outputSchema!==undefined&&node.output!=='json')error('Inference output schemas require JSON output mode.',node.id);
+    if(node.kind==='inference'&&node.structuredGeneration==='native'&&(node.output!=='json'||node.outputSchema===undefined))error('Native structured generation requires JSON output and a valid output schema.',node.id);
+    if(node.kind==='context-lifecycle'){try{validateLifecycle(node.lifecycle);}catch(cause){error(cause instanceof Error?cause.message:'Invalid lifecycle configuration.',node.id);}if(['summarize','compact'].includes(node.lifecycle.operation)&&!d.capabilities.includes('llm'))error('Declare the llm capability for lifecycle completion.',node.id);}
     const context=node.context;
     if(!context)continue;
     try{
@@ -73,6 +96,12 @@ export function validateGraph(d:Definition):Issue[] {
     }catch(cause){error(cause instanceof Error?cause.message:'Invalid context configuration.',node.id);}
   }
   if(new Set(d.inputSchema.map(f=>f.name)).size!==d.inputSchema.length)error('Input names must be unique.');
+  for(const field of d.inputSchema)if(field.schema!==undefined){
+    if(d.schemaVersion!==3)error('Recursive input schemas require schemaVersion 3.');
+    if(field.type!=='json')error(`Input ${field.name} uses a recursive schema and must have Structured JSON type.`);
+    for(const diagnostic of dataSchemaIssues(field.schema))error(`Input schema ${field.name}${diagnostic.instancePath||'/'}: ${diagnostic.message}`);
+  }
+  if(d.schemaVersion!==3)for(const node of d.nodes.flatMap(node=>[node,...childNodes(node)]))if(node.outputSchema!==undefined)error('Recursive output schemas require schemaVersion 3.',node.id);
   const entries=d.nodes.filter(n=>n.kind==='input');
   if(entries.length!==1)error('Exactly one Input node is required.');
   const edgeIds=new Set<string>();
@@ -82,6 +111,8 @@ export function validateGraph(d:Definition):Issue[] {
     if(entries.some(n=>n.id===e.target))error('Input cannot have an incoming edge.',e.target);
   }
   for(const n of d.nodes){
+    if(n.kind==='switch')for(const issue of validateSwitch(n))error(issue,n.id);
+    if(n.kind==='condition'&&'condition'in n)for(const issue of validateTypedCondition(n.condition))error(issue,n.id);
     const outgoing=d.edges.filter(e=>e.source===n.id);
     for(const p of ports(n))if(outgoing.filter(e=>e.port===p).length!==1)error(`Connect exactly one ${p} edge.`,n.id);
     if(outgoing.some(e=>!ports(n).includes(e.port)))error('Unexpected outgoing port.',n.id);
@@ -100,6 +131,11 @@ export function validateGraph(d:Definition):Issue[] {
     const pred=predecessors(n.id);const common=new Set(pred.length?[...(dom.get(pred[0])??[])].filter(x=>pred.every(p=>dom.get(p)?.has(x))):[]);
     common.add(n.id);dom.set(n.id,common);
   }
+  if(d.schemaVersion===3)for(const node of d.nodes)if(node.kind==='gate'){
+    const evaluation=d.nodes.find(candidate=>candidate.id===node.evaluationId);
+    if(!evaluation||evaluation.kind!=='evaluate')error('Evidence gate must name an Evaluate node.',node.id);
+    else if(!dom.get(node.id)?.has(evaluation.id))error('Evidence gate requires its Evaluate node to dominate every path into the gate.',node.id);
+  }
   const checkText=(s:NodeValue,n:GraphNode,{bodyPrior=[],dominator=n,repeatScope=n.kind==='repeat',reportNode=n,contextReportNode=n}:{bodyPrior?:string[];dominator?:GraphNode;repeatScope?:boolean;reportNode?:GraphNode;contextReportNode?:GraphNode}={})=>{
     const report=(message:string)=>error(message,reportNode.id),reportContext=(message:string)=>error(message,contextReportNode.id);
     if(typeof s!=='string'){
@@ -107,8 +143,9 @@ export function validateGraph(d:Definition):Issue[] {
       else try{literalValue(s.literalJson);}catch(cause){report(cause instanceof Error?cause.message:'Invalid literal JSON.');}
       return;
     }
-    for(const match of s.matchAll(/\{\{(.*?)\}\}/g)){
-      const path=match[1].trim();
+    const bindings=bindingTokens(s);
+    for(const binding of bindings.tokens){
+      const path=binding.raw.trim();
       const contextPath=d.schemaVersion===3?contextPathForBinding(path):undefined;
       const pattern=d.schemaVersion===1?/^(input\.[a-z][\w-]*|nodes\.[a-z][\w-]*\.(text|value|succeeded|iterations|exhausted|provider|model|agentId)|repeat\.index)$/:/^(input\.[a-z][\w-]*(?:\.[\w-]+)*|nodes\.[a-z][\w-]*\.[a-z][\w-]*(?:\.[\w-]+)*|repeat\.index)$/;
       if(!contextPath&&(!pattern.test(path)||path.split('.').some(p=>['__proto__','constructor','prototype'].includes(p)))){report(`Unsupported binding: ${path}`);continue;}
@@ -127,7 +164,7 @@ export function validateGraph(d:Definition):Issue[] {
         if(producer&&!fields.includes(field))report(`Node ${id} (${producer.kind}) does not produce ${field}.`);
       }
     }
-    if(s.replace(/\{\{.*?\}\}/g,'').includes('{{'))report('Unclosed binding.');
+    if(bindings.unclosed)report('Unclosed binding.');
   };
   for(const node of d.nodes){
     if(node.kind!=='repeat')for(const binding of nodeContract(node.kind).bindings(node))checkText(binding.text,node,{bodyPrior:binding.prior});
@@ -150,15 +187,33 @@ export function validateInput(d:Definition,value:unknown,budgets:Budgets=default
   if(!value||typeof value!=='object'||Array.isArray(value)||new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw requestError(`Input must be a JSON object of at most ${budget===16000?'16 KB':`${budget} bytes`}.`);
   const input=value as Record<string,Json>;
   for(const k of Object.keys(input))if(!d.inputSchema.some(f=>f.name===k))throw requestError(`Unexpected input: ${k}`);
-  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='json'){if(d.schemaVersion===1||v===undefined||!isJson(v))throw requestError(`Input ${f.name} must be valid JSON in a version 2 or 3 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw requestError(`Input ${f.name} must be ${f.type}.`);}
+  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='json'){if(d.schemaVersion===1||v===undefined||!isJson(v))throw requestError(`Input ${f.name} must be valid JSON in a version 2 or 3 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw requestError(`Input ${f.name} must be ${f.type}.`);if(f.schema!==undefined){const diagnostics=validateDataValue(f.schema,v);if(diagnostics.length)throw requestError(`Input ${f.name}${diagnostics[0].instancePath||'/'}: ${diagnostics[0].message}`,'LOOPS_INPUT_SCHEMA_INVALID','Correct the value at the reported JSON Pointer, then explicitly start a new run.');}}
   return structuredClone(input);
 }
 export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;context?:Record<string,Json>;repeat?:{index:number}};
+function bindingValue(raw:string,ctx:BindingContext):{available:boolean;value?:Json}{
+  let value:unknown=ctx;
+  const contextParts=contextBindingSegments(raw.trim()),parts=contextParts?['context',...contextParts]:raw.trim().split('.');
+  for(const part of parts){
+    if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))return {available:false};
+    value=(value as Record<string,unknown>)[part];
+  }
+  return value===undefined?{available:false}:{available:true,value:value as Json};
+}
+export function resolveBinding(template:NodeValue,ctx:BindingContext):{available:boolean;value?:Json}{
+  if(typeof template!=='string')return {available:true,value:literalValue(template.literalJson)};
+  const bindings=bindingTokens(template);
+  if(bindings.tokens.length===1&&bindings.tokens[0].start===0&&bindings.tokens[0].end===template.length)return bindingValue(bindings.tokens[0].raw,ctx);
+  return {available:true,value:bind(template,ctx)};
+}
 export function bind(template:NodeValue,ctx:BindingContext):Json{
   if(typeof template!=='string')return literalValue(template.literalJson);
-  const resolve=(raw:string):Json=>{let value:unknown=ctx;for(const part of raw.trim().split('.')){if(['__proto__','prototype','constructor'].includes(part)||!value||typeof value!=='object'||!Object.hasOwn(value,part))throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');value=(value as Record<string,unknown>)[part];}if(value===undefined)throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');return value as Json;};
-  const exact=/^\{\{([^{}]+)\}\}$/.exec(template);if(exact)return resolve(exact[1]);
-  return template.replace(/\{\{([^{}]+)\}\}/g,(_,p:string)=>{const v=resolve(p);return typeof v==='string'?v:JSON.stringify(v);});
+  const resolve=(raw:string):Json=>{const found=bindingValue(raw,ctx);if(!found.available)throw executionError(`Binding unavailable: ${raw}`,'LOOPS_BINDING_UNAVAILABLE');return found.value!;};
+  const bindings=bindingTokens(template);
+  if(bindings.tokens.length===1&&bindings.tokens[0].start===0&&bindings.tokens[0].end===template.length)return resolve(bindings.tokens[0].raw);
+  let rendered='',cursor=0;
+  for(const binding of bindings.tokens){rendered+=template.slice(cursor,binding.start);const value=resolve(binding.raw);rendered+=typeof value==='string'?value:JSON.stringify(value);cursor=binding.end;}
+  return rendered+template.slice(cursor);
 }
 export const display=(value:Json):string=>typeof value==='string'?value:JSON.stringify(value);
 export function compare(p:Predicate,ctx:BindingContext,version:1|2|3=1):boolean{

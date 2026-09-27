@@ -211,7 +211,8 @@ export function createPortablePackage(value:PortablePackageInput,budgets:Budgets
 }
 
 /** Create a single-template package while replacing only explicitly selected fields with typed environment markers. */
-export function exportPortableTemplate(content:PortableJson,declarations:unknown,budgets:Budgets=defaultBudgets):PortablePackage{
+export function exportPortableTemplate(content:unknown,declarations:unknown,budgets:Budgets=defaultBudgets):PortablePackage{
+  checkJson(content,'portable template content',packageBytes(budgets));
   if(!Array.isArray(declarations))fail('Portable binding declarations must be an array.');
   const definition=clone(content),bindings=(declarations as unknown[]).map((value,index)=>{
     const source=exactObject(value,`bindings[${index}]`,['name','type','pointer']);

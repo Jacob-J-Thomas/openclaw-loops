@@ -18,8 +18,10 @@ Each opt-in node declares:
 
 `omit` exposes no `context` binding. `consume` deep-clones only the declared
 paths, which bind as `{{context.input.brief}}`. Dotted bindings accept only
-safe identifier/array segments. Paths remain RFC 6901 JSON Pointers, so
-`~0` represents `~` and `~1` represents `/`; prototype-sensitive keys are
+safe identifier/array segments. Use JSON-string brackets for any RFC 6901
+object key that contains punctuation, spaces, or dots: `{{context["a/b"]}}`,
+`{{context["dot.key"]}}`. Paths remain RFC 6901 JSON Pointers, so `~0`
+represents `~` and `~1` represents `/`; prototype-sensitive keys are
 rejected. A projection of an individual array element is represented as a
 numeric-keyed object (for example `/input/items/2` becomes
 `context.input.items.2`), so it does not expose adjacent elements or create a

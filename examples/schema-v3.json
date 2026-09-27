@@ -82,6 +82,9 @@
           },
           "required": {
             "type": "boolean"
+          },
+          "schema": {
+            "$ref": "#/$defs/loops_data_schema"
           }
         },
         "additionalProperties": false
@@ -582,6 +585,9 @@
                 },
                 "additionalProperties": false
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -890,6 +896,10 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "structuredGeneration": {
+                "type": "string",
+                "const": "native"
               }
             },
             "additionalProperties": false
@@ -919,6 +929,9 @@
               "capability": {
                 "type": "string",
                 "const": "model-info"
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
               },
               "context": {
                 "type": "object",
@@ -1333,6 +1346,548 @@
                 },
                 "additionalProperties": false
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
+              "context": {
+                "type": "object",
+                "required": [
+                  "version",
+                  "projection",
+                  "patch"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "projection": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "paths"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "consume"
+                          },
+                          "paths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                            },
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "maxItems": 128
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "patch": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "append"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "replace"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "merge"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "id",
+              "label",
+              "predicate",
+              "condition"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "condition"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "predicate": {
+                "type": "object",
+                "required": [
+                  "left",
+                  "op",
+                  "right"
+                ],
+                "properties": {
+                  "left": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "op": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "equals"
+                      },
+                      {
+                        "type": "string",
+                        "const": "not-equals"
+                      },
+                      {
+                        "type": "string",
+                        "const": "contains"
+                      },
+                      {
+                        "type": "string",
+                        "const": "less-than"
+                      },
+                      {
+                        "type": "string",
+                        "const": "greater-than"
+                      },
+                      {
+                        "type": "string",
+                        "const": "truthy"
+                      }
+                    ]
+                  },
+                  "right": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "condition": {
+                "type": "object",
+                "required": [
+                  "value",
+                  "operator"
+                ],
+                "properties": {
+                  "value": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "operator": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "exists"
+                      },
+                      {
+                        "type": "string",
+                        "const": "missing"
+                      },
+                      {
+                        "type": "string",
+                        "const": "type-is"
+                      },
+                      {
+                        "type": "string",
+                        "const": "equals"
+                      },
+                      {
+                        "type": "string",
+                        "const": "not-equals"
+                      },
+                      {
+                        "type": "string",
+                        "const": "less-than"
+                      },
+                      {
+                        "type": "string",
+                        "const": "less-than-or-equals"
+                      },
+                      {
+                        "type": "string",
+                        "const": "greater-than"
+                      },
+                      {
+                        "type": "string",
+                        "const": "greater-than-or-equals"
+                      },
+                      {
+                        "type": "string",
+                        "const": "in"
+                      },
+                      {
+                        "type": "string",
+                        "const": "not-in"
+                      }
+                    ]
+                  },
+                  "expected": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "jsonType": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "null"
+                      },
+                      {
+                        "type": "string",
+                        "const": "boolean"
+                      },
+                      {
+                        "type": "string",
+                        "const": "number"
+                      },
+                      {
+                        "type": "string",
+                        "const": "string"
+                      },
+                      {
+                        "type": "string",
+                        "const": "array"
+                      },
+                      {
+                        "type": "string",
+                        "const": "object"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -1664,6 +2219,9 @@
                 "minLength": 1,
                 "maxLength": 100
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "kind": {
                 "type": "string",
                 "const": "repeat"
@@ -1833,6 +2391,9 @@
                           }
                         },
                         "additionalProperties": false
+                      },
+                      "outputSchema": {
+                        "$ref": "#/$defs/loops_data_schema"
                       },
                       "context": {
                         "type": "object",
@@ -2142,6 +2703,10 @@
                           }
                         },
                         "additionalProperties": false
+                      },
+                      "structuredGeneration": {
+                        "type": "string",
+                        "const": "native"
                       }
                     },
                     "additionalProperties": false
@@ -2246,6 +2811,9 @@
                           }
                         },
                         "additionalProperties": false
+                      },
+                      "outputSchema": {
+                        "$ref": "#/$defs/loops_data_schema"
                       },
                       "context": {
                         "type": "object",
@@ -2916,6 +3484,9 @@
                 ],
                 "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -3269,6 +3840,9 @@
                   }
                 ],
                 "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
               },
               "context": {
                 "type": "object",
@@ -3624,6 +4198,9 @@
                 ],
                 "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -3978,6 +4555,2229 @@
                 ],
                 "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
               },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
+              "context": {
+                "type": "object",
+                "required": [
+                  "version",
+                  "projection",
+                  "patch"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "projection": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "paths"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "consume"
+                          },
+                          "paths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                            },
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "maxItems": 128
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "patch": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "append"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "replace"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "merge"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "id",
+              "label",
+              "value",
+              "cases",
+              "strategy"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "switch"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "literalJson"
+                    ],
+                    "properties": {
+                      "literalJson": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "cases": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "label",
+                    "value"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^(?!(?:constructor|prototype|default)$)[a-z][a-z0-9_-]{0,47}$"
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "value": {}
+                  },
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 32
+              },
+              "strategy": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "ordered"
+                  },
+                  {
+                    "type": "string",
+                    "const": "unique"
+                  }
+                ]
+              },
+              "default": {
+                "type": "boolean",
+                "const": true
+              },
+              "exhaustive": {
+                "type": "string",
+                "const": "boolean"
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
+              "context": {
+                "type": "object",
+                "required": [
+                  "version",
+                  "projection",
+                  "patch"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "projection": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "paths"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "consume"
+                          },
+                          "paths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                            },
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "maxItems": 128
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "patch": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "append"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "replace"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "merge"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "label",
+              "kind",
+              "value",
+              "evaluator"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
+              "kind": {
+                "type": "string",
+                "const": "evaluate"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "literalJson"
+                    ],
+                    "properties": {
+                      "literalJson": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+              },
+              "evaluator": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "version",
+                      "schema"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "json-schema-2020"
+                      },
+                      "version": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "schema": {}
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "version",
+                      "predicate"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "predicate"
+                      },
+                      "version": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "predicate": {
+                        "type": "object",
+                        "required": [
+                          "op"
+                        ],
+                        "properties": {
+                          "op": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "equals"
+                              },
+                              {
+                                "type": "string",
+                                "const": "not-equals"
+                              },
+                              {
+                                "type": "string",
+                                "const": "contains"
+                              },
+                              {
+                                "type": "string",
+                                "const": "less-than"
+                              },
+                              {
+                                "type": "string",
+                                "const": "greater-than"
+                              },
+                              {
+                                "type": "string",
+                                "const": "truthy"
+                              }
+                            ]
+                          },
+                          "expected": {}
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "context": {
+                "type": "object",
+                "required": [
+                  "version",
+                  "projection",
+                  "patch"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "projection": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "paths"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "consume"
+                          },
+                          "paths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                            },
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "maxItems": 128
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "patch": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "append"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "replace"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "merge"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "label",
+              "kind",
+              "evaluationId"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
+              "kind": {
+                "type": "string",
+                "const": "gate"
+              },
+              "evaluationId": {
+                "type": "string",
+                "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+              },
+              "context": {
+                "type": "object",
+                "required": [
+                  "version",
+                  "projection",
+                  "patch"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "projection": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "paths"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "consume"
+                          },
+                          "paths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                            },
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "maxItems": 128
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "patch": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "append"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "replace"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "merge"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "label",
+              "kind",
+              "lifecycle"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "kind": {
+                "type": "string",
+                "const": "context-lifecycle"
+              },
+              "lifecycle": {
+                "type": "object",
+                "required": [
+                  "operation",
+                  "target",
+                  "paths"
+                ],
+                "properties": {
+                  "operation": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "retrieve"
+                      },
+                      {
+                        "type": "string",
+                        "const": "inject"
+                      },
+                      {
+                        "type": "string",
+                        "const": "summarize"
+                      },
+                      {
+                        "type": "string",
+                        "const": "compact"
+                      },
+                      {
+                        "type": "string",
+                        "const": "reset"
+                      }
+                    ]
+                  },
+                  "target": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024,
+                      "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                    },
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "uniqueItems": true
+                  },
+                  "source": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "initial"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "sourceId"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "retained"
+                          },
+                          "sourceId": {
+                            "type": "string",
+                            "minLength": 64,
+                            "maxLength": 64,
+                            "pattern": "^[0-9a-f]{64}$"
+                          },
+                          "format": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "snapshot"
+                              },
+                              {
+                                "type": "string",
+                                "const": "document"
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "value": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                  },
+                  "instructions": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 500
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "agentId": {
+                    "type": "string",
+                    "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+                  },
+                  "reasoning": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "off"
+                      },
+                      {
+                        "type": "string",
+                        "const": "minimal"
+                      },
+                      {
+                        "type": "string",
+                        "const": "low"
+                      },
+                      {
+                        "type": "string",
+                        "const": "medium"
+                      },
+                      {
+                        "type": "string",
+                        "const": "high"
+                      },
+                      {
+                        "type": "string",
+                        "const": "xhigh"
+                      },
+                      {
+                        "type": "string",
+                        "const": "adaptive"
+                      },
+                      {
+                        "type": "string",
+                        "const": "max"
+                      },
+                      {
+                        "type": "string",
+                        "const": "ultra"
+                      }
+                    ]
+                  },
+                  "advanced": {
+                    "type": "object",
+                    "properties": {
+                      "temperature": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "topP": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "topK": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "minP": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "typicalP": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "frequencyPenalty": {
+                        "type": "number"
+                      },
+                      "presencePenalty": {
+                        "type": "number"
+                      },
+                      "repetitionPenalty": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "seed": {
+                        "type": "integer"
+                      },
+                      "stop": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "uniqueItems": true
+                      },
+                      "maxTokens": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
+              "context": {
+                "type": "object",
+                "required": [
+                  "version",
+                  "projection",
+                  "patch"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "projection": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "paths"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "consume"
+                          },
+                          "paths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1024,
+                              "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                            },
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "maxItems": 128
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "patch": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "omit"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "append"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "replace"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "target",
+                          "source"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "const": "merge"
+                          },
+                          "target": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "output"
+                                  },
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024,
+                                    "description": "RFC 6901 JSON Pointer. ~0 encodes ~ and ~1 encodes /; prototype-sensitive keys are rejected."
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "kind",
+                                  "value"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "literal"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "literalJson"
+                                        ],
+                                        "properties": {
+                                          "literalJson": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                                  }
+                                },
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "label",
+              "kind",
+              "memory"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "kind": {
+                "type": "string",
+                "const": "memory"
+              },
+              "memory": {
+                "type": "object",
+                "required": [
+                  "operation",
+                  "key"
+                ],
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": [
+                      "consume",
+                      "search",
+                      "inspect",
+                      "write",
+                      "update",
+                      "forget",
+                      "mutation",
+                      "retention-preview",
+                      "retention-apply",
+                      "reset-preview",
+                      "reset-apply"
+                    ]
+                  },
+                  "key": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                  },
+                  "value": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                  },
+                  "expectedVersion": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                  },
+                  "plan": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "literalJson"
+                        ],
+                        "properties": {
+                          "literalJson": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "A text template with {{bindings}}, or an explicit version-2 JSON value such as {literalJson:\"0\"}, {literalJson:\"false\"}, or {literalJson:\"{\\\"count\\\":0}\"}. Literal JSON strings do not expand bindings. Invalid JSON can be drafted but cannot be executed."
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50
+                  }
+                },
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "$ref": "#/$defs/loops_data_schema"
+              },
               "context": {
                 "type": "object",
                 "required": [
@@ -4318,28 +7118,8 @@
             "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
           },
           "port": {
-            "anyOf": [
-              {
-                "type": "string",
-                "const": "next"
-              },
-              {
-                "type": "string",
-                "const": "true"
-              },
-              {
-                "type": "string",
-                "const": "false"
-              },
-              {
-                "type": "string",
-                "const": "approve"
-              },
-              {
-                "type": "string",
-                "const": "reject"
-              }
-            ]
+            "type": "string",
+            "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
           }
         },
         "additionalProperties": false
@@ -4387,6 +7167,51 @@
       "maxItems": 2,
       "uniqueItems": true
     },
+    "memoryPolicy": {
+      "type": "object",
+      "required": [
+        "version",
+        "enabled"
+      ],
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "nodes": {}
+      },
+      "additionalProperties": false
+    },
+    "memorySchemas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "schema"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "schema": {
+            "$ref": "#/$defs/loops_data_schema"
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 64
+    },
     "limits": {
       "type": "object",
       "required": [
@@ -4410,5 +7235,340 @@
       "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "loops_json_value": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/loops_json_value"
+          }
+        },
+        {
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {
+              "$ref": "#/$defs/loops_json_value"
+            }
+          }
+        }
+      ]
+    },
+    "loops_data_schema": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "object"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true
+            },
+            "properties": {
+              "type": "object",
+              "patternProperties": {
+                "^(?!(?:__proto__|prototype|constructor)$).+$": {
+                  "$ref": "#/$defs/loops_data_schema"
+                }
+              },
+              "maxProperties": 128
+            },
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^(?!(?:__proto__|prototype|constructor)$).+$"
+              },
+              "maxItems": 128,
+              "uniqueItems": true
+            },
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "items"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "array"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true
+            },
+            "items": {
+              "$ref": "#/$defs/loops_data_schema"
+            },
+            "minItems": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "string"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true
+            },
+            "minLength": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pattern": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "number"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true
+            },
+            "minimum": {
+              "type": "number"
+            },
+            "maximum": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "integer"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true
+            },
+            "minimum": {
+              "type": "number"
+            },
+            "maximum": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "boolean"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "null"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "enum": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/loops_json_value"
+              },
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
 }

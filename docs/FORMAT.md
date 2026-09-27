@@ -1,8 +1,26 @@
 # Definition formats
 
-Ordinary new definitions use schemaVersion 2; existing v1/v2 definitions and runs remain readable. To opt into shared context, create or explicitly edit a definition with `schemaVersion: 3`; see `examples/schema-v3.json` and [the v3 shared-context contract](POST_1_0_CONTEXT.md). V2 adds zero-input and nested JSON fields, safe nested bindings such as `{{nodes.summary.value.items.0.name}}`, typed equality, larger configurable budgets and Repeat counts bounded by total executions.
+Ordinary new definitions use schemaVersion 2; existing v1/v2 definitions and runs remain readable. To opt into shared context, deterministic evaluation, and evidence gates, create or explicitly edit a definition with `schemaVersion: 3`; see `examples/schema-v3.json`, [the v3 shared-context contract](POST_1_0_CONTEXT.md), and [the evaluator contract](POST_1_0_EVALUATION.md). V2 adds zero-input and nested JSON fields, safe nested bindings such as `{{nodes.summary.value.items.0.name}}`, typed equality, larger configurable budgets and Repeat counts bounded by total executions.
 
 Inference supports optional `model`, `agentId`, `reasoning` and `advanced`. Advanced keys: `temperature`, `topP`, `topK`, `minP`, `typicalP`, `frequencyPenalty`, `presencePenalty`, `repetitionPenalty`, `seed`, `stop`, `maxTokens`. Omit to inherit; zero is a value. `loops_capabilities` and `loops_validate` report actual SDK support.
+
+## Recursive data schemas (v3)
+
+Version 3 input fields may add `schema` to a `type: "json"` field, and any non-Input node may add `outputSchema`. An Inference node with `outputSchema` must use JSON output mode: the schema checks the parsed generated `value`, while other node schemas check their complete output. The supported recursive language is deliberately data-only: `object` with `properties`, `required`, and boolean `additionalProperties`; `array` with `items`; scalar `string`, `number`, `integer`, `boolean`, and `null`; `enum`; scalar and collection limits; and `json` for an explicit unrestricted JSON value. For example:
+
+```json
+{"type":"object","properties":{"profile":{"type":"object","properties":{"name":{"type":"string","minLength":1},"scores":{"type":"array","items":{"type":"integer","minimum":0}}},"required":["name","scores"],"additionalProperties":false}},"required":["profile"],"additionalProperties":false}
+```
+
+An importable disabled definition is available in [recursive-data-schema-v3.example.json](../examples/recursive-data-schema-v3.example.json).
+
+Definitions reject schemas over 128 KiB, deeper than 32 levels, or with more than 512 nodes before they reach AJV. Property names cannot use prototype-sensitive keys; patterns must be short anchored expressions with at most one bounded quantifier and no groups or alternation. Input validation happens before run admission. Output validation happens before the node output is traced, checkpointed, or committed to shared context, so an invalid output leaves no committed output for that node. Diagnostics identify the failing JSON Pointer, including escaped property names such as `/a~1b`. Structurally duplicate enum values and type-inapplicable schema keywords fail authoring validation.
+
+JSON Inference normally uses the fresh isolated agent runtime, asks for one JSON value, and validates the parsed response locally. A v3 Inference node may explicitly set `"structuredGeneration":"native"` when it has `"output":"json"` and an `outputSchema`. This selects OpenClaw's public direct completion route and sends a provider-native `json_schema` response format derived from the saved data schema. The selected transport may ignore that hint; Loops still rejects malformed or schema-invalid output before any accepted output, context update, or downstream binding. A failed inference retains only an owner-visible, 1,024-byte Unicode-safe preview, exact byte length and SHA-256 of the rejected text in its trace and inspector, labeled separately from accepted output. Omission of `structuredGeneration` keeps the isolated route, and omission of generation settings still inherits the host default.
+
+Direct completion remains subject to the current host actor, model policy, and account selection. A saved account pin is passed through the host's `model@profile` route; a conflicting model profile fails before dispatch. Cancellation and timeouts use the run's `AbortSignal`; completion settlement does not prove that a remote provider physically stopped. The host's requested/transmitted settings receipt records the format request, not provider enforcement.
+
+The editor provides nested object/array controls, including keyboard-operable **Add nested schema** and **Add property** buttons. Existing flat v1/v2/v3 input fields remain unchanged when they do not declare `schema`; a pinned run retains its saved definition. Recursive schemas are plain definition content: they do not infer files, tools, executable behavior, credentials, or any new grant.
 
 `loops_draft` preserves publication. `loops_publish` enables an immutable revision. `loops_restore` creates a new draft. Legacy `enabled:false` retains its disabling meaning. `loops_test` executes without publishing. Versions/history/inspect/output operations expose complete evidence. Archive/delete preserve recoverable history.
 
@@ -36,7 +54,7 @@ Agent `loops_create` accepts editable `definition` fields and assigns `id` and `
 
 `loops_enable` takes `id`, current `revision` and `enabled:true/false`. Enabling validates and grants the graph's declared supported capabilities; no human-only step is required. The optional legacy `grants` checklist normally should be omitted. `loops_revoke` takes `id` and clears grants as well as activation, blocking later host actions in parked runs. Ordinary disabling retains grants for existing runs. `loops_library` includes drafts; `loops_read` returns the full saved record. `loops_delete` requires `id` and `expectedRevision`, rejects active/parked runs, and preserves terminal history. Invocation uses `loops_run` with `slug` and `input`; long-running work returns a real handle for `loops_status`. None of these operations approves an explicit Human review node.
 
-Edges identify `id`, `source`, `target`, and source `port`. Ordinary nodes have one `next` edge; Condition has one `true` and one `false`; Human review has `approve` and `reject`; Return/Fail have none. Input is the unique entry with no incoming edge. Every node must be reachable, and all paths terminate. Cycles are invalid. A structured Repeat is the only repeat mechanism.
+Edges identify `id`, `source`, `target`, and source `port`. Ordinary nodes have one `next` edge; Condition and Evidence gate have one `true` and one `false`; Human review has `approve` and `reject`; Return/Fail have none. Input is the unique entry with no incoming edge. Every node must be reachable, and all paths terminate. Cycles are invalid. A structured Repeat is the only repeat mechanism.
 
 | Node kind | Properties beyond id/kind/label |
 |---|---|
@@ -44,6 +62,8 @@ Edges identify `id`, `source`, `target`, and source `port`. Ordinary nodes have 
 | `inference` | `prompt`, `output: "text"` or `"json"` |
 | `action` | `capability: "model-info"` only |
 | `condition` | `predicate: {left, op, right}` |
+| `evaluate` (v3) | `value`, `evaluator` with `kind`, `version`, and schema or predicate configuration |
+| `gate` (v3) | `evaluationId` naming a dominating Evaluate node in this run |
 | `repeat` | `maxIterations` (1–5), `body` tuple of Inference then Condition |
 | `wait` | `message`; manual checkpoint only |
 | `review` | `proposal`; stored actual content for human decision |

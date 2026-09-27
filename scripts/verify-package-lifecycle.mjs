@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {cpSync,createWriteStream,existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,readdirSync,renameSync,rmSync,writeFileSync} from 'node:fs';
+import {cpSync,createWriteStream,existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,realpathSync,readdirSync,renameSync,rmSync,writeFileSync} from 'node:fs';
 import {execFileSync,spawn,spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {createConnection} from 'node:net';
+import {performance} from 'node:perf_hooks';
 import {resolve as pathResolve} from 'node:path';
 import {setTimeout as pause} from 'node:timers/promises';
-import {createLifecycleOperations,writeLifecycleFailureReceipt} from './lifecycle-failure-receipt.mjs';
+import {appendLifecycleClientMilestone,createLifecycleOperations,lifecycleChildProcessState,sanitizeLifecycleClientStartup,writeLifecycleFailureReceipt} from './lifecycle-failure-receipt.mjs';
 import {GATEWAY_STARTUP_BUDGET_MS,observeGatewayReadiness} from './gateway-readiness-evidence.mjs';
 
 const evidence=pathResolve(process.env.LOOPS_EVIDENCE_DIR??'evidence','package-lifecycle');
-let previous,current,previousSource,previousSha,currentSha,raw,profile,client;
+let previous,current,previousSource,previousSha,currentSha,raw,profile,client,clientStartup;
 let hosts,completed=false,phase='archive-validation',readiness,restartOrdinal=-1,gatewayStartedAt=0;
 let lifecycleFailure,primaryDiagnostic;
 const operations=createLifecycleOperations(()=>({phase,restartOrdinal}));
@@ -30,6 +31,7 @@ try{
  profile=pathResolve('.dev-profile',`package-lifecycle-${randomUUID()}`);
  const worker=pathResolve('test/helpers/gateway-client-worker.mjs');
 const hash=file=>createHash('sha256').update(readFileSync(file)).digest('hex');
+const source={head:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),clean:execFileSync('git',['status','--porcelain','--untracked-files=normal'],{encoding:'utf8'}).trim()==='',verifierSha256:hash(pathResolve('scripts/verify-package-lifecycle.mjs'))};
  previousSha=hash(previous);currentSha=hash(current);
  assert.notEqual(previousSha,currentSha,'Upgrade requires distinct archive bytes.');
 const host=name=>{
@@ -49,13 +51,35 @@ const inventory=(directory,prefix='')=>Object.fromEntries(readdirSync(directory,
 const archiveBoundary=file=>{const files=execFileSync('tar',['-tzf',file],{encoding:'utf8'}).trim().split('\n').filter(name=>name!=='package/').map(name=>name.replace(/^package\//,''));const manifest=JSON.parse(execFileSync('tar',['-xOf',file,'package/package.json'],{encoding:'utf8'})),allowed=new Set(['package.json',...manifest.files]);for(const name of files)assert([...allowed].some(entry=>name===entry||name.startsWith(entry+'/')),`Published archive contains path outside package.json files: ${name}`);return {count:files.length,files};};
 mkdirSync(evidence,{recursive:true});
 mkdirSync(raw,{recursive:true,mode:0o700});
+mkdirSync(profile,{recursive:true,mode:0o700});
+const profileRoot=realpathSync(pathResolve('.dev-profile'));
+const ownedPath=file=>{const canonical=realpathSync(file);assert(canonical.startsWith(profileRoot+'/'),`Lifecycle path escapes the isolated profile: ${file}`);return canonical;};
+const isolatedProfile=ownedPath(profile);
+const privateDirectories=['home','config','data','cache','tmp','browser'];
+for(const name of privateDirectories){const directory=pathResolve(profile,name);mkdirSync(directory,{recursive:true,mode:0o700});assert(ownedPath(directory).startsWith(isolatedProfile+'/'));}
 const port=Number(process.env.LOOPS_LIFECYCLE_PORT??20991),token=randomBytes(32).toString('hex');
 assert.equal(spawnSync('lsof',['-t',`-iTCP:${port}`,'-sTCP:LISTEN'],{encoding:'utf8'}).status,1,`Lifecycle port ${port} is already listening.`);
 mkdirSync(pathResolve(profile,'workspace'),{recursive:true,mode:0o700});
 const config={gateway:{mode:'local',bind:'loopback',port,auth:{mode:'token',token},controlUi:{experimental:{customPlugins:true}}},discovery:{mdns:{mode:'off'}},browser:{enabled:false},cron:{enabled:false},logging:{file:pathResolve(profile,'gateway.log')},agents:{defaults:{workspace:pathResolve(profile,'workspace'),heartbeat:{every:'0m'}}},plugins:{entries:{}}};
 writeFileSync(pathResolve(profile,'openclaw.json'),JSON.stringify(config,null,2)+'\n',{mode:0o600});
-const env={...process.env,OPENCLAW_CONFIG_PATH:pathResolve(profile,'openclaw.json'),OPENCLAW_STATE_DIR:pathResolve(profile,'state')};
+mkdirSync(pathResolve(profile,'state'),{recursive:true,mode:0o700});
+const env={
+  PATH:process.env.PATH??'/usr/bin:/bin',LANG:process.env.LANG??'C',
+  HOME:pathResolve(profile,'home'),OPENCLAW_HOME:pathResolve(profile,'home'),
+  XDG_CONFIG_HOME:pathResolve(profile,'config'),XDG_DATA_HOME:pathResolve(profile,'data'),XDG_CACHE_HOME:pathResolve(profile,'cache'),
+  TMPDIR:pathResolve(profile,'tmp'),TMP:pathResolve(profile,'tmp'),TEMP:pathResolve(profile,'tmp'),
+  PLAYWRIGHT_BROWSERS_PATH:pathResolve(profile,'browser'),
+  OPENCLAW_CONFIG_PATH:pathResolve(profile,'openclaw.json'),OPENCLAW_STATE_DIR:pathResolve(profile,'state')
+};
+for(const name of ['HOME','OPENCLAW_HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','TMPDIR','TMP','TEMP','PLAYWRIGHT_BROWSERS_PATH','OPENCLAW_CONFIG_PATH','OPENCLAW_STATE_DIR'])assert(ownedPath(env[name]).startsWith(isolatedProfile+'/'));
 const runCli=(selected,...args)=>execFileSync(process.execPath,[selected.cli,...args],{cwd:selected.root,env,encoding:'utf8',maxBuffer:8*1024*1024});
+const migrateCurrentHost=()=>{
+  beginOperation('host-state-migration');
+  const result=spawnSync(process.execPath,[hosts.current.cli,'doctor','--fix','--non-interactive'],{cwd:hosts.current.root,env,encoding:'utf8',maxBuffer:8*1024*1024});
+  writeFileSync(pathResolve(raw,'current-host-doctor.txt'),`${result.stdout??''}\n${result.stderr??''}`,{mode:0o600});
+  assert.equal(result.status,0,'Current host Doctor could not migrate the disposable predecessor state.');
+  completeOperation();
+};
 const install=(selected,archive)=>{beginOperation('installer');const result=runCli(selected,'plugins','install',`npm-pack:${pathResolve(archive)}`,'--force','--accept-capabilities');completeOperation();return result;};
 const installedRoot=selected=>pathResolve(JSON.parse(runCli(selected,'plugins','info','loops-poc','--json')).plugin.rootDir);
 const installations=[];
@@ -85,12 +109,12 @@ const verifyInstalled=(selected,archive,otherArchive)=>{
   completeOperation();
 };
 const protectedConfig=()=>{const value=JSON.parse(readFileSync(pathResolve(profile,'openclaw.json'))),plugin=value.plugins??{};return JSON.stringify({gateway:value.gateway,agents:value.agents,models:value.models,tools:value.tools,auth:value.auth,logging:value.logging,bindings:value.bindings,channels:value.channels,skills:value.skills,env:value.env,pluginEntry:plugin.entries?.['loops-poc']});};
-const childState={child:null},startupTimings=[];
+const childState={child:null},startupTimings=[],clientStartups=[];
 const start=selected=>{restartOrdinal++;gatewayStartedAt=Date.now();const child=spawn(process.execPath,[selected.cli,'gateway','run','--port',String(port),'--compact'],{cwd:selected.root,env,stdio:['ignore','ignore','pipe']});child.stderr.pipe(createWriteStream(pathResolve(raw,`${selected.name}-gateway.log`),{flags:'a',mode:0o600}));childState.child=child;return child;};
 stop=async()=>{const child=childState.child;if(!child)return false;if(child.exitCode!==null||child.signalCode!==null){childState.child=null;return false;}const wait=signal=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(`Gateway did not exit after ${signal}.`)),5000);child.once('exit',()=>{clearTimeout(timer);resolve();});child.kill(signal);});try{await wait('SIGTERM');}catch{await wait('SIGKILL');}childState.child=null;return true;};
 const probe=async(timeoutMs=1000)=>await new Promise((resolve,reject)=>{const socket=createConnection({host:'127.0.0.1',port});let settled=false;const finish=(callback,value)=>{if(settled)return;settled=true;socket.destroy();callback(value);};socket.setTimeout(timeoutMs,()=>finish(reject,Error('Gateway readiness probe timed out.')));socket.once('connect',()=>finish(resolve));socket.once('error',error=>finish(reject,error));});
 const waitForListening=async()=>{const deadline=Date.now()+GATEWAY_STARTUP_BUDGET_MS;let lastError;while(Date.now()<deadline){const child=childState.child;if(!child||child.exitCode!==null||child.signalCode!==null)throw Error('Gateway exited before listening.');try{await probe(Math.max(1,Math.min(1000,deadline-Date.now())));if(Date.now()>deadline)break;startupTimings.push({phase,restartOrdinal,budgetMs:GATEWAY_STARTUP_BUDGET_MS,listeningElapsedMs:Date.now()-gatewayStartedAt});return;}catch(error){lastError=error;await pause(Math.min(100,Math.max(0,deadline-Date.now())));}}readiness=await observeGatewayReadiness({child:childState.child,probe:async timeoutMs=>{try{await probe(timeoutMs);return true;}catch{return false;}},startedAt:gatewayStartedAt,restartOrdinal,remainingMs:()=>45000,pause});throw Error(`Gateway did not listen: ${String(lastError?.message??lastError)}`);};
-const connect=async selected=>await new Promise((resolve,reject)=>{const child=spawn(process.execPath,[worker],{cwd:selected.root,env:{...env,LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:selected.root,LOOPS_GATEWAY_URL:`ws://127.0.0.1:${port}`,LOOPS_GATEWAY_TOKEN:token},stdio:['ignore','ignore','pipe','ipc']});child.stderr.pipe(createWriteStream(pathResolve(raw,`${selected.name}-client.log`),{flags:'a',mode:0o600}));let settled=false,next=0;const pending=new Map();const clear=()=>{clearTimeout(timer);for(const {reject,timer} of pending.values()){clearTimeout(timer);reject(Error('Client worker exited.'));}pending.clear();};const fail=error=>{if(settled)return;settled=true;clear();child.kill('SIGTERM');reject(error);};const timer=setTimeout(()=>fail(Error('Gateway client startup timed out.')),15000);const request=(method,params,timeoutMs=60000)=>new Promise((resolve,reject)=>{const id=++next,requestTimer=setTimeout(()=>{pending.delete(id);reject(Error(`Gateway request timed out: ${method}`));},timeoutMs);pending.set(id,{resolve,reject,timer:requestTimer});child.send({type:'request',id,method,params,timeoutMs});});const stopAndWait=()=>new Promise((resolve,reject)=>{if(child.exitCode!==null||child.signalCode!==null){resolve();return;}const timeout=setTimeout(()=>{child.kill('SIGKILL');reject(Error('Gateway client worker did not exit.'));},5000);child.once('exit',()=>{clearTimeout(timeout);resolve();});child.send({type:'stop'});});child.on('message',message=>{if(message?.type==='ready'&&!settled){settled=true;clearTimeout(timer);resolve({request,stopAndWait});}else if(message?.type==='error')fail(Error(message.message));else if(message?.type==='result'){const entry=pending.get(message.id);pending.delete(message.id);if(entry){clearTimeout(entry.timer);if(message.error)entry.reject(Error(message.error));else entry.resolve(message.result);}}});child.once('error',fail);child.once('exit',()=>{if(!settled)fail(Error('Gateway client worker exited before ready.'));else clear();});});
+const connect=async selected=>await new Promise((resolve,reject)=>{const clientStartedAt=Date.now(),parentMonoStartedAt=performance.now(),startupBudgetMs=15_000,child=spawn(process.execPath,[worker],{cwd:selected.root,env:{...env,LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:selected.root,LOOPS_GATEWAY_URL:`ws://127.0.0.1:${port}`,LOOPS_GATEWAY_TOKEN:token},stdio:['ignore','ignore','pipe','ipc']});clientStartup={restartOrdinal,budgetMs:startupBudgetMs,listening:true,gatewayProcessState:lifecycleChildProcessState(childState.child),clientProcessState:lifecycleChildProcessState(child),elapsedMs:0,milestones:[],timings:[]};child.stderr.pipe(createWriteStream(pathResolve(raw,`${selected.name}-client.log`),{flags:'a',mode:0o600}));let settled=false,next=0;const pending=new Map(),snapshot=()=>{clientStartup={...clientStartup,gatewayProcessState:lifecycleChildProcessState(childState.child),clientProcessState:lifecycleChildProcessState(child),elapsedMs:Date.now()-clientStartedAt};};const clear=()=>{clearTimeout(timer);for(const {reject,timer} of pending.values()){clearTimeout(timer);reject(Error('Client worker exited.'));}pending.clear();};const fail=error=>{if(settled)return;settled=true;snapshot();clear();child.kill('SIGTERM');reject(error);};const timer=setTimeout(()=>fail(Error('Gateway client startup timed out.')),startupBudgetMs);const request=(method,params,timeoutMs=60000)=>new Promise((resolve,reject)=>{const id=++next,requestTimer=setTimeout(()=>{pending.delete(id);reject(Error(`Gateway request timed out: ${method}`));},timeoutMs);pending.set(id,{resolve,reject,timer:requestTimer});child.send({type:'request',id,method,params,timeoutMs});});const stopAndWait=()=>new Promise((resolve,reject)=>{if(child.exitCode!==null||child.signalCode!==null){resolve();return;}const timeout=setTimeout(()=>{child.kill('SIGKILL');reject(Error('Gateway client worker did not exit.'));},5000);child.once('exit',()=>{clearTimeout(timeout);resolve();});child.send({type:'stop'});});child.on('message',message=>{if(message?.type==='startup-milestone'&&!settled){clientStartup.milestones=appendLifecycleClientMilestone(clientStartup.milestones,message,Math.max(0,Math.floor(performance.now()-parentMonoStartedAt)));}else if(message?.type==='timing'&&Array.isArray(clientStartup?.timings)&&clientStartup.timings.length<8){clientStartup.timings.push(message.timing);}else if(message?.type==='ready'&&!settled){settled=true;snapshot();clientStartups.push(sanitizeLifecycleClientStartup(clientStartup));clearTimeout(timer);resolve({request,stopAndWait});}else if(message?.type==='error')fail(Error(message.message));else if(message?.type==='result'){const entry=pending.get(message.id);pending.delete(message.id);if(entry){clearTimeout(entry.timer);if(message.error)entry.reject(Error(message.error));else entry.resolve(message.result);}}});child.once('error',fail);child.once('exit',()=>{if(!settled)fail(Error('Gateway client worker exited before ready.'));else clear();});});
 const action=async(client,session,actionId,payload={})=>{return observeOperation('public-session-actions',async()=>{const response=await client.request('plugins.sessionAction',{pluginId:'loops-poc',actionId,agentId:'main',sessionKey:session.key,payload});assert.equal(response.ok,true,JSON.stringify(response));return response.result;});};
 const definition={slug:`package-lifecycle-${randomUUID().slice(0,8)}`,name:'Package lifecycle verification',description:'Disposable public API lifecycle fixture.',inputSchema:[{name:'value',label:'Value',type:'number',required:true}],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.value}}'}],edges:[{id:'next',source:'input',target:'return',port:'next'}],layout:{input:{x:0,y:0},return:{x:260,y:0}},limits:{maxExecutions:3,maxOutputBytes:4096}};
 const pluginState=pathResolve(profile,'state','loops-poc');
@@ -121,6 +145,20 @@ const pluginState=pathResolve(profile,'state','loops-poc');
   writeFileSync(pathResolve(raw,'install-current.txt'),install(hosts.current,current),{mode:0o600});
   beginOperation('state-validation');assert.equal(protectedConfig(),configBeforeUpgrade,'Upgrade changed protected operator settings.');completeOperation();
   verifyInstalled(hosts.current,current,previous);
+  migrateCurrentHost();
+  beginOperation('state-validation');
+  const configAfterMigration=protectedConfig();
+  const previousProtected=JSON.parse(configBeforeUpgrade),migratedProtected=JSON.parse(configAfterMigration);
+  const hostDoctorConfigChanges=[...new Set([...Object.keys(previousProtected),...Object.keys(migratedProtected)])].filter(key=>JSON.stringify(previousProtected[key])!==JSON.stringify(migratedProtected[key]));
+  assert(hostDoctorConfigChanges.every(key=>key==='agents'||key==='skills'),'Host Doctor changed an existing protected operator setting.');
+  if(hostDoctorConfigChanges.includes('agents'))assert.deepEqual(migratedProtected.agents,{...previousProtected.agents,entries:{main:{}}},'Host Doctor changed an existing agent setting.');
+  if(hostDoctorConfigChanges.includes('skills')){
+    assert.equal(previousProtected.skills,undefined,'Host Doctor changed an existing skill setting.');
+    assert.deepEqual(Object.keys(migratedProtected.skills??{}),['entries'],'Host Doctor added an unexpected skill setting.');
+    for(const entry of Object.values(migratedProtected.skills.entries))assert.deepEqual(entry,{enabled:false},'Host Doctor added an unexpected skill value.');
+  }
+  const hostDoctorDisabledSkillsCount=Object.keys(migratedProtected.skills?.entries??{}).length;
+  completeOperation();
   await observeOperation('gateway-readiness',async()=>{start(hosts.current);await waitForListening();},{restartOrdinal:restartOrdinal+1});client=await observeOperation('sdk-client-startup',()=>connect(hosts.current));
   const upgraded=await action(client,session,'load',{id:created.record.definition.id});
   const upgradedRun=await action(client,session,'inspect',{runId:run.id});
@@ -135,7 +173,7 @@ const pluginState=pathResolve(profile,'state','loops-poc');
   beginOperation('state-validation');const afterReinstall=JSON.parse(readFileSync(env.OPENCLAW_CONFIG_PATH));
   assert.equal(afterReinstall.plugins.entries['loops-poc'].enabled,false,'Reinstall must preserve the host disable marker left by uninstall.');completeOperation();
   beginOperation('installer');writeFileSync(pathResolve(raw,'enable-reinstalled.txt'),runCli(hosts.current,'plugins','enable','loops-poc'),{mode:0o600});completeOperation();
-  beginOperation('state-validation');assert.equal(protectedConfig(),configBeforeUpgrade);completeOperation();verifyInstalled(hosts.current,current,previous);
+  beginOperation('state-validation');assert.equal(protectedConfig(),configAfterMigration);completeOperation();verifyInstalled(hosts.current,current,previous);
   await observeOperation('gateway-readiness',async()=>{start(hosts.current);await waitForListening();},{restartOrdinal:restartOrdinal+1});client=await observeOperation('sdk-client-startup',()=>connect(hosts.current));
   assert.deepEqual(await action(client,session,'load',{id:created.record.definition.id}),created.record);
   assert.deepEqual(await action(client,session,'inspect',{runId:run.id}),originalRun);
@@ -162,7 +200,7 @@ const pluginState=pathResolve(profile,'state','loops-poc');
   await observeOperation('client-shutdown',()=>client.stopAndWait());client=null;await observeOperation('gateway-shutdown',stop);
 
   beginOperation('receipt-write');
-  write('receipt.json',{previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,rollbackInstallerReplacedCurrentBytes:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,gatewayStartups:startupTimings,operationOutcomes:operations.completed(),installations});
+  write('receipt.json',{source,previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,rollbackInstallerReplacedCurrentBytes:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,hostStateMigrationCompleted:true,hostDoctorConfigChanges,hostDoctorDisabledSkillsCount,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,gatewayStartups:startupTimings,clientStartups,operationOutcomes:operations.completed(),installations});
   completeOperation();completed=true;
 }catch(error){
   lifecycleFailure=error;
@@ -173,7 +211,7 @@ const pluginState=pathResolve(profile,'state','loops-poc');
   try{beginOperation('gateway-shutdown');const stopped=await stop();if(stopped)completeOperation();else abandonOperation();}catch(error){cleanupError??=error;cleanupDiagnostic??=operationRecord('failed');}
   const primaryError=lifecycleFailure??cleanupError;
   if(primaryError){
-    writeLifecycleFailureReceipt(evidence,phase,primaryError,{previous:{source:previousSource,sha256:previousSha,hostVersion:hosts?.previous?.version},current:{sha256:currentSha,hostVersion:hosts?.current?.version}},readiness,{...(primaryDiagnostic??{...cleanupDiagnostic,completedOperations:operations.completed()}),cleanupError:lifecycleFailure?cleanupError:undefined,cleanup:cleanupDiagnostic});
+    writeLifecycleFailureReceipt(evidence,phase,primaryError,{previous:{source:previousSource,sha256:previousSha,hostVersion:hosts?.previous?.version},current:{sha256:currentSha,hostVersion:hosts?.current?.version}},readiness,{...(primaryDiagnostic??{...cleanupDiagnostic,completedOperations:operations.completed()}),clientStartup,cleanupError:lifecycleFailure?cleanupError:undefined,cleanup:cleanupDiagnostic});
     let privateDiagnosticRetained=false;
     if(raw)try{mkdirSync(raw,{recursive:true,mode:0o700});writeFileSync(pathResolve(raw,'failure.txt'),String(primaryError?.stack??primaryError),{mode:0o600});privateDiagnosticRetained=true;}catch{/* The sanitized receipt remains the authoritative failure artifact. */}
     console.error(`Package lifecycle verification failed during ${phase}; private diagnostic evidence ${privateDiagnosticRetained?'was retained':'could not be retained'}.`);

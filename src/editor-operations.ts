@@ -1,23 +1,49 @@
 import {outputFields,type Definition,type GraphNode} from './graph.js';
 import {requestError} from './errors.js';
 import {truncateCodePoints} from './unicode.js';
+import {bindingTokens} from './context.js';
 
 // Keep duplication aligned with bind(): only its {{...}} token form has
 // binding semantics. Text outside a token, including a string that resembles
 // a node path, remains authored literal data.
 function remapBindingTokens(value:string,previous:string,next:string):string{
   const prefix=`nodes.${previous}.`;
-  return value.replace(/\{\{([^{}]+)\}\}/g,(token,raw:string)=>{
-    const path=raw.trim();
-    if(!path.startsWith(prefix))return token;
-    const offset=raw.indexOf(path);
-    return `{{${raw.slice(0,offset)}nodes.${next}.${path.slice(prefix.length)}${raw.slice(offset+path.length)}}}`;
-  });
+  const bindings=bindingTokens(value);let result='',cursor=0;
+  for(const binding of bindings.tokens){
+    result+=value.slice(cursor,binding.start);const path=binding.raw.trim();
+    if(!path.startsWith(prefix)){result+=value.slice(binding.start,binding.end);cursor=binding.end;continue;}
+    const offset=binding.raw.indexOf(path);
+    result+=`{{${binding.raw.slice(0,offset)}nodes.${next}.${path.slice(prefix.length)}${binding.raw.slice(offset+path.length)}}}`;cursor=binding.end;
+  }
+  return result+value.slice(cursor);
 }
+function remapContextLiteral(node:GraphNode,previous:string,next:string){
+  const source=node.context?.patch;
+  if(source&&source.mode!=='omit'&&source.source.kind==='literal'&&typeof source.source.value==='string')source.source.value=remapBindingTokens(source.source.value,previous,next);
+}
+
+// Invalid imported Memory policies remain editable drafts. Inspect the outer
+// collection shape before graph edits; do not repair or discard its raw value.
+const memoryNodeRecord=(value:unknown):value is Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 
 export function copyDefinition(definition:Definition,id:string,templateDefaults?:Pick<Definition['limits'],'maxExecutions'|'maxOutputBytes'>):Definition{
   const copy={...structuredClone(definition),id,slug:id,revision:0};
   return templateDefaults?{...copy,schemaVersion:definition.schemaVersion===3?3:2,limits:{...copy.limits,...templateDefaults}}:copy;
+}
+
+// Timeout authoring requires at least v2. Keep v3's authored schemas,
+// branching, and context rather than downgrading an otherwise valid graph.
+export function withActiveTimeout(definition:Definition,timeoutMs:number|undefined):Definition{
+  const limits={...definition.limits};
+  if(timeoutMs===undefined)delete limits.timeoutMs;
+  else limits.timeoutMs=timeoutMs;
+  return {...definition,schemaVersion:definition.schemaVersion===1?2:definition.schemaVersion,limits};
+}
+
+// These nodes carry v3-only contracts. Palette additions must upgrade the
+// editable draft before it can be saved or published.
+export function schemaVersionForAddedNode(version:Definition['schemaVersion'],kind:GraphNode['kind']):Definition['schemaVersion']{
+  return kind==='evaluate'||kind==='gate'||kind==='switch'||kind==='context-lifecycle'||kind==='memory'?3:version;
 }
 
 export function autoLayout(definition:Definition):Definition{
@@ -45,9 +71,23 @@ export function duplicateNode(definition:Definition,nodeId:string,fresh:(prefix:
   if(duplicate.kind==='repeat'){
     const previous=duplicate.body[0].id;duplicate.body[0].id=fresh('inference');duplicate.body[1].id=fresh('condition');
     for(const operand of ['left','right'] as const){const value=duplicate.body[1].predicate[operand];if(typeof value==='string')duplicate.body[1].predicate[operand]=remapBindingTokens(value,previous,duplicate.body[0].id);}
+    for(const child of duplicate.body)remapContextLiteral(child,previous,duplicate.body[0].id);
   }
   const position=definition.layout[nodeId]??{x:0,y:0};
-  return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}}};
+  const policy=definition.memoryPolicy,policyNodes=policy?.enabled?policy.nodes:undefined;
+  const memoryPolicy=policy?.enabled&&original.kind==='memory'&&memoryNodeRecord(policyNodes)&&Object.hasOwn(policyNodes,original.id)
+    ?{...policy,nodes:{...policyNodes,[duplicate.id]:structuredClone(policyNodes[original.id])}} as Definition['memoryPolicy']:policy;
+  return {...definition,nodes:[...definition.nodes,duplicate],layout:{...definition.layout,[duplicate.id]:{x:position.x+40,y:position.y+180}},...memoryPolicy?{memoryPolicy}:{}};
+}
+export function deleteGraphNode(definition:Definition,id:string):Definition{
+  const layout={...definition.layout};delete layout[id];
+  const policy=definition.memoryPolicy,policyNodes=policy?.enabled?policy.nodes:undefined;
+  let memoryPolicy=policy;
+  if(policy?.enabled&&memoryNodeRecord(policyNodes)&&Object.hasOwn(policyNodes,id)){
+    const remaining={...policyNodes};delete remaining[id];
+    memoryPolicy={...policy,nodes:remaining} as Definition['memoryPolicy'];
+  }
+  return {...definition,nodes:definition.nodes.filter(node=>node.id!==id),edges:definition.edges.filter(edge=>edge.source!==id&&edge.target!==id),layout,...memoryPolicy?{memoryPolicy}:{}};
 }
 export function bindingChoices(definition:Definition,consumer:GraphNode):string[]{
   const reachableWithout=(blocked:string)=>{
@@ -61,9 +101,20 @@ export function bindingChoices(definition:Definition,consumer:GraphNode):string[
 export function insertBinding(node:GraphNode,binding:string):GraphNode{
   const replaceOrAppend=(value:unknown)=>typeof value==='string'?value+binding:binding;
   if(node.kind==='inference')return {...node,prompt:replaceOrAppend(node.prompt)};
+  if(node.kind==='evaluate')return {...node,value:replaceOrAppend(node.value)};
+  if(node.kind==='context-lifecycle'){
+    if(node.lifecycle.operation==='summarize'||node.lifecycle.operation==='compact')return {...node,lifecycle:{...node.lifecycle,instructions:replaceOrAppend(node.lifecycle.instructions)}};
+    if(node.lifecycle.operation==='inject'&&!node.lifecycle.source)return {...node,lifecycle:{...node.lifecycle,value:replaceOrAppend(node.lifecycle.value)}};
+    return node;
+  }
+  if(node.kind==='memory'){
+    if(node.memory.operation==='write'||node.memory.operation==='update')return {...node,memory:{...node.memory,value:replaceOrAppend(node.memory.value)}};
+    return {...node,memory:{...node.memory,key:replaceOrAppend(node.memory.key)}};
+  }
   if(node.kind==='repeat')return {...node,body:[{...node.body[0],prompt:typeof node.body[0].prompt==='string'?node.body[0].prompt+binding:binding},node.body[1]]};
   if(node.kind==='return')return {...node,value:binding};
-  if(node.kind==='condition')return {...node,predicate:{...node.predicate,left:binding}};
+  if(node.kind==='condition')return 'condition'in node?{...node,condition:{...node.condition,value:binding}}:{...node,predicate:{...node.predicate,left:binding}};
+  if(node.kind==='switch')return {...node,value:binding};
   if(node.kind==='wait')return {...node,message:binding};
   if(node.kind==='review')return {...node,proposal:binding};
   if(node.kind==='fail')return {...node,reason:binding};
@@ -71,7 +122,7 @@ export function insertBinding(node:GraphNode,binding:string):GraphNode{
 }
 export function revisionChanges(before:Definition,after:Definition):string[]{
   const changes:string[]=[];
-  for(const key of ['schemaVersion','name','slug','description','inputSchema','capabilities','limits','edges','layout'] as const)if(JSON.stringify(before[key])!==JSON.stringify(after[key]))changes.push(`${key} changed`);
+  for(const key of ['schemaVersion','name','slug','description','inputSchema','capabilities','limits','edges','layout','memoryPolicy','memorySchemas'] as const)if(JSON.stringify(before[key])!==JSON.stringify(after[key]))changes.push(`${key} changed`);
   for(const node of after.nodes){const old=before.nodes.find(n=>n.id===node.id);if(!old)changes.push(`Added ${node.label}`);else if(JSON.stringify(old)!==JSON.stringify(node))changes.push(`Changed ${node.label}`);}
   for(const node of before.nodes)if(!after.nodes.some(n=>n.id===node.id))changes.push(`Removed ${node.label}`);
   return changes;

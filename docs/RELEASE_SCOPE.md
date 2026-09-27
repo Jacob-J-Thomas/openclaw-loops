@@ -47,7 +47,7 @@ Before a package release, inspect the actual `npm pack` file list and built impo
 
 Run source checks and extracted-package SDK tests, then ordinary external-plugin installation. Verify in-scope model calls, current-session authority, cancellation, complete-result retrieval and compatibility of existing optional controls through the declared released host. Full Advanced transport attribution and delayed notifications are not 1.0 gates. Publish the artifact hash and source commit, run ClawHub validation and publishing dry run, publish under the verified publisher, and test a fresh registry installation. Registry review/availability must be checked rather than inferred from upload success.
 
-The public GitHub development baseline may be published before 1.0 is ready, with its alpha status visible. Keep `private:true` until the package publication step deliberately changes it. GitHub source publication, hosted CI, ClawHub upload and verified 1.0 release are separate milestones.
+The reviewed package metadata is publication-ready with `private:false`. GitHub source publication, hosted CI, ClawHub upload and verified 1.0 registry installation remain separate milestones; #76 is authoritative for the latter two.
 
 ## Current boundary review
 

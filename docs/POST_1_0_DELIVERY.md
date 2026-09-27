@@ -9,7 +9,10 @@ admission.
 
 Every feature-targeted PR must still be non-draft, identify one native leaf Bolt,
 pass current checks, receive independent review, and use the normal expected-head
-merge command with its exact feature-base SHA. Because GitHub closing references
+merge command with the live `refs/heads/codex/post-1.0-local-expansion` commit.
+The guard reads that exact ref twice, rejects a malformed, foreign, non-commit or
+moved ref, and reports it as the reviewed base while retaining the PR-base SHA as
+historical evidence. Because GitHub closing references
 are not authoritative for a non-default branch, its body must contain exactly:
 
 ```text

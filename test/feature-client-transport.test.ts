@@ -14,6 +14,7 @@ function fixture(value: unknown, failure?: 'page' | 'release' | 'lost-release') 
     request: async(_method: string, params: Record<string, unknown>) => {
       const operation = params.actionId as string, input = params.payload as Record<string, unknown>; calls.push(operation);
       if (operation === 'capabilities') return {ok: true, result: {kind: 'loops-document', documentId, readerId, sha256, bytes: Buffer.byteLength(text), read: 'loops_document', description: 'Fixture snapshot'}};
+      if (operation === 'document_acquire') { expect(input).toEqual({documentId}); return {ok:true,result:{documentId,readerId}}; }
       if (operation === 'document') {
         expect(input.readerId).toBe(readerId); expect(reserved).toBe(true);
         return {ok: true, result: failure === 'page' && input.offset !== 0 ? error(operation) : {documentId, sha256, ...textPage(text, input.offset as number, 40)}};
@@ -25,7 +26,7 @@ function fixture(value: unknown, failure?: 'page' | 'release' | 'lost-release') 
       return {ok: true, result: {released: true}};
     },
   } as FeatureTransport;
-  return {client: createLoopsClient(host), calls, reserved: () => reserved};
+  return {client: createLoopsClient(host), calls, reserved: () => reserved,sha256,bytes:Buffer.byteLength(text)};
 }
 describe('native document reader lifecycle', () => {
   it('releases only after complete pages, integrity and the operation result schema pass', async() => {
@@ -44,5 +45,13 @@ describe('native document reader lifecycle', () => {
     const source = fixture(capabilities, failure); expect(await source.client.invoke('capabilities', {})).toEqual(capabilities);
     expect(source.calls.filter(operation => operation === 'document_release')).toHaveLength(1);
     expect(source.reserved()).toBe(failure === 'release');
+  });
+  it('reads a retained source with verified paging and releases only after integrity succeeds',async()=>{
+    const source=fixture({selected:0,nullable:null,unicode:'🦊'});
+    expect(await source.client.readDocument(documentId,source.sha256,source.bytes)).toEqual({selected:0,nullable:null,unicode:'🦊'});
+    expect(source.calls[0]).toBe('document_acquire');expect(source.calls.at(-1)).toBe('document_release');
+    const mismatch=fixture({selected:0});
+    await expect(mismatch.client.readDocument(documentId,'f'.repeat(64),mismatch.bytes)).rejects.toThrow('identity');
+    expect(mismatch.calls).not.toContain('document_release');
   });
 });

@@ -14,7 +14,7 @@ vi.mock('node:fs', async original => {
 const roots: string[] = [];
 const actor: Actor = {agentId: 'main', sessionKey: 'agent:main:maintenance', sessionId: 'one', source: 'tool', human: false, check: () => {}};
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
-const references = () => ({runs: new Set<string>(), loops: new Set<string>()});
+const references = () => ({runs: new Set<string>(), loops: new Set<string>(), documents: new Set<string>()});
 const all = {keepLatest: 0};
 function setup() { const root = mkdtempSync(join(tmpdir(), 'loops-maintenance-')); roots.push(root); return {root, store: new DocumentStore(root)}; }
 afterEach(() => { vi.resetAllMocks(); for (const root of roots.splice(0)) rmSync(root, {recursive: true, force: true}); });
@@ -105,7 +105,7 @@ describe('explicit transport maintenance', () => {
     const loop = store.snapshot(actor, {revision: 4}, {...emptyDocumentLinks(), loops: ['saved-loop']}, false);
     const unknown = store.snapshot(actor, {unknown: true}, {...emptyDocumentLinks(), unknown: true}, false);
     const child = store.snapshot(actor, {reference: run.documentId}, {...emptyDocumentLinks(), documents: [run.documentId]}, false);
-    const inventory = {runs: new Set(['parked-run', 'settling-run']), loops: new Set(['saved-loop'])};
+    const inventory = {runs: new Set(['parked-run', 'settling-run']), loops: new Set(['saved-loop']), documents: new Set<string>()};
     const preview = store.maintenance(actor, all, inventory);
     expect(preview.candidates.map(file => file.id)).toEqual([child.documentId]); expect(preview.protected.referenced).toBe(2); expect(preview.protected.legacy).toBe(1);
     store.maintenance(actor, all, inventory, preview.planId);
@@ -133,7 +133,7 @@ describe('explicit transport maintenance', () => {
     const use = store.use(actor, uploaded.reference!); expect(use.value).toEqual({input: 'retained'});
     const preview = store.maintenance(actor, all, references()); expect(preview.protected.readers).toBe(1);
     store.finishUse(actor, use.documentId, use.readerId, {...emptyDocumentLinks(), runs: ['accepted-run']});
-    const reopened = new DocumentStore(root), inventory = {runs: new Set(['accepted-run']), loops: new Set<string>()};
+    const reopened = new DocumentStore(root), inventory = {runs: new Set(['accepted-run']), loops: new Set<string>(), documents: new Set<string>()};
     expect(reopened.maintenance(actor, all, inventory).readers).toEqual([]);
     const staging = reopened.maintenance(actor, all, inventory); reopened.maintenance(actor, all, inventory, staging.planId);
     expect(reopened.maintenance(actor, all, inventory).protected.referenced).toBe(1);

@@ -1,13 +1,80 @@
 import {parentPort,workerData} from 'node:worker_threads';
 import {DatabaseSync,backup} from 'node:sqlite';
 import {chmodSync,existsSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 
 // Only this worker opens the plugin database. The host database is never used.
 let database;
 let startupError;
 let schemaVersion=0;
-const currentSchemaVersion=3;
+const currentSchemaVersion=4;
 let writable=false;
+const memoryName=/^[a-z][a-z0-9_-]{0,47}$/,memoryId=/^[a-zA-Z0-9_-]{1,128}$/,memoryDigest=/^[a-f0-9]{64}$/,memoryKey=/^[a-z][a-z0-9_.-]{0,63}$/;
+const exactFields=(value,fields)=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).sort().join(',')===fields.slice().sort().join(',');
+const validTime=value=>typeof value==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString()===value;
+const validKey=value=>typeof value==='string'&&memoryKey.test(value)&&!value.split('.').some(part=>!part||['__proto__','prototype','constructor'].includes(part));
+const isJson=(value,depth=0)=>depth<=100&&(value===null||typeof value==='string'||typeof value==='boolean'||typeof value==='number'&&Number.isFinite(value)||Array.isArray(value)&&value.every(item=>isJson(item,depth+1))||value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype&&Object.entries(value).every(([key,item])=>!['__proto__','constructor','prototype'].includes(key)&&isJson(item,depth+1)));
+const memoryFingerprint=value=>createHash('sha256').update(JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0)):item)).digest('hex');
+const hasMemoryEffects=definition=>Array.isArray(definition?.nodes)&&definition.nodes.some(node=>
+  [node,...(node?.kind==='repeat'&&Array.isArray(node.body)?node.body:[])].some(child=>child?.kind==='memory'&&
+    ['write','update','forget','retention-apply','reset-apply'].includes(child.memory?.operation)));
+function validateRunMemoryWriteGrant(run,id,ownerKey){
+  const grant=run?.memoryWriteGrant;
+  if(grant===undefined)return;
+  const owner=run?.owner,definition=run?.definition;
+  if(!exactFields(grant,['runId','ownerKey','loopId','revision','grantGeneration','policySha256'])||
+    typeof owner?.agentId!=='string'||typeof owner.sessionKey!=='string'||typeof owner.sessionId!=='string'||
+    typeof definition?.id!=='string'||!Number.isSafeInteger(definition.revision)||definition.revision<1||
+    run.id!==id||grant.runId!==id||grant.ownerKey!==ownerKey||grant.ownerKey!==JSON.stringify([owner.agentId,owner.sessionKey,owner.sessionId])||
+    grant.loopId!==definition.id||grant.revision!==definition.revision||run.testMode===true||run.requestFingerprintVersion!==2||!hasMemoryEffects(definition)||
+    typeof grant.grantGeneration!=='string'||grant.grantGeneration.length<1||grant.grantGeneration.length>64||
+    grant.grantGeneration!==(run.grantGeneration??'legacy')||!memoryDigest.test(grant.policySha256)||
+    grant.policySha256!==memoryFingerprint(definition.memoryPolicy??null))throw new Error('Invalid saved run memory write grant.');
+}
+function validateMemoryProvenance(value,mutationId){
+  if(!exactFields(value,['at','grantGeneration','loopRevision','mutationId','nodeId','operation','runId'])||!validTime(value.at)||!memoryId.test(value.grantGeneration)||!Number.isSafeInteger(value.loopRevision)||value.loopRevision<1||!memoryId.test(value.mutationId)||mutationId!==undefined&&value.mutationId!==mutationId||!memoryName.test(value.nodeId)||!['write','update','forget','retention','reset'].includes(value.operation)||!memoryId.test(value.runId))throw new Error('Invalid saved memory provenance.');
+}
+function validateMemoryRecord(record,scope,loopId,key){
+  const fields=['createdAt','deleted','expiresAt','key','loopId','provenance','schemaId','schemaVersion','scope','updatedAt','version'];
+  if(!record||typeof record!=='object'||typeof record.deleted!=='boolean'||!exactFields(record,record.deleted?fields:[...fields,'value','valueSha256'])||record.scope!==scope||record.loopId!==loopId||record.key!==key||!memoryDigest.test(scope)||!memoryName.test(loopId)||!validKey(key)||!Number.isSafeInteger(record.version)||record.version<1||!memoryName.test(record.schemaId)||!Number.isSafeInteger(record.schemaVersion)||record.schemaVersion<1||record.schemaVersion>1_000_000||!validTime(record.createdAt)||!validTime(record.updatedAt)||!validTime(record.expiresAt)||Date.parse(record.updatedAt)<Date.parse(record.createdAt)||Date.parse(record.expiresAt)<Date.parse(record.createdAt))throw new Error('Invalid saved memory record identity.');
+  validateMemoryProvenance(record.provenance);
+  if(record.updatedAt!==record.provenance.at)throw new Error('Invalid saved memory record time.');
+  if(record.deleted)return 0;
+  if(!isJson(record.value)||typeof record.valueSha256!=='string'||!memoryDigest.test(record.valueSha256)||memoryFingerprint(record.value)!==record.valueSha256)throw new Error('Invalid saved memory value digest.');
+  return Buffer.byteLength(JSON.stringify(record.value));
+}
+function validateMemoryReceipt(receipt,scope,loopId,mutationId){
+  if(!exactFields(receipt,['committedAt','deleted','key','loopId','mutationId','provenance','scope','version'])||receipt.scope!==scope||receipt.loopId!==loopId||receipt.mutationId!==mutationId||!memoryDigest.test(scope)||!memoryName.test(loopId)||!memoryId.test(mutationId)||!validKey(receipt.key)||!Number.isSafeInteger(receipt.version)||receipt.version<1||typeof receipt.deleted!=='boolean'||!validTime(receipt.committedAt))throw new Error('Invalid saved memory receipt identity.');
+  validateMemoryProvenance(receipt.provenance,mutationId);
+  if(receipt.committedAt!==receipt.provenance.at)throw new Error('Invalid saved memory receipt time.');
+}
+function validateMemoryStore(){
+  const tables={memory_records:[['scope','TEXT',1],['loop_id','TEXT',2],['key','TEXT',3],['version','INTEGER',0],['deleted','INTEGER',0],['value_bytes','INTEGER',0],['record','TEXT',0]],memory_mutations:[['scope','TEXT',1],['loop_id','TEXT',2],['mutation_id','TEXT',3],['kind','TEXT',0],['receipt_count','INTEGER',0],['receipt_bytes','INTEGER',0]],memory_receipts:[['scope','TEXT',1],['loop_id','TEXT',2],['mutation_id','TEXT',3],['ordinal','INTEGER',4],['record','TEXT',0]]};
+  for(const [name,expected] of Object.entries(tables)){
+    const kind=database.prepare("SELECT type FROM sqlite_schema WHERE name=?").get(name)?.type;
+    const columns=database.prepare(`PRAGMA table_info(${name})`).all();
+    const indexes=database.prepare(`PRAGMA index_list(${name})`).all();
+    if(kind!=='table'||JSON.stringify(columns.map(column=>[column.name,column.type,column.pk,Number(column.notnull)]))!==JSON.stringify(expected.map(([column,type,primary])=>[column,type,primary,1]))||!indexes.some(index=>index.origin==='pk'&&index.unique===1))throw new Error(`Invalid saved memory table or primary-key index: ${name}.`);
+  }
+  const foreign=database.prepare('PRAGMA foreign_key_list(memory_receipts)').all();
+  if(JSON.stringify(foreign.map(row=>[row.id,row.seq,row.table,row.from,row.to,row.on_delete]))!==JSON.stringify([[0,0,'memory_mutations','scope','scope','RESTRICT'],[0,1,'memory_mutations','loop_id','loop_id','RESTRICT'],[0,2,'memory_mutations','mutation_id','mutation_id','RESTRICT']]))throw new Error('Invalid saved memory receipt foreign key.');
+  if(database.prepare('PRAGMA foreign_key_check').get()||database.prepare('PRAGMA integrity_check').get().integrity_check!=='ok')throw new Error('Invalid saved memory table or index integrity.');
+  for(const row of database.prepare('SELECT scope,loop_id,key,version,deleted,value_bytes,record FROM memory_records').iterate()){
+    const record=JSON.parse(row.record),bytes=validateMemoryRecord(record,row.scope,row.loop_id,row.key);
+    if(row.version!==record.version||row.deleted!==Number(record.deleted)||row.value_bytes!==bytes)throw new Error('Invalid saved memory record index.');
+  }
+  for(const row of database.prepare('SELECT scope,loop_id,mutation_id,kind,receipt_count,receipt_bytes FROM memory_mutations').iterate()){
+    if(!memoryDigest.test(row.scope)||!memoryName.test(row.loop_id)||!memoryId.test(row.mutation_id)||!['effect','cleanup'].includes(row.kind)||!Number.isSafeInteger(row.receipt_count)||row.receipt_count<1||!Number.isSafeInteger(row.receipt_bytes)||row.receipt_bytes<1)throw new Error('Invalid saved memory mutation index.');
+    let count=0,bytes=0;
+    for(const receipt of database.prepare('SELECT ordinal,record FROM memory_receipts WHERE scope=? AND loop_id=? AND mutation_id=? ORDER BY ordinal').iterate(row.scope,row.loop_id,row.mutation_id)){
+      if(receipt.ordinal!==count++)throw new Error('Invalid saved memory receipt order.');
+      const value=JSON.parse(receipt.record);validateMemoryReceipt(value,row.scope,row.loop_id,row.mutation_id);
+      if((['write','update'].includes(value.provenance.operation)?'effect':'cleanup')!==row.kind)throw new Error('Invalid saved memory mutation kind.');
+      bytes+=Buffer.byteLength(receipt.record);
+    }
+    if(row.receipt_count!==count||row.receipt_bytes!==bytes)throw new Error('Invalid saved memory receipt count.');
+  }
+}
 try{
 if(existsSync(workerData.file)){
   // A writable connection can checkpoint a crashed WAL on close, even when
@@ -21,16 +88,21 @@ if(existsSync(workerData.file)){
   if(schemaVersion===0){
     if(database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get())throw new Error('Invalid unversioned Loops database schema.');
   }else{
+      if(schemaVersion<4&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('memory_records','memory_mutations','memory_receipts') LIMIT 1").get())throw new Error('Unexpected memory tables in an older Loops schema.');
       // Check required columns and JSON syntax without materializing cold history.
       // Schema 1 legitimately lacks the retired-admission table added by schema 2.
-      const tables={metadata:'key,value',loops:'id,record',revisions:'loop_id,revision,definition',runs:'id,owner_key,state,created_at,record',admissions:'request_key,fingerprint,run_id',attempts:'run_id,sequence,node_id,state,evidence',outputs:'run_id,node_id,value',events:'sequence,run_id,state,at',...schemaVersion>=2?{retired_admissions:'request_key,record'}:{}};
+      const tables={metadata:'key,value',loops:'id,record',revisions:'loop_id,revision,definition',runs:'id,owner_key,state,created_at,record',admissions:'request_key,fingerprint,run_id',attempts:'run_id,sequence,node_id,state,evidence',outputs:'run_id,node_id,value',events:'sequence,run_id,state,at',...schemaVersion>=2?{retired_admissions:'request_key,record'}:{},...schemaVersion>=4?{memory_records:'scope,loop_id,key,version,deleted,value_bytes,record',memory_mutations:'scope,loop_id,mutation_id,kind,receipt_count,receipt_bytes',memory_receipts:'scope,loop_id,mutation_id,ordinal,record'}:{}};
       for(const [table,columns] of Object.entries(tables))database.prepare(`SELECT ${columns} FROM ${table} LIMIT 0`);
-      for(const [table,column] of Object.entries({metadata:'value',loops:'record',revisions:'definition',runs:'record',attempts:'evidence',outputs:'value',...schemaVersion>=2?{retired_admissions:'record'}:{}})){
+      for(const [table,column] of Object.entries({metadata:'value',loops:'record',revisions:'definition',runs:'record',attempts:'evidence',outputs:'value',...schemaVersion>=2?{retired_admissions:'record'}:{},...schemaVersion>=4?{memory_records:'record',memory_receipts:'record'}:{}})){
         if(database.prepare(`SELECT 1 FROM ${table} WHERE NOT json_valid(${column}) LIMIT 1`).get())throw new Error(`Invalid saved JSON in Loops ${table}.`);
       }
+      // Cold runs are not all loaded by readWorkingState(). Reject forged or
+      // inconsistent stored grants before a writable handle or backup opens.
+      for(const row of database.prepare("SELECT id,owner_key,record FROM runs WHERE json_type(record,'$.memoryWriteGrant') IS NOT NULL").iterate())validateRunMemoryWriteGrant(JSON.parse(row.record),row.id,row.owner_key);
       if(!database.prepare("SELECT 1 FROM metadata WHERE key='version'").get()){
         for(const table of Object.keys(tables))if(database.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())throw new Error('Invalid Loops state: saved records have no format version.');
       }
+      if(schemaVersion>=4)validateMemoryStore();
     }
 }
 }catch(error){startupError=error;}
@@ -48,10 +120,13 @@ if(schemaVersion>0&&schemaVersion<currentSchemaVersion){
   const snapshot=new DatabaseSync(destination,{readOnly:true});
   try{if(snapshot.prepare('PRAGMA quick_check').get().quick_check!=='ok'||snapshot.prepare('PRAGMA user_version').get().user_version!==schemaVersion)throw new Error('Pre-migration backup verification failed. The original schema has not been changed.');}finally{snapshot.close();}
 }
-// Schema 3 fences the versioned admission contract from older readers even
-// when every run is cold history. Existing records and hashes stay unchanged.
-database.exec(`
+// Schema 4 adds plugin-owned, owner-scoped memory with immutable mutation
+// receipts. Older readers must not silently discard value or tombstone history.
+try{database.exec(`
   BEGIN IMMEDIATE;
+  CREATE TABLE IF NOT EXISTS memory_records(scope TEXT NOT NULL,loop_id TEXT NOT NULL,key TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),deleted INTEGER NOT NULL CHECK(deleted IN (0,1)),value_bytes INTEGER NOT NULL CHECK(value_bytes>=0),record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,loop_id,key));
+  CREATE TABLE IF NOT EXISTS memory_mutations(scope TEXT NOT NULL,loop_id TEXT NOT NULL,mutation_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('effect','cleanup')),receipt_count INTEGER NOT NULL CHECK(receipt_count>0),receipt_bytes INTEGER NOT NULL CHECK(receipt_bytes>=0),PRIMARY KEY(scope,loop_id,mutation_id));
+  CREATE TABLE IF NOT EXISTS memory_receipts(scope TEXT NOT NULL,loop_id TEXT NOT NULL,mutation_id TEXT NOT NULL,ordinal INTEGER NOT NULL CHECK(ordinal>=0),record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,loop_id,mutation_id,ordinal),FOREIGN KEY(scope,loop_id,mutation_id) REFERENCES memory_mutations(scope,loop_id,mutation_id) ON DELETE RESTRICT);
   CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS loops(id TEXT PRIMARY KEY, record TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS revisions(loop_id TEXT NOT NULL, revision INTEGER NOT NULL, definition TEXT NOT NULL, PRIMARY KEY(loop_id,revision));
@@ -65,10 +140,12 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS outputs(run_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(run_id,node_id));
   CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
   PRAGMA user_version=${currentSchemaVersion};
-  COMMIT;
 `);
+validateMemoryStore();
 const integrity=database.prepare('PRAGMA quick_check').get().quick_check;
 if(integrity!=='ok')throw new Error(`Loops database integrity check failed: ${integrity}`);
+database.exec('COMMIT');
+}catch(error){if(database.isTransaction)database.exec('ROLLBACK');throw error;}
 };
 const port=workerData.port;
 const read=()=>{
@@ -114,6 +191,86 @@ const runMetadata=()=>database.prepare(`SELECT id,state,created_at AS createdAt,
     if(fingerprintType===null)delete record.requestFingerprintVersion;
     return {...record,owner,...record.parentRunId===null?{parentRunId:undefined}:{},cleanupPending:record.cleanupPending===1};
   });
+const memoryConflict=()=>Object.assign(new Error('Memory compare-and-swap or mutation identity conflict.'),{code:'LOOPS_MEMORY_CONFLICT'});
+const memoryQuota=()=>Object.assign(new Error('Memory quota exceeded.'),{code:'LOOPS_MEMORY_QUOTA'});
+const memoryGet=({scope,loopId,key})=>{
+  if(!memoryDigest.test(scope)||!memoryName.test(loopId)||!validKey(key))throw new Error('Invalid memory read identity.');
+  const row=database.prepare('SELECT record FROM memory_records WHERE scope=? AND loop_id=? AND key=?').get(scope,loopId,key);
+  return row?JSON.parse(row.record):undefined;
+};
+const memoryPage=({scope,loopId,prefix,cursor,limit})=>{
+  if(!memoryDigest.test(scope)||!memoryName.test(loopId)||!validKey(prefix)||cursor!==undefined&&!validKey(cursor)||!Number.isSafeInteger(limit)||limit<1||limit>1000)throw new Error('Invalid memory page identity.');
+  const child=`${prefix}.`,predicate='scope=? AND loop_id=? AND (key=? OR substr(key,1,?)=?)';
+  const args=[scope,loopId,prefix,child.length,child];
+  const {total}=database.prepare(`SELECT count(*) AS total FROM memory_records WHERE ${predicate}`).get(...args);
+  const rows=database.prepare(`SELECT key,record FROM memory_records WHERE ${predicate} AND key>? ORDER BY key LIMIT ?`).all(...args,cursor??'',limit+1);
+  const items=rows.slice(0,limit).map(row=>JSON.parse(row.record));
+  return {items,nextCursor:rows.length>limit?rows[limit-1].key:null,total};
+};
+const memoryMutation=({scope,loopId,mutationId})=>{
+  if(!memoryDigest.test(scope)||!memoryName.test(loopId)||!memoryId.test(mutationId))throw new Error('Invalid memory mutation identity.');
+  const found=database.prepare('SELECT receipt_count FROM memory_mutations WHERE scope=? AND loop_id=? AND mutation_id=?').get(scope,loopId,mutationId);
+  if(!found)return undefined;
+  const receipts=database.prepare('SELECT record FROM memory_receipts WHERE scope=? AND loop_id=? AND mutation_id=? ORDER BY ordinal').all(scope,loopId,mutationId).map(row=>JSON.parse(row.record));
+  if(receipts.length!==found.receipt_count)throw new Error('Invalid saved memory receipt count.');
+  return receipts;
+};
+// Every effect receipt reserves one future cleanup receipt. At an effect quota
+// boundary a value can still be explicitly forgotten without discarding the
+// original receipt or allowing an unbounded cleanup ledger.
+const CLEANUP_RECEIPT_RESERVE_BYTES=2048;
+function memoryCommit({writes,mutationId}){
+  if(!Array.isArray(writes)||writes.length<1||!memoryId.test(mutationId))throw new Error('Invalid memory batch.');
+  const first=writes[0],scope=first?.scope,loopId=first?.loopId,budget=first?.budget;
+  if(!memoryDigest.test(scope)||!memoryName.test(loopId)||!budget||!Number.isSafeInteger(budget.maxValueBytes)||budget.maxValueBytes<1||!Number.isSafeInteger(budget.maxKeys)||budget.maxKeys<1||!Number.isSafeInteger(budget.maxTotalBytes)||budget.maxTotalBytes<budget.maxValueBytes||!Number.isSafeInteger(budget.maxMutations)||budget.maxMutations<1||!Number.isSafeInteger(budget.maxReceiptBytes)||budget.maxReceiptBytes<1||writes.length>budget.maxKeys)throw new Error('Invalid memory batch budget.');
+  const seen=new Set(),prepared=[];
+  for(const write of writes){
+    if(!write||write.scope!==scope||write.loopId!==loopId||write.mutationId!==mutationId||JSON.stringify(write.budget)!==JSON.stringify(budget)||!validKey(write.key)||seen.has(write.key)||!Number.isSafeInteger(write.expectedVersion)||write.expectedVersion<0||write.expectedVersion>=Number.MAX_SAFE_INTEGER)throw memoryConflict();
+    seen.add(write.key);
+    const record=write.next,bytes=validateMemoryRecord(record,scope,loopId,write.key);
+    if(record.version!==write.expectedVersion+1||record.provenance.mutationId!==mutationId||record.deleted!==['forget','retention','reset'].includes(record.provenance.operation)||write.expectedVersion===0&&record.provenance.operation!=='write'||write.expectedVersion>0&&record.provenance.operation==='write')throw memoryConflict();
+    if(bytes>budget.maxValueBytes)throw memoryQuota();
+    const receipt={scope,loopId,key:write.key,version:record.version,deleted:record.deleted,mutationId,committedAt:record.updatedAt,provenance:record.provenance};
+    prepared.push({write,record,bytes,receipt,receiptJson:JSON.stringify(receipt)});
+  }
+  const kind=['write','update'].includes(prepared[0].record.provenance.operation)?'effect':'cleanup';
+  if(prepared.some(item=>(['write','update'].includes(item.record.provenance.operation)?'effect':'cleanup')!==kind))throw memoryConflict();
+  database.exec('BEGIN IMMEDIATE');
+  try{
+    if(!database.prepare("SELECT 1 FROM metadata WHERE key='version'").get())throw new Error('Initialize Loops state before committing memory.');
+    if(database.prepare('SELECT 1 FROM memory_mutations WHERE scope=? AND loop_id=? AND mutation_id=?').get(scope,loopId,mutationId))throw memoryConflict();
+    const current=database.prepare('SELECT key,version,value_bytes,record FROM memory_records WHERE scope=? AND loop_id=? AND key=?');
+    const usage=database.prepare('SELECT count(*) AS keys,coalesce(sum(value_bytes),0) AS bytes FROM memory_records WHERE scope=? AND loop_id=?').get(scope,loopId);
+    let keys=usage.keys,totalBytes=usage.bytes;
+    for(const item of prepared){
+      const previous=current.get(scope,loopId,item.write.key);
+      if((previous?.version??0)!==item.write.expectedVersion)throw memoryConflict();
+      if(previous){
+        const saved=JSON.parse(previous.record);
+        if(validateMemoryRecord(saved,scope,loopId,item.write.key)!==previous.value_bytes)throw new Error('Invalid saved memory value index.');
+        if(item.record.createdAt!==saved.createdAt||kind==='cleanup'&&saved.deleted)throw memoryConflict();
+        totalBytes-=previous.value_bytes;
+      }else keys++;
+      totalBytes+=item.bytes;
+    }
+    if(keys>budget.maxKeys||totalBytes>budget.maxTotalBytes)throw memoryQuota();
+    const receiptBytes=prepared.reduce((sum,item)=>sum+Buffer.byteLength(item.receiptJson),0);
+    const metadata=database.prepare(`SELECT
+      coalesce(sum(CASE WHEN kind='effect' THEN 1 ELSE 0 END),0) AS effects,
+      coalesce(sum(CASE WHEN kind='effect' THEN receipt_count ELSE 0 END),0) AS effect_receipts,
+      coalesce(sum(CASE WHEN kind='effect' THEN receipt_bytes ELSE 0 END),0) AS effect_bytes,
+      coalesce(sum(CASE WHEN kind='cleanup' THEN 1 ELSE 0 END),0) AS cleanups,
+      coalesce(sum(CASE WHEN kind='cleanup' THEN receipt_bytes ELSE 0 END),0) AS cleanup_bytes
+      FROM memory_mutations WHERE scope=? AND loop_id=?`).get(scope,loopId);
+    if(kind==='effect'&&(metadata.effects+1>budget.maxMutations||metadata.effect_bytes+receiptBytes>budget.maxReceiptBytes)||
+      kind==='cleanup'&&(metadata.cleanups+1>metadata.effect_receipts||metadata.cleanup_bytes+receiptBytes>metadata.effect_receipts*CLEANUP_RECEIPT_RESERVE_BYTES))throw memoryQuota();
+    for(const item of prepared)database.prepare('INSERT INTO memory_records(scope,loop_id,key,version,deleted,value_bytes,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(scope,loop_id,key) DO UPDATE SET version=excluded.version,deleted=excluded.deleted,value_bytes=excluded.value_bytes,record=excluded.record').run(scope,loopId,item.write.key,item.record.version,Number(item.record.deleted),item.bytes,JSON.stringify(item.record));
+    database.prepare('INSERT INTO memory_mutations(scope,loop_id,mutation_id,kind,receipt_count,receipt_bytes) VALUES (?,?,?,?,?,?)').run(scope,loopId,mutationId,kind,prepared.length,receiptBytes);
+    for(let ordinal=0;ordinal<prepared.length;ordinal++)database.prepare('INSERT INTO memory_receipts(scope,loop_id,mutation_id,ordinal,record) VALUES (?,?,?,?,?)').run(scope,loopId,mutationId,ordinal,prepared[ordinal].receiptJson);
+    database.exec('COMMIT');
+    return prepared.map(item=>item.receipt);
+  }catch(error){if(database.isTransaction)database.exec('ROLLBACK');throw error;}
+}
 if(startupError){try{database?.close();}catch{/* Preserve the original startup failure. */}}
 function write(next,mode='full'){
   const runOnly=mode==='run',working=mode==='working';
@@ -139,11 +296,13 @@ function write(next,mode='full'){
     for(const {id} of database.prepare('SELECT id FROM loops').all())if(!Object.hasOwn(next.loops,id))database.prepare('DELETE FROM loops WHERE id=?').run(id);
     }
     for(const [id,run] of runOnly?[[next.id,next]]:Object.entries(next.runs)){
+      const owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
+      validateRunMemoryWriteGrant(run,id,owner);
       const json=JSON.stringify(run);
-      const previous=database.prepare("SELECT state, record=? AS unchanged, COALESCE(json_extract(record,'$.requestFingerprintVersion'),1) AS fingerprintVersion FROM runs WHERE id=?").get(json,id);
+      const previous=database.prepare("SELECT state,record,record=? AS unchanged, COALESCE(json_extract(record,'$.requestFingerprintVersion'),1) AS fingerprintVersion FROM runs WHERE id=?").get(json,id);
       if(previous?.unchanged)continue;
       if(previous&&previous.fingerprintVersion!==(run.requestFingerprintVersion??1))throw new Error('Admission fingerprint contract is immutable.');
-      const owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
+      if(previous&&memoryFingerprint(JSON.parse(previous.record).memoryWriteGrant??null)!==memoryFingerprint(run.memoryWriteGrant??null))throw new Error('Run memory write grant is immutable after admission.');
       database.prepare('INSERT INTO runs VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET owner_key=excluded.owner_key,state=excluded.state,created_at=excluded.created_at,record=excluded.record').run(id,owner,run.state,run.createdAt,json);
       const admission=database.prepare('SELECT run_id,fingerprint FROM admissions WHERE request_key=?').get(run.requestKey);
       if(admission&&(admission.run_id!==id||admission.fingerprint!==run.requestFingerprint))throw new Error('Admission identity conflict.');
@@ -218,6 +377,10 @@ parentPort.on('message',async message=>{
       case 'history':result=history(message.payload);break;
       case 'run-summaries':result=summaries(message.payload,0,-1);break;
       case 'has-open-runs':result=!!database.prepare("SELECT 1 FROM runs WHERE json_extract(record,'$.definition.id')=? AND (state NOT IN ('completed','failed','cancelled','interrupted') OR json_extract(record,'$.cleanupPending')=1) LIMIT 1").get(message.payload);break;
+      case 'memory-get':result=memoryGet(message.payload);break;
+      case 'memory-page':result=memoryPage(message.payload);break;
+      case 'memory-mutation':result=memoryMutation(message.payload);break;
+      case 'memory-commit':result=memoryCommit(message.payload);break;
       case 'write':write(message.payload);break;
       case 'write-working':write(message.payload,'working');break;
       case 'write-run':write(message.payload,'run');break;

@@ -49,7 +49,7 @@ export const MaintenanceResultSchema = Type.Object({
   total: Type.Integer({minimum: 0}),
 }, strict);
 export type MaintenanceResult = Static<typeof MaintenanceResultSchema>;
-export type ReferenceInventory = {runs: ReadonlySet<string>; loops: ReadonlySet<string>};
+export type ReferenceInventory = {runs: ReadonlySet<string>; loops: ReadonlySet<string>; documents: ReadonlySet<string>};
 
 // A large preview may need a managed response document. It is created only
 // after this plan ID is calculated, so applying that exact preview ignores the

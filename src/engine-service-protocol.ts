@@ -1,11 +1,12 @@
 import type {MessagePort} from 'node:worker_threads';
-import type {Actor,Engine} from './engine.js';
+import type {Actor,Engine,HostCapabilities} from './engine.js';
 import type {InferenceSettings} from './inference-settings.js';
 import {LoopError,type LoopErrorData} from './errors.js';
 
 // Private, same-process worker protocol. It is not a second host API or a
 // capability token that callers can supply through the feature contract.
-export const engineMethods=['browse','retention','maintenance','transportRelease','test','retry','draft','versions','publish','restore','archive','deleted','recover','output','history','capabilities','validate','list','describe','run','status','resume','cancel','library','load','save','create','edit','delete','enable','revoke','runs','review','packageExport','packagePreview','packageImport','documentWrap','documentSnapshot','documentRead','documentUpload','documentResolve','documentAcquire','documentRelease','documentUse','documentFinishUse'] as const satisfies ReadonlyArray<keyof Engine>;
+export const engineMethods=['browse','memoryQuery','retention','maintenance','transportRelease','test','retry','draft','versions','publish','restore','archive','deleted','recover','output','history','capabilities','validate','list','describe','run','status','resume','cancel','library','load','save','create','edit','delete','enable','revoke','runs','review','packageExport','packagePreview','packageImport','documentWrap','documentSnapshot','documentRead','documentUpload','documentResolve','documentAcquire','documentRelease','documentUse','documentFinishUse'] as const satisfies ReadonlyArray<keyof Engine>;
+
 export type EngineMethod=typeof engineMethods[number];
 export type EngineArgs<M extends EngineMethod>=Parameters<Engine[M]> extends [Actor,...infer A]?A:never;
 export type EngineResult<M extends EngineMethod>=Awaited<ReturnType<Engine[M]>>;
@@ -18,7 +19,7 @@ export type Reply={ok:true;value:unknown}|{ok:false;error:ErrorData};
 export type HostRequest={type:'host';id:string;actorId:string;execution:Pick<Actor,'model'|'reasoning'|'authProfileId'>;method:'checkActor'|'check'|'capabilities'|'complete'|'modelInfo';args:unknown[];port?:MessagePort;signal?:SharedArrayBuffer};
 export type ServiceRequest={type:'invoke';id:string;operation:EngineMethod;actor:ActorRef;args:unknown[]}|{type:'close';id:string;operation:'close'}|{type:'abortActor';actorId:string}|{type:'disposeActor';actorId:string}|{type:'hostResult';id:string;reply:Reply};
 export type ServiceResponse={type:'ready';reply:Reply}|{type:'result';id:string;reply:Reply}|{type:'changed'}|{type:'retain'|'release';actorId:string}|{type:'abortHost';id:string}|HostRequest;
-export type HostCompletionArgs=[prompt:string,timeoutMs:number|undefined,settings:InferenceSettings|undefined];
+export type HostCompletionArgs=[prompt:string,timeoutMs:number|undefined,settings:InferenceSettings|undefined,structured:Parameters<HostCapabilities['complete']>[5]];
 
 // Structured clone drops custom Error properties. Keep only fields used by the
 // existing error classifier; raw causes remain private and are never receipts.

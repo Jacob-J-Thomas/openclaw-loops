@@ -6,6 +6,7 @@ import {pathToFileURL} from 'node:url';
 export const repository='Jacob-J-Thomas/openclaw-loops';
 export const featureBase='codex/post-1.0-local-expansion';
 const kinds=['bolt','uow','phase','campaign'];
+const fullSha=/^[a-f0-9]{40}$/;
 const issueKinds=issue=>(issue.labels??[]).map(label=>typeof label==='string'?label:label.name).filter(label=>label.startsWith('type:'));
 
 function boltMarkers(body=''){
@@ -58,13 +59,14 @@ export function reviewAccounting(prComments,issueComments,reviews=[],candidate={
 // This gate checks the delivery contract, not whether a review or test proves
 // the patch correct. The delivery owner still reconciles exact-head evidence.
 export function validateContract(snapshot){
-  const {pr,closing,chain,leafChildren,reviewRequestIds,reviewErrors=[],openCandidates=[]}=snapshot,errors=[];
+  const {pr,closing,chain,leafChildren,reviewRequestIds,reviewErrors=[],openCandidates=[],liveBase}=snapshot,errors=[];
   const featureTarget=pr.base.ref===featureBase,marker=boltMarkers(pr.body??'');
   if(pr.state!=='open')errors.push('The candidate PR must be open.');
   if(pr.draft)errors.push('Draft PRs are outside the owner-approved delivery process.');
   if(pr.base.ref!=='main'&&!featureTarget)errors.push(`A candidate PR must target main or ${featureBase}.`);
   if(pr.base.repo.full_name!==repository)errors.push('The PR targets a different repository.');
-  if(!/^[a-f0-9]{40}$/.test(pr.head.sha)||! /^[a-f0-9]{40}$/.test(pr.base.sha))errors.push('Exact candidate head and base are required.');
+  if(!fullSha.test(pr.head.sha)||!fullSha.test(pr.base.sha))errors.push('Exact candidate head and historical PR base are required.');
+  if(!liveBase||liveBase.repository!==repository||liveBase.ref!==pr.base.ref||!fullSha.test(liveBase.sha))errors.push('An exact current destination ref in this repository is required.');
   let issueNumber=null;
   if(marker.malformed||marker.values.length>1||new Set(marker.values).size!==marker.values.length)errors.push('The feature Bolt ownership marker is malformed or ambiguous.');
   if(featureTarget){
@@ -97,7 +99,7 @@ export function validateContract(snapshot){
   const reviewRequests=new Set(reviewRequestIds).size;
   errors.push(...reviewErrors);
   if(reviewRequests>3)errors.push('The maximum of three Codex review requests has been exceeded.');
-  return {ok:errors.length===0,errors,issue:issueNumber,head:pr.head.sha,base:pr.base.sha,reviewRequests};
+  return {ok:errors.length===0,errors,issue:issueNumber,head:pr.head.sha,base:liveBase?.sha,baseRef:liveBase?.ref,prBase:pr.base.sha,reviewRequests};
 }
 
 export const isCodexReview=review=>review.user?.login==='chatgpt-codex-connector[bot]'&&review.state!=='PENDING';
@@ -119,9 +121,18 @@ export async function github(endpoint,{body,optional=false}={}){
   catch(error){if(optional&&String(error.stderr).includes('(HTTP 404)'))return null;throw new Error('GitHub metadata read failed; verify gh authentication and repository access.',{cause:error});}
 }
 
+async function currentDestinationRef(request,route,pr){
+  if(pr.base?.repo?.full_name!==repository)throw new Error('The PR targets a different repository.');
+  if(pr.base?.ref!=='main'&&pr.base?.ref!==featureBase)throw new Error(`A candidate PR must target main or ${featureBase}.`);
+  const ref=await request(`${route}/git/ref/heads/${pr.base.ref}`),expected=`refs/heads/${pr.base.ref}`;
+  if(ref?.ref!==expected||ref.object?.type!=='commit'||!fullSha.test(ref.object?.sha??''))throw new Error('An exact current commit destination ref is required.');
+  return {repository,ref:pr.base.ref,sha:ref.object.sha};
+}
+
 export async function collectContract(number,request=github){
   if(!Number.isSafeInteger(number)||number<1)throw new Error('A positive PR number is required.');
   const route=`repos/${repository}`,pr=await request(`${route}/pulls/${number}`);
+  const liveBase=await currentDestinationRef(request,route,pr);
   const [owner,name]=repository.split('/');
   // Ask GitHub which issues this PR actually closes, including references it
   // recognizes in commits. A local body regex is not authoritative parentage.
@@ -163,9 +174,11 @@ export async function collectContract(number,request=github){
   const reviews=await pages(`pulls/${number}/reviews`);
   const prComments=await pages(`issues/${number}/comments`);
   const latest=await request(`${route}/pulls/${number}`);
-  if(latest.head.sha!==pr.head.sha||latest.base.sha!==pr.base.sha||latest.body!==pr.body||latest.state!==pr.state||latest.draft!==pr.draft)throw new Error('The PR changed during validation. Rerun against its current head/base.');
+  if(latest.head.sha!==pr.head.sha||latest.base.sha!==pr.base.sha||latest.base.ref!==pr.base.ref||latest.base.repo?.full_name!==pr.base.repo?.full_name||latest.body!==pr.body||latest.state!==pr.state||latest.draft!==pr.draft)throw new Error('The PR changed during validation. Rerun against its current head/base.');
+  const latestLiveBase=await currentDestinationRef(request,route,latest);
+  if(latestLiveBase.sha!==liveBase.sha)throw new Error('The destination ref changed during validation. Rerun against its current head/base.');
   const accounting=reviewAccounting(prComments,issueComments,reviews,{head:pr.head.sha,base:pr.base.sha,author:pr.user?.login});
-  return {pr,closing,chain,leafChildren,reviewRequestIds:accounting.ids,reviewErrors:accounting.errors,openCandidates};
+  return {pr,liveBase,closing,chain,leafChildren,reviewRequestIds:accounting.ids,reviewErrors:accounting.errors,openCandidates};
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
