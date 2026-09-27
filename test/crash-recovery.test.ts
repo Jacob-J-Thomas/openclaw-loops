@@ -16,6 +16,7 @@ beforeAll(async()=>{
   bundleDirectory=mkdtempSync(join(tmpdir(),'loops-crash-code-'));
   await build({stdin:{contents:"export {SqliteStorage} from './src/storage.ts'; export {Engine} from './src/engine.ts';",resolveDir:resolve('.')},outfile:join(bundleDirectory,'engine.mjs'),bundle:true,platform:'node',format:'esm',target:'node24'});
   copyFileSync('src/storage-worker.mjs',join(bundleDirectory,'storage-worker.mjs'));
+  copyFileSync('src/artifact-storage-worker.mjs',join(bundleDirectory,'artifact-storage-worker.mjs'));
 });
 afterEach(async()=>{for(const cleanup of cleanups.splice(0).reverse())await cleanup();});
 afterAll(()=>rmSync(bundleDirectory,{recursive:true,force:true}));

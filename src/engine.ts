@@ -21,12 +21,16 @@ import {lifecycleMutation,lifecycleValue,selected,selectedIfPresent,selectRetain
 import {MemoryCore,type MemoryInvocation,type MemoryRemovalPlan,type MemoryRepository} from './memory-core.js';
 import {memorySchemaValidator,assertNoMemorySchemaRedefinition} from './memory-definition.js';
 import type {MemoryNodeOperation} from './memory-node.js';
+import {ArtifactCustody,maxPortableImportTransportBytes,type ArtifactBundle,type ArtifactOwner,type ArtifactReference,type CleanupPolicy} from './artifact-custody.js';
+import {decodeFileInput,decodeExternalFiles} from './artifact-node.js';
+import type {SqliteStorage} from './storage.js';
+
 
 
 export type Actor={agentId:string;sessionKey:string;sessionId:string;source:'command'|'tool'|'session-action';requester?:string;human:boolean;canManage?:boolean;model?:string;reasoning?:string;authProfileId?:string;complete?:OpenClawPluginApi['runtime']['llm']['complete'];check:()=>void;signal?:AbortSignal};
 export type Owner=Pick<Actor,'agentId'|'sessionKey'|'sessionId'>;
 export type RouteTrace={port:string;caseId?:string;observed:string;truncated?:boolean;available?:true}|{port:string;caseId?:string;available:false};
-export type NodeEvidence={nodeId:string;kind:string;iteration?:number;memoryMutationId?:string;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:RouteTrace};
+export type NodeEvidence={nodeId:string;kind:string;iteration?:number;memoryMutationId?:string;artifactOperationId?:string;state:'running'|'completed'|'waiting'|'review'|'failed'|'cancelled'|'interrupted';startedAt:string;endedAt?:string;output?:string;error?:string;rejectedResponse?:{preview:string;bytes:number;sha256:string;truncated:boolean};route?:RouteTrace};
 export type ExecutionSettings=Pick<Actor,'model'|'reasoning'|'authProfileId'>&{agentModels?:Record<string,string>};
 export type MemoryWriteGrant={runId:string;ownerKey:string;loopId:string;revision:number;grantGeneration:string;policySha256:string};
 export type Run={id:string;requestKey:string;requestFingerprint:string;requestFingerprintVersion?:2;owner:Owner;source:Actor['source'];requester?:string;executionSettings?:ExecutionSettings;cleanupPending?:boolean;parentRunId?:string;testMode?:boolean;grantGeneration?:string;memoryWriteGrant?:MemoryWriteGrant;definition:Definition;input:Record<string,Json>;context?:ContextState;state:'queued'|'running'|'completed'|'failed'|'waiting'|'review'|'cancelled'|'interrupted';cursor:string;outputs:Record<string,Json>;trace:NodeEvidence[];executions:number;activeMs:number;createdAt:string;updatedAt:string;result?:Json;error?:string;errorDetail?:LoopErrorData;pending?:string;uncertainty?:string;review?:{decision:'approve'|'reject';at:string;requester:string};};
@@ -46,6 +50,7 @@ export type PortableProvenance={revision:number;templateId:string;packageDigest:
 export type LoopRecord={definition:Definition;enabledRevision:number|null;grants:Capability[];grantGeneration?:string;revisions?:Record<string,Definition>;publishedRevision?:number|null;revoked?:boolean;archived?:boolean;deletedAt?:string;portableProvenance?:PortableProvenance};
 const legacyGrantGeneration='legacy';
 export type LibraryQuery={view?:'active'|'runnable'|'recoverable';search?:string;cursor?:string;limit?:number};
+export type ArtifactRequest={action:'capture'|'import'|'list'|'metadata'|'page'|'export'|'release-unused'|'cleanup-preview'|'cleanup-apply'|'publication-inspect'|'publication-recover'|'cleanup-inspect'|'cleanup-recover';data?:unknown;operationId?:string;artifactId?:string;offset?:number;limit?:number;cursor?:string;selections?:Array<{id:string;mode:'embedded'|'external'}>;policy?:CleanupPolicy;planId?:string;recoveryId?:string};
 export type State={version:1;loops:Record<string,LoopRecord>;runs:Record<string,Run>;retiredAdmissions?:Record<string,RetiredAdmission>};
 export type RunSummary=Pick<Run,'id'|'state'|'createdAt'|'updatedAt'|'executions'>&{slug:string;revision:number};
 export type RunMetadata=Pick<Run,'id'|'owner'|'requestKey'|'requestFingerprint'|'requestFingerprintVersion'|'state'|'createdAt'|'updatedAt'|'parentRunId'|'cleanupPending'>;
@@ -83,8 +88,10 @@ const retainedFingerprint=(run:Run)=>run.parentRunId?undefined:fingerprintJson({
 const terminal=(r:Run)=>['completed','failed','cancelled','interrupted'].includes(r.state);
 export class Engine{
   private documents?:DocumentStore;
+  private custody?:ArtifactCustody;
   private cachedState!:State;
   private storageFailure?:LoopError;
+  private artifactRecoveryOnly=false;
   private get state(){if(this.storageFailure)throw this.storageFailure;return this.cachedState;}
   private set state(value:State){this.cachedState=value;}
   readonly budgets:Budgets;
@@ -94,9 +101,17 @@ export class Engine{
   private closing=false;
   private deadlines=new Map<string,number>();
   private active=new Map<string,{controller:AbortController;promise:Promise<Run>}>();
-  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>;documentDirectory?:string;retainActor?:(actor:Actor)=>void;releaseActor?:(actor:Actor)=>void;evaluationWorkerUrl?:URL}={}){
+  constructor(private storage:Storage,private host:HostCapabilities,private options:{concurrency?:number;replyTimeoutMs?:number;onChange?:()=>void;budgets?:Partial<Budgets>;documentDirectory?:string;artifactDirectory?:string;retainActor?:(actor:Actor)=>void;releaseActor?:(actor:Actor)=>void;evaluationWorkerUrl?:URL}={}){
     this.budgets=resolveBudgets(options.budgets);
     this.state=(storage.indexed?storage.indexed.readWorkingState():storage.read())??{version:1,loops:Object.fromEntries(examples.map(d=>[d.id,{definition:{...structuredClone(d),revision:1},enabledRevision:null,grants:[]}])),runs:{}};
+    this.normalizeRestartState();
+    // A retained cleanup lease fences all reference writes, including the
+    // constructor's ordinary state normalization. Keep execution unavailable
+    // until an authorized recovery clears every lease and this state commits.
+    this.artifactRecoveryOnly=!!(storage as Partial<SqliteStorage>).artifactHasGcLease?.();
+    if(!this.artifactRecoveryOnly)this.persist();
+  }
+  private normalizeRestartState(){
     if(this.state.version!==1)throw new Error('Unsupported state store version.');
     for(const record of Object.values(this.state.loops)){
       record.revisions??={[record.definition.revision]:structuredClone(record.definition)};
@@ -122,11 +137,35 @@ export class Engine{
         for(const t of r.trace)if(t.state==='running'){t.state='interrupted';t.endedAt=now();}
       }
     }
-    this.persist();
   }
-  private persist(run?:Run){
+  private artifactRecoveryRequired(){
+    return requestError('Artifact cleanup recovery is required before Loops can resume.','LOOPS_ARTIFACT_RECOVERY_REQUIRED',
+      'Use loops_artifact cleanup-inspect, then cleanup-recover with a unique recoveryId for each retained owner lease. Normal operations resume only after interrupted-run state is durably committed.');
+  }
+  assertArtifactRecoveryOperation(operation:string,args:readonly unknown[]){
+    if(!this.artifactRecoveryOnly)return;
+    if(operation==='artifact'&&args[0]&&typeof args[0]==='object'&&
+      ['cleanup-inspect','cleanup-recover'].includes((args[0] as ArtifactRequest).action))return;
+    // Public recovery results can be wrapped and paged by the normal document
+    // transport without touching run, graph, memory or artifact references.
+    if(['documentWrap','documentSnapshot','documentRead','documentAcquire','documentRelease'].includes(operation))return;
+    throw this.artifactRecoveryRequired();
+  }
+  private finishArtifactStartupRecovery(){
+    if(!this.artifactRecoveryOnly||(this.storage as Partial<SqliteStorage>).artifactHasGcLease?.())return;
+    const committed=this.storage.indexed?this.storage.indexed.readWorkingState():this.storage.read();
+    if(!committed)throw new Error('The committed state is unavailable during artifact cleanup recovery.');
+    this.state=committed;
+    this.normalizeRestartState();
+    // A failed commit leaves recovery-only mode in place. A repeated explicit
+    // cleanup-recover reads its immutable receipt and retries this checkpoint.
+    this.persist(undefined,true);
+    this.artifactRecoveryOnly=false;
+  }
+  private persist(run?:Run,recoveryCommit=false){
     if(this.storageFailure)throw this.storageFailure;
     try{
+      if(this.artifactRecoveryOnly&&!recoveryCommit)throw this.artifactRecoveryRequired();
       if(run&&this.storage.indexed)this.storage.indexed.writeRun(run);
       else if(run&&this.storage.writeRun)this.storage.writeRun(run);
       else if(this.storage.indexed)this.storage.indexed.writeWorkingState(this.state);
@@ -163,7 +202,185 @@ export class Engine{
   private documentStore(actor:Actor){
     actor.check();
     if(!this.options.documentDirectory)throw requestError('Loops document storage is unavailable.','LOOPS_SERVICE_UNAVAILABLE');
-    return this.documents??=new DocumentStore(this.options.documentDirectory,Math.max(this.budgets.definitionBytes,this.budgets.inputBytes)*2);
+    // Public portable import accepts up to 16 MiB of decoded file bytes at
+    // the default Run input budget. Staging has a separate finite JSON cap;
+    // the original operation still enforces its own authority and limits.
+    return this.documents??=new DocumentStore(this.options.documentDirectory,Math.max(this.budgets.definitionBytes*2,this.budgets.inputBytes*2,maxPortableImportTransportBytes));
+  }
+  private artifactPort():SqliteStorage{
+    const port=this.storage as Partial<SqliteStorage>;
+    if(!port.artifactReserve||!port.artifactPublished||!port.artifactOperation||!port.artifactProtectedSnapshot)throw requestError('Plugin-owned artifact index is unavailable.','LOOPS_ARTIFACT_STORAGE_UNAVAILABLE');
+    return port as SqliteStorage;
+  }
+  private artifactStore():ArtifactCustody{
+    if(!this.options.artifactDirectory)throw requestError('Plugin-owned artifact storage is unavailable.','LOOPS_ARTIFACT_STORAGE_UNAVAILABLE');
+    return this.custody??=new ArtifactCustody(this.options.artifactDirectory);
+  }
+  private artifactCoordination(owner:ArtifactOwner,operationId:string){
+    const port=this.artifactPort();
+    return {operationId,reserve:(refs:readonly ArtifactReference[],id:string)=>port.artifactReserve(owner,refs,id),published:(refs:readonly ArtifactReference[],id:string)=>port.artifactPublished(owner,refs,id)};
+  }
+  private assertArtifactReference(owner:ArtifactOwner,value:Json):ArtifactReference{
+    if(!value||typeof value!=='object'||Array.isArray(value)||value.kind!=='loops-artifact'||typeof value.id!=='string')throw requestError('Artifact binding must contain a typed artifact reference.','LOOPS_ARTIFACT_INPUT');
+    return this.artifactStore().withCoordinationLease(()=>{
+      const published=this.publishedArtifactReference(owner,value.id as string);
+      const page=this.artifactStore().readPage(owner,value.id as string,0,1);
+      if(canonical(page.reference)!==canonical(value)||canonical(published)!==canonical(value))throw requestError('Artifact reference metadata does not match its owner-scoped stored bytes.','LOOPS_ARTIFACT_CORRUPT');
+      return page.reference;
+    });
+  }
+  private publishedArtifactReference(owner:ArtifactOwner,id:string):ArtifactReference{
+    const port=this.artifactPort(),status=port.artifactReferenceStatus(owner,id);
+    if(status?.status!=='published')throw requestError(status?.status==='released'?'Artifact was explicitly released and cannot be reused.':'Published artifact was not found in this owner scope.','LOOPS_ARTIFACT_NOT_FOUND');
+    let cursor='';
+    for(let pageNumber=0;pageNumber<100;pageNumber++){
+      const page=port.artifactRecoveryInventory(owner,cursor,100),match=page.items.find(ref=>ref.id===id);
+      if(match)return match;
+      if(page.nextCursor===null)break;
+      cursor=page.nextCursor;
+    }
+    throw requestError('Published artifact was not found in this owner scope.','LOOPS_ARTIFACT_NOT_FOUND');
+  }
+  private artifactReadback(owner:ArtifactOwner,refs:readonly ArtifactReference[]){
+    const store=this.artifactStore();
+    const result=[];for(let offset=0;offset<refs.length;offset+=100)result.push(...store.inspectRecovery(owner,refs.slice(offset,offset+100).map(ref=>ref.id)));
+    return result;
+  }
+  private cleanupReadback(owner:ArtifactOwner){
+    const port=this.artifactPort(),refs:ArtifactReference[]=[];let cursor='';
+    for(let pageNumber=0;pageNumber<100;pageNumber++){
+      const page=port.artifactRecoveryInventory(owner,cursor,100);refs.push(...page.items);
+      if(page.nextCursor===null)return {references:refs,readback:this.artifactReadback(owner,refs)};
+      cursor=page.nextCursor;
+    }
+    throw requestError('Artifact inventory exceeded its bounded recovery page limit.','LOOPS_ARTIFACT_RECOVERY');
+  }
+  artifact(actor:Actor,input:ArtifactRequest){
+    this.assertArtifactRecoveryOperation('artifact',[input]);
+    this.ensureAuthor(actor);
+    const owner:ArtifactOwner={agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId};
+    const store=this.artifactStore(),port=this.artifactPort();
+    let result:unknown;
+    switch(input.action){
+      case 'capture':{
+        if(!input.operationId)throw requestError('Artifact capture requires a stable operationId.','LOOPS_ARTIFACT_OPERATION');
+        const {bytes,mediaType}=decodeFileInput(input.data,store.budget.maxArtifactBytes);
+        const existing=port.artifactOperation(owner,input.operationId);
+        if(existing){
+          if(existing.status!=='published'||existing.references.length!==1||existing.references[0].status!=='published')throw requestError('Artifact publication is unresolved or was released. Inspect its durable operation before another capture.','LOOPS_ARTIFACT_UNCERTAIN');
+          const ref=existing.references[0].reference;
+          if(ref.runId!==`capture-${input.operationId}`||ref.nodeId!=='upload'||ref.bytes!==bytes.length||ref.mediaType!==mediaType||ref.sha256!==createHash('sha256').update(bytes).digest('hex'))throw requestError('Artifact operationId already belongs to a different capture.','LOOPS_ARTIFACT_CONFLICT');
+          result=this.assertArtifactReference(owner,ref as Json);break;
+        }
+        result=store.putCoordinated(owner,{runId:`capture-${input.operationId}`,nodeId:'upload'},bytes,mediaType,this.artifactCoordination(owner,input.operationId));break;
+      }
+      case 'import':{
+        if(!input.operationId)throw requestError('Artifact import requires a stable operationId.','LOOPS_ARTIFACT_OPERATION');
+        const data=input.data;
+        if(!data||typeof data!=='object'||Array.isArray(data)||Object.keys(data).some(key=>key!=='bundle'&&key!=='external')||!Object.hasOwn(data,'bundle'))throw requestError('Artifact import requires a portable bundle and optional external dependencies.','LOOPS_ARTIFACT_IMPORT');
+        let serialized:string|undefined;
+        try{serialized=JSON.stringify(data);}catch{/* Cyclic or otherwise unserializable input is not a portable bundle. */}
+        if(!serialized||Buffer.byteLength(serialized)>maxPortableImportTransportBytes)throw requestError('Portable artifact import exceeds the bounded upload envelope.','LOOPS_ARTIFACT_SIZE');
+        const payload=data as {bundle:ArtifactBundle;external?:Json};
+        const external=decodeExternalFiles(payload.external,store.budget.maxArtifactBytes);
+        result=store.withCoordinationLease(()=>{
+          actor.check();
+          const existing=port.artifactOperation(owner,input.operationId!);
+          if(existing){
+            if(existing.status!=='published'||existing.references.some(item=>item.status!=='published'))throw requestError('Artifact publication is unresolved or was released. Inspect its durable operation before another import.','LOOPS_ARTIFACT_UNCERTAIN');
+            if(existing.references.some(item=>item.reference.runId!==`import-${input.operationId}`||item.reference.nodeId!=='upload'))throw requestError('Artifact operationId belongs to a different publication route.','LOOPS_ARTIFACT_CONFLICT');
+            const expected=store.verifyImport(payload.bundle,external).map(item=>JSON.stringify(item)).sort();
+            const actual=existing.references.map(item=>JSON.stringify({sha256:item.reference.sha256,bytes:item.reference.bytes,mediaType:item.reference.mediaType})).sort();
+            if(JSON.stringify(expected)!==JSON.stringify(actual))throw requestError('Artifact operationId already belongs to a different bundle.','LOOPS_ARTIFACT_CONFLICT');
+            return existing.references.map(item=>this.assertArtifactReference(owner,item.reference as Json));
+          }
+          return store.importCoordinated(owner,{runId:`import-${input.operationId}`,nodeId:'upload'},payload.bundle,external,this.artifactCoordination(owner,input.operationId!)).sort((a,b)=>a.id.localeCompare(b.id));
+        });break;
+      }
+      case 'list':result=store.withCoordinationLease(()=>{
+        actor.check();const page=port.artifactRecoveryInventory(owner,input.cursor,input.limit);
+        const readback=this.artifactReadback(owner,page.items);
+        if(readback.some((item,index)=>item.status!=='published'||canonical(item.reference)!==canonical(page.items[index])))throw requestError('Artifact metadata differs from plugin-owned custody.','LOOPS_ARTIFACT_CORRUPT');
+        return {...page,items:page.items.map(reference=>({reference,...port.artifactReferenceStatus(owner,reference.id)}))};
+      });break;
+      case 'metadata':result=store.withCoordinationLease(()=>{
+        actor.check();if(!input.artifactId)throw requestError('Artifact metadata requires artifactId.','LOOPS_ARTIFACT_PAGE');
+        const status=port.artifactReferenceStatus(owner,input.artifactId);
+        if(!status||!['published','released'].includes(status.status))throw requestError('Artifact metadata was not found.','LOOPS_ARTIFACT_NOT_FOUND');
+        const inventory=this.cleanupReadback(owner),reference=inventory.references.find(ref=>ref.id===input.artifactId);
+        if(!reference)throw requestError('Artifact metadata was not found.','LOOPS_ARTIFACT_NOT_FOUND');
+        const readback=inventory.readback.find(item=>item.id===reference.id);
+        if(readback?.status!=='published'||canonical(readback.reference)!==canonical(reference))throw requestError('Artifact custody does not match its published metadata.','LOOPS_ARTIFACT_CORRUPT');
+        return {reference,...status};
+      });break;
+      case 'page':result=store.withCoordinationLease(()=>{
+        if(!input.artifactId)throw requestError('Artifact page requires artifactId.','LOOPS_ARTIFACT_PAGE');
+        const published=this.publishedArtifactReference(owner,input.artifactId);
+        const page=store.readPage(owner,input.artifactId,input.offset,input.limit);
+        if(canonical(published)!==canonical(page.reference))throw requestError('Artifact page metadata changed.','LOOPS_ARTIFACT_CORRUPT');
+        return {reference:page.reference,offset:page.offset,dataBase64:Buffer.from(page.bytes).toString('base64'),nextOffset:page.nextOffset};
+      });break;
+      case 'export':result=store.withCoordinationLease(()=>{for(const selection of input.selections??[])this.publishedArtifactReference(owner,selection.id);return store.export(owner,input.selections??[]);});break;
+      case 'release-unused':{
+        if(!input.artifactId||!input.operationId)throw requestError('Release requires the exact captured artifact and operation IDs.','LOOPS_ARTIFACT_OPERATION');
+        result=store.withCoordinationLease(()=>{
+          actor.check();const status=port.artifactReferenceStatus(owner,input.artifactId!);
+          if(!status||status.operationId!==input.operationId)throw requestError('Artifact release identity does not match current owner custody.','LOOPS_ARTIFACT_NOT_FOUND');
+          if(status.status==='published'){
+            const reference=this.publishedArtifactReference(owner,input.artifactId!);
+            if(![`capture-${input.operationId}`,`import-${input.operationId}`].includes(reference.runId)||reference.nodeId!=='upload')throw requestError('Only standalone public captures or imports may be released before linking.','LOOPS_ARTIFACT_RELEASE_DENIED');
+            const readback=store.inspectRecovery(owner,[reference.id])[0];
+            if(readback.status!=='published'||canonical(readback.reference)!==canonical(reference))throw requestError('Artifact custody is uncertain; release is blocked.','LOOPS_ARTIFACT_UNCERTAIN');
+          }
+          return port.artifactReleaseUnlinked(owner,input.artifactId!,input.operationId!);
+        });break;
+      }
+      case 'cleanup-preview':{
+        if(!input.policy)throw requestError('Artifact cleanup requires a policy.','LOOPS_ARTIFACT_RETENTION');
+        result=store.previewCleanupCoordinated(owner,input.policy,()=>port.artifactProtectedSnapshot(owner));break;
+      }
+      case 'cleanup-apply':{
+        if(!input.policy||!input.planId)throw requestError('Artifact cleanup requires an exact preview plan and policy.','LOOPS_ARTIFACT_RETENTION');
+        result=store.withCoordinationLease(()=>{
+          actor.check();const plan=store.previewCleanupCoordinated(owner,input.policy!,()=>port.artifactProtectedSnapshot(owner));
+          if(plan.planId!==input.planId)throw requestError('Artifact cleanup changed since preview.','LOOPS_ARTIFACT_CLEANUP_CONFLICT');
+          if(plan.candidates.length===0)return {...plan,removed:0};
+          const token=randomUUID();
+          return store.applyCleanupCoordinated(owner,input.policy!,input.planId!,{begin:()=>port.artifactBeginCleanup(owner,token,plan),finish:receipt=>port.artifactFinishCleanup(owner,token,receipt)});
+        });break;
+      }
+      case 'publication-inspect':case 'publication-recover':{
+        if(!input.operationId)throw requestError('Artifact publication recovery requires operationId.','LOOPS_ARTIFACT_RECOVERY');
+        result=store.withCoordinationLease(()=>{
+          actor.check();const operation=port.artifactOperation(owner,input.operationId!);
+          if(!operation)throw requestError('Artifact operation was not found in this owner scope.','LOOPS_ARTIFACT_NOT_FOUND');
+          const readback=this.artifactReadback(owner,operation.references.map(item=>item.reference));
+          if(input.action==='publication-inspect')return {operation,readback};
+          if(!input.recoveryId)throw requestError('Explicit publication recovery requires a unique recoveryId.','LOOPS_ARTIFACT_RECOVERY');
+          return port.artifactRecoverPublication(owner,input.operationId!,readback,input.recoveryId);
+        });break;
+      }
+      case 'cleanup-inspect':case 'cleanup-recover':{
+        result=store.withCoordinationLease(()=>{
+          actor.check();const lease=port.artifactCleanupLease(owner);
+          if(!lease){
+            if(input.action==='cleanup-recover'&&this.artifactRecoveryOnly){
+              if(!input.recoveryId)throw requestError('Explicit cleanup recovery requires a unique recoveryId.','LOOPS_ARTIFACT_RECOVERY');
+              const receipt=port.artifactRecoveryReceipt(owner,input.recoveryId);
+              if(!receipt||receipt.targetType!=='cleanup')throw requestError('No owner-scoped cleanup recovery receipt matches recoveryId.','LOOPS_ARTIFACT_RECOVERY');
+              return {lease:null,recoveryReceipt:receipt};
+            }
+            return {lease:null};
+          }
+          const inventory=this.cleanupReadback(owner);
+          if(input.action==='cleanup-inspect')return {lease,...inventory};
+          if(!input.recoveryId)throw requestError('Explicit cleanup recovery requires a unique recoveryId.','LOOPS_ARTIFACT_RECOVERY');
+          return port.artifactRecoverCleanup(owner,lease.token,inventory.readback,input.recoveryId);
+        });break;
+      }
+    }
+    if(input.action==='cleanup-recover')this.finishArtifactStartupRecovery();
+    actor.check();return {kind:'loops-artifact-result' as const,action:input.action,result};
   }
   documentWrap(actor:Actor,value:unknown,links:DocumentLinks={...emptyDocumentLinks(),unknown:true}){return this.documentStore(actor).wrap(actor,value,links);}
   documentSnapshot(actor:Actor,value:unknown,links:DocumentLinks={...emptyDocumentLinks(),unknown:true}){return this.documentStore(actor).snapshot(actor,value,links);}
@@ -441,6 +658,7 @@ export class Engine{
     }
     const definition=draft??this.describe(actor,slug);const issues=this.validate(actor,definition).issues;if(issues.length)throw requestError(issues.map(i=>i.message).join(' '));
     const checkedInput=validateInput(definition,input,this.budgets),agentModels=this.pinAgentModels(actor,definition);
+    for(const field of definition.inputSchema)if(field.type==='artifact'&&checkedInput[field.name]&&typeof checkedInput[field.name]==='object'&&!Array.isArray(checkedInput[field.name])&&(checkedInput[field.name] as Record<string,Json>).kind==='loops-artifact')this.assertArtifactReference({agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},checkedInput[field.name]);
     const run:Run={id:randomUUID(),requestKey,requestFingerprint:fingerprint,requestFingerprintVersion:2,owner:{agentId:actor.agentId,sessionKey:actor.sessionKey,sessionId:actor.sessionId},source:actor.source,...actor.requester?{requester:actor.requester}:{},definition,executionSettings:{...actor.model?{model:actor.model}:{},...actor.reasoning?{reasoning:actor.reasoning}:{},...actor.authProfileId?{authProfileId:actor.authProfileId}:{},...Object.keys(agentModels).length?{agentModels}:{}},input:checkedInput,...definition.schemaVersion===3?{context:initialContext(checkedInput)}:{},state:'running',cursor:definition.nodes.find(n=>n.kind==='input')!.id,outputs:{},trace:[],executions:0,activeMs:0,createdAt:now(),updatedAt:now()};
     if(draft)run.testMode=true;else run.grantGeneration=this.state.loops[definition.id].grantGeneration??legacyGrantGeneration;
     if(!draft)this.issueMemoryWriteGrant(actor,run);
@@ -487,7 +705,7 @@ export class Engine{
     this.closing=true;this.clearQueued();
     try{
       for(const [id,active] of this.active){const r=this.cachedState.runs[id];r.state='interrupted';r.error='Gateway service stopped during execution.';r.uncertainty='A dispatched host call may have completed.';active.controller.abort(new Error(r.error));}
-      if(!this.storageFailure)this.persist();
+      if(!this.storageFailure&&!this.artifactRecoveryOnly&&!(this.storage as Partial<SqliteStorage>).artifactHasGcLease?.())this.persist();
     }finally{
       await Promise.allSettled([...this.active.values()].map(x=>x.promise));
       await this.storage.close?.();
@@ -576,6 +794,7 @@ export class Engine{
   private async pump(actor:Actor,r:Run,signal:AbortSignal):Promise<Run>{
     const ctx:BindingContext={input:r.input,nodes:r.outputs};
     let pendingMemoryMutationId:string|undefined;
+    let pendingArtifactOperationId:string|undefined;
     const assertBudget=(context:ContextState|undefined,outputs:Record<string,Json>)=>{
       if(!context)return;
       const limit=this.budgets.inputBytes+r.definition.limits.maxOutputBytes;
@@ -603,10 +822,12 @@ export class Engine{
         finish:(sequence,output)=>this.finish(r,r.trace[sequence],output),setOutput:(id,output)=>{assertBudget(r.context,{...r.outputs,[id]:output});r.outputs[id]=output;},validateOutput,commitContext,
         lifecycle:node=>this.lifecycle(actor,r,node,contextFor(node),signal,assertBudget),
         memory:node=>this.memoryNode(actor,r,node,contextFor(node),signal,evidence.memoryMutationId!),
+        artifact:node=>this.artifactNode(actor,r,node,contextFor(node),signal,evidence.artifactOperationId!),
       };
       const dispatched=nodeContract(n.kind).execute(n,execution);
       const outcome=dispatched instanceof Promise?await dispatched:dispatched;
       if(n.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(n.memory.operation))pendingMemoryMutationId=evidence.memoryMutationId;
+      if(n.kind==='artifact'&&evidence.artifactOperationId&&this.artifactPort().artifactOperation(r.owner,evidence.artifactOperationId))pendingArtifactOperationId=evidence.artifactOperationId;
       const result=outcome.park?outcome.output:validateOutput(n,outcome.output),port=outcome.port??'next';
       if(outcome.route){const route=outcome.route,identity={port:route.port,...route.caseId?{caseId:route.caseId}:{}};if(route.available){const observed=textPage(display(route.observed),0,512);evidence.route={...identity,available:true,observed:observed.text,...observed.nextOffset===null?{}:{truncated:true}};}else evidence.route={...identity,available:false};}
       if(outcome.park){
@@ -629,18 +850,38 @@ export class Engine{
       if(r.state==='running')r.cursor=this.next(r,n.id,port);
       this.checkpoint(r);
       pendingMemoryMutationId=undefined;
+      pendingArtifactOperationId=undefined;
     }}catch(error){
       delete r.pending;delete r.result;
       if(r.state!=='cancelled'&&r.state!=='interrupted'){r.state='failed';r.errorDetail=errorDetail(error,{phase:'execution',nodeId:r.trace.findLast(t=>t.state==='running')?.nodeId,model:actor.model});r.error=r.errorDetail.message;}
       const uncertainMutationId=pendingMemoryMutationId??(error instanceof LoopError&&error.code==='LOOPS_MEMORY_UNCERTAIN'?r.trace.findLast(t=>t.kind==='memory'&&t.state==='running')?.memoryMutationId:undefined);
       if(uncertainMutationId)r.uncertainty=`Memory mutation ${uncertainMutationId} may have committed. Inspect its mutation receipt and key before explicit recovery; the effect will not replay automatically.`;
+      const uncertainArtifactId=pendingArtifactOperationId??(error instanceof LoopError&&error.code==='LOOPS_ARTIFACT_UNCERTAIN'?r.trace.findLast(t=>t.kind==='artifact'&&t.state==='running')?.artifactOperationId:undefined);
+      if(uncertainArtifactId)r.uncertainty=`Artifact operation ${uncertainArtifactId} may have published. Inspect its exact durable reservation and bytes before explicit recovery; this effect will not replay automatically.`;
       if(signal.aborted&&!r.uncertainty)r.uncertainty='A dispatched host call may have completed; this run will not replay it.';
       for(const t of r.trace)if(t.state==='running'){t.state=r.state==='cancelled'?'cancelled':r.state==='interrupted'?'interrupted':'failed';t.error=r.error??'Cancelled';t.endedAt=now();}
       this.checkpoint(r);
     }
     return r;
   }
-  private begin(r:Run,n:GraphNode,iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const memoryEffect=n.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(n.memory.operation);const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{},...memoryEffect?{memoryMutationId:hash(`${r.id}:${r.trace.length}:${n.id}`)}:{}};r.trace.push(e);this.checkpoint(r);return e;}
+  private begin(r:Run,n:GraphNode,iteration?:number){if(r.executions>=r.definition.limits.maxExecutions)throw executionError('Total node-execution budget exhausted.','LOOPS_BUDGET_EXHAUSTED');r.executions++;const memoryEffect=n.kind==='memory'&&['write','update','forget','retention-apply','reset-apply'].includes(n.memory.operation);const artifactEffect=n.kind==='artifact';const e:NodeEvidence={nodeId:n.id,kind:n.kind,state:'running',startedAt:now(),...iteration?{iteration}:{},...memoryEffect?{memoryMutationId:hash(`${r.id}:${r.trace.length}:${n.id}`)}:{},...artifactEffect?{artifactOperationId:hash(`artifact:${r.id}:${r.trace.length}:${n.id}`)}:{}};r.trace.push(e);this.checkpoint(r);return e;}
+  private artifactNode(actor:Actor,r:Run,node:Extract<GraphNode,{kind:'artifact'}>,ctx:BindingContext,signal:AbortSignal,operationId:string):Json{
+    signal.throwIfAborted();this.allowedRun(actor,r);
+    const owner=r.owner,store=this.artifactStore(),where={runId:r.id,nodeId:node.id},coordination=this.artifactCoordination(owner,operationId);
+    if(node.artifact.operation==='capture'){
+      const value=bind(node.artifact.value,ctx);
+      if(value&&typeof value==='object'&&!Array.isArray(value)&&value.kind==='loops-artifact')return {reference:this.assertArtifactReference(owner,value)} as Json;
+      if(r.testMode)throw requestError('Artifact publication requires a saved, enabled loop revision.','LOOPS_ARTIFACT_DISABLED');
+      const {bytes,mediaType}=decodeFileInput(value,store.budget.maxArtifactBytes);
+      const reference=store.putCoordinated(owner,where,bytes,mediaType,coordination,node.artifact.retentionDays);
+      return {reference} as Json;
+    }
+    if(r.testMode)throw requestError('Artifact import requires a saved, enabled loop revision.','LOOPS_ARTIFACT_DISABLED');
+    const bundle=bind(node.artifact.bundle,ctx) as unknown as ArtifactBundle;
+    const external=node.artifact.external===undefined?undefined:bind(node.artifact.external,ctx);
+    const references=store.importCoordinated(owner,where,bundle,decodeExternalFiles(external,store.budget.maxArtifactBytes),coordination,node.artifact.retentionDays);
+    return {references} as Json;
+  }
   private memoryCore(r:Run){
     const repository=this.storage as Storage&Partial<MemoryRepository>;
     if(!repository.get||!repository.page||!repository.mutation||!repository.commit||!repository.commitBatch)throw requestError('Plugin-owned memory storage is unavailable.','LOOPS_MEMORY_STORAGE_UNAVAILABLE');

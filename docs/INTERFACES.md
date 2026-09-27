@@ -36,6 +36,7 @@ under R19–R23; calling an action handler alone is not browser evidence.
 | Shared operation | Agent tool | Behavior to verify |
 |---|---|---|
 | `browse` | `loops_browse` | Search active/runnable/recoverable definitions; follow stable cursors. |
+| `artifact` | `loops_artifact` | Capture, page, export, import and explicitly release owner-scoped binary references; inspect or reconcile uncertain publication and cleanup without replay. |
 | `library` | `loops_library` | Read saved definitions including disabled drafts. |
 | `list` | `loops_list` | Discover authorized enabled publications. |
 | `load` | `loops_read` | Read the complete current definition and publication record. `/loops read` is an alias. |

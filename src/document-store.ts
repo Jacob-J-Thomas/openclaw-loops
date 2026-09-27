@@ -3,7 +3,7 @@ import {mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, readdirSync,
 import {join} from 'node:path';
 import {Value} from 'typebox/value';
 import type {Actor} from './engine.js';
-import {fitsFeatureJson, textPage} from './feature-json.js';
+import {featureJsonLimits,fitsFeatureJson, fitTextPage, textPage} from './feature-json.js';
 import type {DocumentReference, UploadReference} from './wire-contract.js';
 import {LoopError, requestError, storageError} from './errors.js';
 import {uploadChunkCharacters, uploadEncodedLength, type UploadChunkInput} from './upload-input.js';
@@ -122,7 +122,13 @@ export class DocumentStore {
       document.lifecycle.legacyReader = true; document.lifecycle.updatedAt = new Date().toISOString();
       this.write(`document-${id}.json`, document, scope(actor));
     }
-    return {documentId: id, sha256: document.sha256, ...textPage(document.text, offset, limit)};
+    // The host permits larger ASCII pages than worst-case escaped Unicode.
+    // Fit the actual page inside its public JSON envelope before returning it.
+    const page=textPage(document.text,offset,limit,60000);
+    return {documentId:id,sha256:document.sha256,...fitTextPage(page,candidate=>{
+      const wrapped={ok:true,result:{documentId:id,sha256:document.sha256,...candidate}};
+      return fitsFeatureJson(wrapped)&&Buffer.byteLength(JSON.stringify(wrapped))<=featureJsonLimits.bytes-1024;
+    })};
   }
   acquire(actor: Actor, id: string) {
     const document = this.document(actor, id);

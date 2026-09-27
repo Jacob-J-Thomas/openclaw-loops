@@ -9,6 +9,7 @@ import {validateLifecycle} from './context-lifecycle.js';
 import {MemoryPolicySchema,MemorySchemasSchema,validateMemoryDefinition,type MemorySchemaEntry} from './memory-definition.js';
 import {validateMemoryNode} from './memory-node.js';
 import type {MemoryPolicy} from './memory-policy.js';
+import {decodeFileInput} from './artifact-node.js';
 import {isJson,literalValue,type NodeValue} from './node-values.js';
 import {evaluatorConfigurationIssue} from './evaluation-authoring.js';
 import {dataSchemaIssues,validateDataValue} from './data-schema.js';
@@ -16,7 +17,7 @@ export {isJson} from './node-values.js';
 export {NodeSchema,PredicateSchema,type GraphNode,type Predicate,type Json} from './node-contracts.js';
 const obj={additionalProperties:false} as const;
 const flatInputFieldSchema=Type.Object({name:key,label:Type.String({minLength:1,maxLength:100}),type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json')]),required:Type.Boolean()},obj);
-const recursiveInputFieldSchema=Type.Object({...flatInputFieldSchema.properties,schema:Type.Optional(Type.Unknown())},obj);
+const recursiveInputFieldSchema=Type.Object({...flatInputFieldSchema.properties,type:Type.Union([Type.Literal('text'),Type.Literal('number'),Type.Literal('boolean'),Type.Literal('json'),Type.Literal('artifact')]),schema:Type.Optional(Type.Unknown())},obj);
 export const DefinitionFields = {
   schemaVersion:Type.Union([Type.Literal(1),Type.Literal(2),Type.Literal(3)]), id:key, slug:key, name:Type.String({minLength:1,maxLength:100}),
   description:Type.String({maxLength:500}), revision:Type.Integer({minimum:0}),
@@ -96,7 +97,9 @@ export function validateGraph(d:Definition):Issue[] {
     }catch(cause){error(cause instanceof Error?cause.message:'Invalid context configuration.',node.id);}
   }
   if(new Set(d.inputSchema.map(f=>f.name)).size!==d.inputSchema.length)error('Input names must be unique.');
-  for(const field of d.inputSchema)if(field.schema!==undefined){
+  for(const field of d.inputSchema){
+    if(field.type==='artifact'&&d.schemaVersion!==3)error('Artifact inputs require schemaVersion 3.');
+    if(field.schema===undefined)continue;
     if(d.schemaVersion!==3)error('Recursive input schemas require schemaVersion 3.');
     if(field.type!=='json')error(`Input ${field.name} uses a recursive schema and must have Structured JSON type.`);
     for(const diagnostic of dataSchemaIssues(field.schema))error(`Input schema ${field.name}${diagnostic.instancePath||'/'}: ${diagnostic.message}`);
@@ -187,7 +190,10 @@ export function validateInput(d:Definition,value:unknown,budgets:Budgets=default
   if(!value||typeof value!=='object'||Array.isArray(value)||new TextEncoder().encode(JSON.stringify(value)).byteLength>budget)throw requestError(`Input must be a JSON object of at most ${budget===16000?'16 KB':`${budget} bytes`}.`);
   const input=value as Record<string,Json>;
   for(const k of Object.keys(input))if(!d.inputSchema.some(f=>f.name===k))throw requestError(`Unexpected input: ${k}`);
-  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='json'){if(d.schemaVersion===1||v===undefined||!isJson(v))throw requestError(`Input ${f.name} must be valid JSON in a version 2 or 3 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw requestError(`Input ${f.name} must be ${f.type}.`);if(f.schema!==undefined){const diagnostics=validateDataValue(f.schema,v);if(diagnostics.length)throw requestError(`Input ${f.name}${diagnostics[0].instancePath||'/'}: ${diagnostics[0].message}`,'LOOPS_INPUT_SCHEMA_INVALID','Correct the value at the reported JSON Pointer, then explicitly start a new run.');}}
+  for(const f of d.inputSchema){const v=input[f.name];if(v===undefined&&!f.required)continue;if(f.type==='artifact'){
+    if(d.schemaVersion!==3||v===undefined)throw requestError(`Input ${f.name} requires a version 3 artifact value.`);
+    if(!v||typeof v!=='object'||Array.isArray(v)||v.kind!=='loops-artifact')decodeFileInput(v,budget);
+  }else if(f.type==='json'){if(d.schemaVersion===1||v===undefined||!isJson(v))throw requestError(`Input ${f.name} must be valid JSON in a version 2 or 3 definition.`);}else if(typeof v!==(f.type==='text'?'string':f.type)||typeof v==='number'&&!Number.isFinite(v))throw requestError(`Input ${f.name} must be ${f.type}.`);if(f.schema!==undefined){const diagnostics=validateDataValue(f.schema,v);if(diagnostics.length)throw requestError(`Input ${f.name}${diagnostics[0].instancePath||'/'}: ${diagnostics[0].message}`,'LOOPS_INPUT_SCHEMA_INVALID','Correct the value at the reported JSON Pointer, then explicitly start a new run.');}}
   return structuredClone(input);
 }
 export type BindingContext={input:Record<string,Json>;nodes:Record<string,Json>;context?:Record<string,Json>;repeat?:{index:number}};

@@ -15,6 +15,7 @@ beforeAll(async()=>{
   bundleDirectory=mkdtempSync(join(tmpdir(),'loops-storage-code-'));
   await build({entryPoints:['src/storage.ts'],outfile:join(bundleDirectory,'storage.mjs'),bundle:true,platform:'node',format:'esm',target:'node24'});
   copyFileSync('src/storage-worker.mjs',join(bundleDirectory,'storage-worker.mjs'));
+  copyFileSync('src/artifact-storage-worker.mjs',join(bundleDirectory,'artifact-storage-worker.mjs'));
 });
 afterEach(async()=>{for(const cleanup of cleanups.splice(0).reverse())await cleanup();});
 afterAll(()=>rmSync(bundleDirectory,{recursive:true,force:true}));

@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {writeFileSync} from 'node:fs';
 import type {DocumentReference} from '../src/wire-contract.js';
@@ -14,6 +14,9 @@ import type {EngineService} from '../src/engine-service.js';
 import type {Actor,HostCapabilities,Run} from '../src/engine.js';
 import {examples} from '../src/examples.js';
 import {requestError} from '../src/errors.js';
+import {SqliteStorage} from '../src/storage.js';
+import {ArtifactCustody} from '../src/artifact-custody.js';
+import {Engine} from '../src/engine.js';
 
 const buildDir=mkdtempSync(join(tmpdir(),'loops-service-build-'));
 let Service:typeof EngineService;
@@ -21,6 +24,7 @@ beforeAll(async()=>{
   await build({entryPoints:['src/engine-service.ts'],outfile:join(buildDir,'src/engine-service.mjs'),bundle:true,platform:'node',format:'esm'});
   await build({entryPoints:['src/engine-service-worker.ts'],outfile:join(buildDir,'dist/engine-service-worker.js'),bundle:true,platform:'node',format:'esm'});
   copyFileSync('src/storage-worker.mjs',join(buildDir,'dist/storage-worker.mjs'));
+  copyFileSync('src/artifact-storage-worker.mjs',join(buildDir,'dist/artifact-storage-worker.mjs'));
   Service=(await import(/* @vite-ignore */ pathToFileURL(join(buildDir,'src/engine-service.mjs')).href)).EngineService;
 },30_000);
 afterAll(()=>rmSync(buildDir,{recursive:true,force:true}));
@@ -51,6 +55,37 @@ async function blockWriter(file:string,duration=350){
 const references=(service:EngineService)=>(service as unknown as {actors:Map<string,unknown>}).actors.size;
 
 describe('asynchronous committed-state service (real SQLite, synthetic host)',()=>{
+  it('starts a retained-GC store in recovery-only mode and fences public work until the run checkpoint commits',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-service-gc-recovery-'));dirs.push(root);
+    const file=join(root,'loops.sqlite'),store=new SqliteStorage(file),custody=new ArtifactCustody(join(root,'artifacts'));
+    const owner=actor(),scope={agentId:owner.agentId,sessionKey:owner.sessionKey,sessionId:owner.sessionId};
+    store.write({version:1,loops:{},runs:{}});
+    const initial=new Engine(store,{check:()=>{},modelInfo:async()=>({}),complete:async()=>({text:'fixture'})});
+    const saved=await initial.test(owner,examples[0],{text:'gc recovery'},'gc-recovery-run');
+    const at=Date.parse('2026-09-24T00:00:00.000Z');
+    const ref=custody.put(scope,{runId:saved.id,nodeId:'fixture'},Uint8Array.of(4),'application/octet-stream',0,at);
+    store.artifactReserve(scope,[ref],'gc-recovery-publication');store.artifactPublished(scope,[ref],'gc-recovery-publication');
+    store.writeRun({...saved,outputs:{...saved.outputs,fixture:ref}});
+    const plan=custody.previewCleanupCoordinated(scope,{olderThanDays:0},()=>store.artifactProtectedSnapshot(scope),at+1000);
+    const token=randomUUID();store.artifactBeginCleanup(scope,token,plan);
+    await store.close();
+    const {service,complete}=setup({file});await service.ready;
+    await expect(service.invoke('status',owner,saved.id)).rejects.toMatchObject({code:'LOOPS_ARTIFACT_RECOVERY_REQUIRED',detail:{recovery:expect.stringMatching(/cleanup-inspect.*cleanup-recover/i)}});
+    await expect(service.invoke('test',owner,examples[0],{text:'blocked'},'blocked-gc-run')).rejects.toMatchObject({code:'LOOPS_ARTIFACT_RECOVERY_REQUIRED'});
+    expect(complete).not.toHaveBeenCalled();
+    expect(await service.invoke('artifact',owner,{action:'cleanup-inspect'})).toMatchObject({result:{lease:{token}}});
+    const wrapped=await service.invoke('documentWrap',owner,{receipt:'x'.repeat(80_000)}) as DocumentReference;
+    expect(wrapped).toMatchObject({kind:'loops-document'});
+    const acquired=await service.invoke('documentAcquire',owner,wrapped.documentId);
+    expect(await service.invoke('documentRead',owner,wrapped.documentId,0,1024,acquired.readerId)).toMatchObject({documentId:wrapped.documentId,nextOffset:1024});
+    await service.invoke('documentRelease',owner,wrapped.documentId,acquired.readerId);
+    const recovered=await service.invoke('artifact',owner,{action:'cleanup-recover',recoveryId:randomUUID()});
+    expect(recovered).toMatchObject({result:{outcome:'aborted'}});
+    const after=new DatabaseSync(file,{readOnly:true});
+    try{expect(after.prepare('SELECT count(*) AS count FROM artifact_gc').get()).toEqual({count:0});}
+    finally{after.close();}
+    expect((await service.invoke('status',owner,saved.id)).state).toBe('completed');
+  });
   it('joins native run work through physical settlement while the UI path retains its running handle',async()=>{
     let entered!:()=>void,finish!:()=>void;
     const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});

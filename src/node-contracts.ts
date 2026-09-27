@@ -9,6 +9,7 @@ import {SwitchSchema,TypedConditionNodeSchema,evaluateSwitch,evaluateTypedCondit
 import type {ContextState} from './context.js';
 import {ContextLifecycleSchema} from './context-lifecycle.js';
 import {MemoryNodeConfigSchema,type MemoryNodeConfig} from './memory-node.js';
+import {ArtifactNodeConfigSchema,type ArtifactNodeConfig} from './artifact-node.js';
 export type {Json,NodeValue} from './node-values.js';
 
 export const identifierSchema=Type.String({pattern:'^(?!(?:constructor|prototype)$)[a-z][a-z0-9_-]{0,47}$'});
@@ -46,7 +47,9 @@ const lifecycleSchema=Type.Object({...identity,kind:Type.Literal('context-lifecy
 type LifecycleNode=Static<typeof lifecycleSchema>&{context?:ContextNodeConfig;outputSchema?:DataSchema};
 const memorySchema=Type.Object({...identity,kind:Type.Literal('memory'),memory:MemoryNodeConfigSchema},strict);
 type MemoryNode={id:string;kind:'memory';label:string;memory:MemoryNodeConfig;context?:ContextNodeConfig;outputSchema?:DataSchema};
-export type GraphNode=BaseGraphNode|EvaluateNode|GateNode|LifecycleNode|MemoryNode|(TypedConditionNode&{context?:ContextNodeConfig;outputSchema?:DataSchema})|(SwitchNode&{context?:ContextNodeConfig;outputSchema?:DataSchema});
+const artifactSchema=Type.Object({...identity,kind:Type.Literal('artifact'),artifact:ArtifactNodeConfigSchema},strict);
+type ArtifactNode={id:string;kind:'artifact';label:string;artifact:ArtifactNodeConfig;context?:ContextNodeConfig;outputSchema?:DataSchema};
+export type GraphNode=BaseGraphNode|EvaluateNode|GateNode|LifecycleNode|MemoryNode|ArtifactNode|(TypedConditionNode&{context?:ContextNodeConfig;outputSchema?:DataSchema})|(SwitchNode&{context?:ContextNodeConfig;outputSchema?:DataSchema});
 const contextExtension=Type.Object({context:Type.Optional(ContextNodeConfigSchema)},strict);
 const withContext=(schema:{properties:Record<string,TSchema>})=>Type.Object({...schema.properties,...outputExtension,...contextExtension.properties},strict);
 const evaluatorSchema=Type.Union([
@@ -64,7 +67,8 @@ const contextSwitchSchema=withContext(SwitchSchema);
 const contextRepeatSchema=Type.Object({...identity,...outputExtension,kind:Type.Literal('repeat'),maxIterations:Type.Integer({minimum:1}),body:Type.Tuple([contextSchemas.inference,contextSchemas.condition]),...contextExtension.properties},strict);
 const contextLifecycleSchema=withContext(lifecycleSchema);
 const contextMemorySchema=withContext(memorySchema);
-export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextTypedConditionSchema,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail,contextSwitchSchema,evaluateSchema,gateSchema,contextLifecycleSchema,contextMemorySchema]));
+const contextArtifactSchema=withContext(artifactSchema);
+export const ContextNodeSchema=Type.Unsafe<GraphNode>(Type.Union([contextSchemas.input,contextSchemas.inference,contextSchemas.action,contextSchemas.condition,contextTypedConditionSchema,contextRepeatSchema,contextSchemas.wait,contextSchemas.review,contextSchemas.return,contextSchemas.fail,contextSwitchSchema,evaluateSchema,gateSchema,contextLifecycleSchema,contextMemorySchema,contextArtifactSchema]));
 export type Predicate=Static<typeof PredicateSchema>;
 export type NodeKind=GraphNode['kind'];
 export type NodeOf<K extends NodeKind>=Extract<GraphNode,{kind:K}>;
@@ -90,6 +94,7 @@ export type NodeExecutionContext={
   commitContext:(node:GraphNode,output:Json)=>void;
   lifecycle:(node:Extract<GraphNode,{kind:'context-lifecycle'}>)=>Promise<{output:Json;context:ContextState}>;
   memory:(node:Extract<GraphNode,{kind:'memory'}>)=>Json;
+  artifact:(node:Extract<GraphNode,{kind:'artifact'}>)=>Json;
 };
 type NodeContract<K extends NodeKind=NodeKind>={
   schema:TSchema;
@@ -128,6 +133,9 @@ export const nodeContracts:{[K in NodeKind]:NodeContract<K>}={
   memory:{schema:memorySchema,ports:['next'],capabilities:[],terminal:false,bindings:node=>[{text:node.memory.key},...node.memory.value===undefined?[]:[{text:node.memory.value}],...node.memory.expectedVersion===undefined?[]:[{text:node.memory.expectedVersion}],...node.memory.plan===undefined?[]:[{text:node.memory.plan}]],outputFields:()=>['key','value','version','deleted','items','nextCursor','total','planId','candidates','receipts','mutationId'],
     execute:(node,context)=>({output:context.memory(node)}),
     editor:{title:'Memory',icon:'MEM',description:node=>node.memory.operation,create:id=>({id,kind:'memory',label:'Memory',memory:{operation:'consume',key:'notes'}})}},
+  artifact:{schema:artifactSchema,ports:['next'],capabilities:[],terminal:false,bindings:node=>node.artifact.operation==='capture'?[{text:node.artifact.value}]:[{text:node.artifact.bundle},...node.artifact.external===undefined?[]:[{text:node.artifact.external}]],outputFields:()=>['reference','references'],
+    execute:(node,context)=>({output:context.artifact(node)}),
+    editor:{title:'Artifact',icon:'FILE',description:node=>node.artifact.operation,create:id=>({id,kind:'artifact',label:'Artifact',artifact:{operation:'capture',value:'{{input.file}}',retentionDays:30}})}},
   condition:{schema:schemas.condition,ports:['true','false'],capabilities:[],terminal:false,bindings:node=>('condition'in node?[{text:node.condition.value},...node.condition.expected?[{text:node.condition.expected}]:[]]:predicateBindings(node.predicate)),outputFields:()=>['value'],
     execute:(node,context)=>{if('condition'in node){const evaluated=evaluateTypedCondition(node.condition,value=>context.resolve(value,node));const port=evaluated.passed?'true':'false';return {output:{value:evaluated.passed},port,route:evaluated.available?{port,available:true,observed:evaluated.observed}:{port,available:false}};}const passed=context.compare(node.predicate,node);return {output:{value:passed},port:passed?'true':'false'};},
     editor:{title:'Condition',icon:'IF',description:node=>'condition'in node?node.condition.operator:node.predicate.op,create:id=>({id,kind:'condition',label:'Condition',predicate:{left:'{{input.text}}',op:'equals',right:'yes'}})}},

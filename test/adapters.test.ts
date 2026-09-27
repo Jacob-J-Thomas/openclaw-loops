@@ -5,7 +5,7 @@ import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {Value} from 'typebox/value';
 import {SqliteStorage} from '../src/storage.js';
 import type {OpenClawPluginApi,OpenClawPluginToolContext,PluginCommandContext,PluginSessionActionRegistration,OpenClawPluginService,OpenClawPluginCommandDefinition} from 'openclaw/plugin-sdk/plugin-entry';
@@ -715,6 +715,7 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await invoke('browse',{search:content.slug,limit:1})).toMatchObject({total:1,nextCursor:null,items:[{id}]});
     expect(await invoke('list')).toEqual(expect.arrayContaining([expect.objectContaining({id})]));
     expect(await invoke('capabilities')).toMatchObject({model:'fake/test-only',parameters:expect.any(Array),concurrency:1});
+    expect(await invoke('artifact',{action:'list'})).toMatchObject({kind:'loops-artifact-result',action:'list',result:{items:[],nextCursor:null}});
     expect(await invoke('validate',{definition:created.record.definition})).toEqual({valid:true,issues:[]});
     const portable=await invoke('package_export',{id}) as {kind:string;formatVersion:number;digest:string};
     expect(portable).toMatchObject({kind:'loops-template-package',formatVersion:1,digest:expect.stringMatching(/^[a-f0-9]{64}$/)});
@@ -1314,8 +1315,43 @@ describe('actual OpenClaw feature SDK adapters (fake model transport)',()=>{
     expect(await s.action('deleted',{})).toMatchObject({result:[]});
   });
   it('shares the started executor with a separate tool registration scope',async()=>{const gateway=await setup();await gateway.action('enable',{id:'summarize-text',revision:1,enabled:true,grants:['llm']});const toolScope=await setup({root:gateway.root,start:false});const r=await toolScope.tools.find(t=>t.name==='loops_run')!.execute('registry-call',{slug:'summarize-text',input:{text:'A'}});expect(r.details).toMatchObject({state:'completed',definition:{revision:1}});expect(gateway.complete).toHaveBeenCalledOnce();expect(toolScope.complete).not.toHaveBeenCalled();});
-  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_memory','loops_output','loops_package_export','loops_package_import','loops_package_preview','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(JSON.parse(readFileSync('openclaw.plugin.json','utf8')).contracts.tools).toEqual(s.tools.map(tool=>tool.name).sort());expect(s.actions.size).toBe(42);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
-
+  it('registers authoring and execution tools with a single command namespace',async()=>{const s=await setup();expect([...s.commands.keys()]).toEqual(['loops']);expect(s.tools.map(t=>t.name).sort()).toEqual(['loops_archive','loops_artifact','loops_browse','loops_cancel','loops_capabilities','loops_create','loops_delete','loops_deleted','loops_describe','loops_document','loops_document_acquire','loops_document_release','loops_draft','loops_edit','loops_enable','loops_history','loops_inspect','loops_library','loops_list','loops_maintenance','loops_memory','loops_output','loops_package_export','loops_package_import','loops_package_preview','loops_publish','loops_read','loops_recover','loops_restore','loops_resume','loops_retention','loops_retry','loops_revoke','loops_run','loops_runs','loops_save','loops_status','loops_test','loops_transport_release','loops_upload','loops_validate','loops_versions']);expect(JSON.parse(readFileSync('openclaw.plugin.json','utf8')).contracts.tools).toEqual(s.tools.map(tool=>tool.name).sort());expect(s.actions.size).toBe(43);expect(s.commands.get('loops')?.agentPromptGuidance?.join(' ')).toContain('loops_library');});
+  it('captures exact bytes through the UI action, pages them through the tool, and releases them through the command',async()=>{
+    const s=await setup(),bytes=Buffer.from([0,255,1,0,128,42,0]),operationId='adapter-artifact-1';
+    const captured=await s.action('artifact',{action:'capture',operationId,data:{dataBase64:bytes.toString('base64'),mediaType:'application/octet-stream'}});
+    const reference=(captured as {result:{result:{id:string;sha256:string;bytes:number}}}).result.result;
+    expect(reference).toMatchObject({bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
+    const page=await toolJson(s,'artifact',{action:'page',artifactId:reference.id,offset:0,limit:3}) as {result:{dataBase64:string;nextOffset:number}};
+    expect(Buffer.from(page.result.dataBase64,'base64')).toEqual(bytes.subarray(0,3));expect(page.result.nextOffset).toBe(3);
+    expect(await commandJson(s,'artifact',{action:'metadata',artifactId:reference.id})).toMatchObject({result:{reference,status:'published'}});
+    expect(await commandJson(s,'artifact',{action:'release-unused',artifactId:reference.id,operationId})).toMatchObject({result:{status:'released'}});
+    const plan=await toolJson(s,'artifact',{action:'cleanup-preview',policy:{olderThanDays:0}}) as {result:{planId:string;candidates:Array<{id:string}>}};
+    expect(plan.result.candidates.map(item=>item.id)).toContain(reference.id);
+    expect(await toolJson(s,'artifact',{action:'cleanup-apply',policy:{olderThanDays:0},planId:plan.result.planId})).toMatchObject({result:{removed:1}});
+  });
+  it('fits an explicitly larger document page to session action, command and tool envelopes',async()=>{
+    const s=await setup(),source=JSON.stringify({payload:'A'.repeat(140_000)});
+    const store=new DocumentStore(join(s.root,'loops-poc','documents'));
+    const reference=store.snapshot({agentId:s.agentId,sessionKey:s.key,sessionId:s.sessionId,source:'tool',human:false,check:()=>{}},{payload:'A'.repeat(140_000)},emptyDocumentLinks());
+    const input={documentId:reference.documentId,readerId:reference.readerId,offset:0,limit:60_000};
+    const ui=(await s.action('document',input)) as {result:{text:string;nextOffset:number|null}};
+    expect(ui.result.text).toBe(source.slice(0,60_000));expect(ui.result.nextOffset).toBe(60_000);expect(fitsFeatureJson(ui.result)).toBe(true);
+    const command=await commandJson(s,'document',input) as {text:string;nextOffset:number|null};
+    const tool=await toolJson(s,'document',input) as {text:string;nextOffset:number|null};
+    for(const page of [command,tool]){expect(page.text.length).toBeGreaterThan(0);expect(page.text.length).toBeLessThan(60_000);expect(page.nextOffset).toBe(page.text.length);expect(source.startsWith(page.text)).toBe(true);}
+  });
+  it('shares public portable import across UI, command and tool routes',async()=>{
+    const s=await setup(),bytes=Buffer.from([0,255,9]),sourceId=randomUUID(),operationId='adapter-import-1';
+    const bundle={format:'loops-artifacts-v1',artifacts:[{sourceId,sha256:createHash('sha256').update(bytes).digest('hex'),mediaType:'application/octet-stream',bytes:bytes.length,sourceRunId:'exported-run',sourceNodeId:'file',mode:'embedded',dataBase64:bytes.toString('base64')}]};
+    const ui=await s.action('artifact',{action:'import',operationId,data:{bundle}}) as {result:{result:Array<{id:string;sha256:string}>}};
+    expect(ui.result.result).toHaveLength(1);
+    const reference=ui.result.result[0];
+    expect(reference.sha256).toBe(bundle.artifacts[0].sha256);
+    expect(await commandJson(s,'artifact',{action:'import',operationId,data:{bundle}})).toMatchObject({result:[reference]});
+    expect(await toolJson(s,'artifact',{action:'import',operationId,data:{bundle}})).toMatchObject({result:[reference]});
+    expect(await toolJson(s,'artifact',{action:'page',artifactId:reference.id,offset:0,limit:3})).toMatchObject({result:{dataBase64:bytes.toString('base64')}});
+    expect(await commandJson(s,'artifact',{action:'release-unused',artifactId:reference.id,operationId})).toMatchObject({result:{status:'released'}});
+  });
   it('reads an authored SQLite memory value through UI, command and tool adapters',async()=>{
     const s=await setup();
     const {id:_id,revision:_revision,...content}=structuredClone(examples[0]);

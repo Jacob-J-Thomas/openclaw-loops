@@ -55,3 +55,43 @@ describe('native document reader lifecycle', () => {
     expect(mismatch.calls).not.toContain('document_release');
   });
 });
+
+describe('binary artifact capture over the bounded feature transport',()=>{
+  it('stages large canonical Base64 JSON in pages and submits only its completed upload reference',async()=>{
+    const bytes=Buffer.alloc(70_000);for(let index=0;index<bytes.length;index++)bytes[index]=index%256;
+    const data={dataBase64:bytes.toString('base64'),mediaType:'application/octet-stream',name:'binary.bin'};
+    const staged=JSON.stringify(data),expectedSha=createHash('sha256').update(staged).digest('hex');
+    let text='',uploads=0,submitted=false;
+    const host={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
+      const operation=params.actionId,input=params.payload as Record<string,unknown>;
+      if(operation==='upload'){
+        uploads++;expect(input.offset).toBe(text.length);expect(String(input.text).length).toBeLessThanOrEqual(16_000);
+        text+=input.text as string;
+        if(input.complete){expect(input.sha256).toBe(expectedSha);expect(text).toBe(staged);return {ok:true,result:{uploadId:input.uploadId,offset:text.length,completed:true,reference:{$loopsUpload:'b'.repeat(64)}}};}
+        return {ok:true,result:{uploadId:input.uploadId,offset:text.length,completed:false}};
+      }
+      expect(operation).toBe('artifact');expect(input.action).toBe('capture');expect(input.data).toEqual({$loopsUpload:'b'.repeat(64)});submitted=true;
+      return {ok:true,result:{kind:'loops-artifact-result',action:'capture',result:{id:'captured'}}};
+    }} as FeatureTransport;
+    const result=await createLoopsClient(host).invoke('artifact',{action:'capture',operationId:'browser-capture',data});
+    expect(result).toMatchObject({result:{id:'captured'}});expect(uploads).toBeGreaterThan(1);expect(submitted).toBe(true);
+  });
+  it('stages a portable import bundle in the shared public artifact data field',async()=>{
+    const bytes=Buffer.alloc(70_000,0x42),sourceId='11111111-1111-4111-8111-111111111111';
+    const data={bundle:{format:'loops-artifacts-v1',artifacts:[{sourceId,sha256:createHash('sha256').update(bytes).digest('hex'),mediaType:'application/octet-stream',bytes:bytes.length,sourceRunId:'exported',sourceNodeId:'file',mode:'embedded',dataBase64:bytes.toString('base64')}]}};
+    const staged=JSON.stringify(data),expectedSha=createHash('sha256').update(staged).digest('hex');
+    let text='',uploads=0,submitted=false;
+    const host={pluginId:'loops-poc',signal:new AbortController().signal,connection:{connected:true},onEvent:()=>()=>{},subscribe:()=>()=>{},request:async(_method:string,params:Record<string,unknown>)=>{
+      const operation=params.actionId,input=params.payload as Record<string,unknown>;
+      if(operation==='upload'){
+        uploads++;expect(input.offset).toBe(text.length);text+=input.text as string;
+        if(input.complete){expect(input.sha256).toBe(expectedSha);expect(text).toBe(staged);return {ok:true,result:{uploadId:input.uploadId,offset:text.length,completed:true,reference:{$loopsUpload:'b'.repeat(64)}}};}
+        return {ok:true,result:{uploadId:input.uploadId,offset:text.length,completed:false}};
+      }
+      expect(operation).toBe('artifact');expect(input).toMatchObject({action:'import',operationId:'browser-import',data:{$loopsUpload:'b'.repeat(64)}});submitted=true;
+      return {ok:true,result:{kind:'loops-artifact-result',action:'import',result:[{id:'imported'}]}};
+    }} as FeatureTransport;
+    expect(await createLoopsClient(host).invoke('artifact',{action:'import',operationId:'browser-import',data})).toMatchObject({result:[{id:'imported'}]});
+    expect(uploads).toBeGreaterThan(1);expect(submitted).toBe(true);
+  });
+});

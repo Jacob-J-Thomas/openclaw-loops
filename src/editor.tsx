@@ -5,6 +5,7 @@ import {createLoopsClient} from './feature-client.js';
 import {examples} from './examples.js';
 import {parseDefinition,ports,validateGraph,type Capability,type Definition,type GraphNode,type Issue,type Predicate,type Json} from './graph.js';
 import type {DataSchema} from './data-schema.js';
+import type {ArtifactReference} from './artifact-custody.js';
 import type {Engine,LoopRecord,Run} from './engine.js';
 import type {RunReceipt} from './receipts.js';
 import {InferenceEditor} from './inference-editor.js';
@@ -19,7 +20,9 @@ import {SwitchEditor,TypedConditionEditor,typedConditionFrom,typedRewriteHint,ha
 import {ContextEditor} from './context-editor.js';
 import {DataSchemaEditor,hasActiveDataSchemaDrafts,inputSchemaScope,outputSchemaScope,moveDataSchemaDrafts,DataSchemaDrafts,type SchemaEdit,type SchemaDraftLocationSnapshot} from './data-schema-editor.js';
 import {ControlledEvaluationEditor,type EvaluationDraft} from './evaluation-editor.js';
-import {RunLauncher,publishedDefinition} from './run-launcher.js';
+import {RunLauncher,captureWithRecoveryId,publishedDefinition,type FileCustodyItem,type FileCustodyPage} from './run-launcher.js';
+import type {FileRelease} from './run-launcher.js';
+import {LoopError} from './errors.js';
 import {RunInspection} from './run-inspection.js';
 import {RunRefreshGate} from './run-refresh.js';
 import {PortablePackageControls} from './portability-ui.js';
@@ -64,12 +67,13 @@ function NodeInspector({node,definition,evaluationDrafts,onEvaluationDraftValidi
     {definition.schemaVersion===2&&<div className="lp-hint"><p>Version 3 enables typed Conditions, Switch routing, and opt-in per-node shared context. Existing runs keep their pinned definition.</p><button onClick={()=>editDefinition({...definition,schemaVersion:3})}>Use version 3 in this draft</button></div>}
     <Field label="Node label"><input value={node.label} onChange={e=>update({...node,label:e.target.value})}/></Field>
     <div className="lp-mono lp-muted">ID · {node.id}</div>
-    {node.kind==='input'&&<><h4>Input fields</h4>{definition.inputSchema.map((f,i)=><div className="lp-input-definition" key={i}><Field label={`Input ${i+1} name`}><input value={f.name} onChange={e=>{editDefinition({...definition,inputSchema:definition.inputSchema.map((x,j)=>i===j?{...x,name:e.target.value}:x)});}}/></Field><Field label="Display label"><input value={f.label} onChange={e=>editDefinition({...definition,inputSchema:definition.inputSchema.map((x,j)=>i===j?{...x,label:e.target.value}:x)})}/></Field><Field label="Value type"><select value={f.type} onChange={e=>editDefinition({...definition,inputSchema:definition.inputSchema.map((x,j)=>i===j?{...x,type:e.target.value as typeof f.type}:x)})}><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option><option value="json">Structured JSON</option></select></Field><label className="lp-check"><input type="checkbox" checked={f.required} onChange={e=>editDefinition({...definition,inputSchema:definition.inputSchema.map((x,j)=>i===j?{...x,required:e.target.checked}:x)})}/>Required</label><DataSchemaEditor label={`Input ${f.name} nested schema`} value={f.schema as DataSchema|undefined} scope={inputSchemaScope(definition.id,schemaDrafts.inputFieldId(i))} drafts={schemaDrafts} onDraftValidityChange={onDataSchemaDraftValidityChange} onChange={(schema,rename)=>editDefinition({...definition,schemaVersion:schema===undefined?definition.schemaVersion:3,inputSchema:definition.inputSchema.map((x,j)=>{if(i!==j)return x;if(schema===undefined){const {schema:_schema,...field}=x;return field;}return {...x,type:'json',schema};})},rename?{rename}:undefined)}/><button className="lp-text-button" onClick={()=>editDefinition({...definition,inputSchema:definition.inputSchema.filter((_,j)=>j!==i)},{removeInputIndex:i})}>Remove field</button></div>)}<button onClick={()=>editDefinition({...definition,inputSchema:[...definition.inputSchema,{name:unique('field'),label:'New field',type:'text',required:true}]})}>+ Add input</button></>}
+    {node.kind==='input'&&<><h4>Input fields</h4>{definition.inputSchema.map((f,i)=><div className="lp-input-definition" key={i}><Field label={`Input ${i+1} name`}><input value={f.name} onChange={e=>{editDefinition({...definition,inputSchema:definition.inputSchema.map((x,j)=>i===j?{...x,name:e.target.value}:x)});}}/></Field><Field label="Display label"><input value={f.label} onChange={e=>editDefinition({...definition,inputSchema:definition.inputSchema.map((x,j)=>i===j?{...x,label:e.target.value}:x)})}/></Field><Field label="Value type"><select value={f.type} onChange={e=>editDefinition({...definition,schemaVersion:e.target.value==='artifact'?3:definition.schemaVersion,inputSchema:definition.inputSchema.map((x,j)=>i===j?e.target.value==='artifact'?(()=>{const {schema:_schema,...field}=x;return {...field,type:'artifact' as const};})():{...x,type:e.target.value as typeof f.type}:x)})}><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option><option value="json">Structured JSON</option><option value="artifact">File artifact</option></select></Field><label className="lp-check"><input type="checkbox" checked={f.required} onChange={e=>editDefinition({...definition,inputSchema:definition.inputSchema.map((x,j)=>i===j?{...x,required:e.target.checked}:x)})}/>Required</label>{f.type!=='artifact'&&<DataSchemaEditor label={`Input ${f.name} nested schema`} value={f.schema as DataSchema|undefined} scope={inputSchemaScope(definition.id,schemaDrafts.inputFieldId(i))} drafts={schemaDrafts} onDraftValidityChange={onDataSchemaDraftValidityChange} onChange={(schema,rename)=>editDefinition({...definition,schemaVersion:schema===undefined?definition.schemaVersion:3,inputSchema:definition.inputSchema.map((x,j)=>{if(i!==j)return x;if(schema===undefined){const {schema:_schema,...field}=x;return field;}return {...x,type:'json',schema};})},rename?{rename}:undefined)}/>}<button className="lp-text-button" onClick={()=>editDefinition({...definition,inputSchema:definition.inputSchema.filter((_,j)=>j!==i)},{removeInputIndex:i})}>Remove field</button></div>)}<button onClick={()=>editDefinition({...definition,inputSchema:[...definition.inputSchema,{name:unique('field'),label:'New field',type:'text',required:true}]})}>+ Add input</button></>}
     {node.kind!=='input'&&<details className="lp-output-schema"><summary>Validate this node’s output</summary><p className="lp-hint">For JSON Inference, the schema checks the parsed generated value. For other nodes it checks the complete output before any checkpoint or context update.</p><DataSchemaEditor label={`${node.label} output schema`} value={node.outputSchema} scope={outputSchemaScope(definition.id,node.id)} drafts={schemaDrafts} onDraftValidityChange={onDataSchemaDraftValidityChange} onChange={(outputSchema,rename)=>{const next=outputSchema===undefined?(()=>{const {outputSchema:_outputSchema,...withoutSchema}=node;return withoutSchema;})():{...node,outputSchema,...node.kind==='inference'?{output:'json' as const}:{}};editDefinition({...definition,schemaVersion:outputSchema===undefined?definition.schemaVersion:3,nodes:definition.nodes.map(candidate=>candidate.id===node.id?next:candidate)},rename?{rename}:undefined);}}/></details>}
     {node.kind==='inference'&&<><ValueEditor label="Prompt" rows={8} value={node.prompt} literals={literals} onChange={prompt=>update({...node,prompt})}/><Field label="Output format"><select value={node.output} onChange={e=>update({...node,output:e.target.value as 'text'|'json'})}><option value="text">Text</option><option value="json">Validated JSON</option></select></Field><p className="lp-hint">One completion through OpenClaw, with no tools.</p><InferenceEditor node={node} onChange={inference=>editDefinition({...definition,schemaVersion:inference.structuredGeneration==='native'?3:definition.schemaVersion,nodes:definition.nodes.map(candidate=>candidate.id===node.id?inference:candidate)})} loadCapabilities={loadCapabilities}/></>}
     {node.kind==='action'&&<><Field label="OpenClaw capability"><select value={node.capability} disabled><option value="model-info">Read configured agent model</option></select></Field><p className="lp-hint">Returns the caller’s agent ID, model provider, and configured model. Read only.</p></>}
     {node.kind==='context-lifecycle'&&<><ContextLifecycleEditor value={node.lifecycle} onChange={lifecycle=>update({...node,lifecycle})} loadCapabilities={loadCapabilities}/><p className="lp-hint">Context operations require a version 3 loop. Source identifiers are shown in Run inspection after an operation completes.</p></>}
     {node.kind==='memory'&&<MemoryEditor node={node} definition={definition} onNodeChange={update} onDefinitionChange={editDefinition} drafts={schemaDrafts} onDraftValidityChange={onDataSchemaDraftValidityChange} lockedSchemaKeys={lockedMemorySchemaKeys}/>}
+    {node.kind==='artifact'&&<><Field label="Artifact operation"><select value={node.artifact.operation} onChange={event=>update({...node,artifact:event.target.value==='import'?{operation:'import',bundle:'{{input.bundle}}',retentionDays:30}:{operation:'capture',value:'{{input.file}}',retentionDays:30}})}><option value="capture">Capture or attach file</option><option value="import">Import portable bundle</option></select></Field>{node.artifact.operation==='capture'?<ValueEditor label="File input or typed reference" value={node.artifact.value} literals={literals} onChange={value=>update({...node,artifact:{operation:'capture',value,retentionDays:node.artifact.retentionDays}})}/>:<><ValueEditor label="Portable bundle" value={node.artifact.bundle} literals={literals} onChange={bundle=>update({...node,artifact:{operation:'import',bundle,external:node.artifact.operation==='import'?node.artifact.external:undefined,retentionDays:node.artifact.retentionDays}})}/><ValueEditor label="External dependency bytes (source ID to Base64)" value={node.artifact.external??{literalJson:'{}'}} literals={literals} onChange={external=>update({...node,artifact:{operation:'import',bundle:node.artifact.operation==='import'?node.artifact.bundle:'{{input.bundle}}',external,retentionDays:node.artifact.retentionDays}})}/></>}<Field label="Retention days"><input type="number" min={0} max={365000} value={node.artifact.retentionDays} onChange={event=>update({...node,artifact:{...node.artifact,retentionDays:Number(event.target.value)}})}/></Field><p className="lp-hint">File inputs use the browser file chooser. Captured bytes stay in plugin-owned custody; graph bindings carry typed references only.</p></>}
     {node.kind==='condition'&&('condition'in node?<TypedConditionEditor value={node.condition} onChange={condition=>update({...node,condition})}/>:<><PredicateEditor value={node.predicate} literals={literals} onChange={predicate=>update({...node,predicate})}/>{definition.schemaVersion===3&&(typedConditionFrom(node)?<button onClick={()=>{const typed=typedConditionFrom(node);if(typed)update(typed);}}>Use typed condition</button>:<p className="lp-hint" role="status">{typedRewriteHint(node.predicate.op)}</p>)}</>)}
     {node.kind==='switch'&&<SwitchEditor node={node} fresh={unique} definitionId={definition.id} drafts={caseDrafts} onDraftValidityChange={onCaseDraftValidityChange} onChange={update}/>}
     {node.kind==='evaluate'&&<><ValueEditor label="Value or binding to evaluate" rows={5} value={node.value} literals={literals} onChange={value=>update({...node,value})}/><ControlledEvaluationEditor nodeId={JSON.stringify([definition.id,node.id])} evaluator={node.evaluator} drafts={evaluationDrafts} onChange={evaluator=>update({...node,evaluator})} onDraftValidityChange={onEvaluationDraftValidityChange}/><p className="lp-hint">Runs in a bounded local worker. It does not call a model or external service.</p></>}
@@ -240,7 +244,89 @@ export function Editor({host}:{host:ControlUiHost}){
   const connectionTargets=(definition?.nodes.filter(node=>node.kind!=='input'&&node.id!==connectionSourceNode?.id)??[]);
   const effectiveConnectionTarget=connectionTargets.find(node=>node.id===connectionTarget)?.id??connectionTargets[0]?.id??'';
   const runAction=(action:()=>Promise<RunReceipt>,origin?:HTMLElement|null)=>perform(async()=>{const actionScope=runRefreshGate.current(),releaseFocus=captureRunControlFocus(origin);setBusy(true);try{const result=await action(),restoreFocus=releaseFocus();if(lastSession.current===sessionKey&&runRefreshGate.completeMutation(actionScope)){if(restoreFocus)runSelectRef.current?.focus();selectRun(result.id);await refresh();}}finally{if(releaseFocus()&&lastSession.current===sessionKey&&runRefreshGate.matches(actionScope))runSelectRef.current?.focus();setBusy(false);}});
-  const start=({target,definition:targetDefinition,input}:{target:'published'|'draft';definition:Definition;input:Record<string,Json>},origin?:HTMLElement)=>{if(target==='draft'&&(hasActiveEvaluationDrafts(targetDefinition,evaluationDrafts.current)||hasActiveDataSchemaDrafts(targetDefinition,schemaDrafts.current)||hasActiveCaseDrafts(targetDefinition,caseDrafts.current))){setError('Finish invalid evaluator, enum, or Switch case JSON before testing this draft.');return;}selectRun('');void runAction(()=>target==='draft'?feature.invoke('test',{definition:targetDefinition,input,requestId:crypto.randomUUID()},options):feature.invoke('run',{slug:targetDefinition.slug,input,requestId:crypto.randomUUID()},options),origin);};
+  const start=({target,definition:targetDefinition,input}:{target:'published'|'draft';definition:Definition;input:Record<string,Json>},origin?:HTMLElement):Promise<void>=>{if(target==='draft'&&(hasActiveEvaluationDrafts(targetDefinition,evaluationDrafts.current)||hasActiveDataSchemaDrafts(targetDefinition,schemaDrafts.current)||hasActiveCaseDrafts(targetDefinition,caseDrafts.current))){setError('Finish invalid evaluator, enum, or Switch case JSON before testing this draft.');return Promise.resolve();}selectRun('');return runAction(()=>target==='draft'?feature.invoke('test',{definition:targetDefinition,input,requestId:crypto.randomUUID()},options):feature.invoke('run',{slug:targetDefinition.slug,input,requestId:crypto.randomUUID()},options),origin);};
+  const stageFile=async(file:File):Promise<Json>=>{
+    if(file.size>8*1024*1024)throw new Error('File exceeds the 8 MiB artifact limit.');
+    const bytes=new Uint8Array(await file.arrayBuffer()),parts:string[]=[];
+    for(let offset=0;offset<bytes.length;offset+=32768)parts.push(String.fromCharCode(...bytes.subarray(offset,offset+32768)));
+    const operationId=crypto.randomUUID();
+    return captureWithRecoveryId(operationId,async()=>{
+      const response=await feature.invoke('artifact',{action:'capture',operationId,data:{dataBase64:btoa(parts.join('')),mediaType:file.type||'application/octet-stream',name:file.name.slice(0,255)}},options);
+      return response.result as Json;
+    });
+  };
+  const releaseFile=async(value:Json):Promise<FileRelease>=>{
+    if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Captured file reference is invalid.');
+    const reference=value as Record<string,Json>,id=reference.id,runId=reference.runId;
+    if(typeof id!=='string'||typeof runId!=='string'||!runId.startsWith('capture-'))throw new Error('Only an unused standalone file capture can be released here.');
+    const operationId=runId.slice('capture-'.length);
+    try{
+      const response=await feature.invoke('artifact',{action:'release-unused',artifactId:id,operationId},options);
+      const result=response.result as Record<string,unknown>|null;
+      if(!result||typeof result!=='object'||Array.isArray(result)||result.id!==id||result.operationId!==operationId||typeof result.status!=='string'||!['released','retired'].includes(result.status)||typeof result.releasedAt!=='string')throw new Error('File release acknowledgement is incomplete; inspect custody before replacing it.');
+      return 'released';
+    }catch(error){
+      if(!(error instanceof LoopError)||error.detail.code!=='LOOPS_ARTIFACT_CONFLICT')throw error;
+      const response=await feature.invoke('artifact',{action:'metadata',artifactId:id},options);
+      const result=response.result as Record<string,unknown>|null;
+      if(!result||typeof result!=='object'||Array.isArray(result)||!result.reference||typeof result.reference!=='object'||Array.isArray(result.reference))throw error;
+      const actual=result.reference as Record<string,unknown>;
+      const fields=['kind','id','sha256','mediaType','bytes','ownerScope','runId','nodeId','createdAt','expiresAt'] as const;
+      if(result.operationId!==operationId||result.status!=='published'||result.everLinked!==true||fields.some(field=>actual[field]!==reference[field])||Object.keys(actual).length!==fields.length)throw error;
+      return 'linked-protected';
+    }
+  };
+  const listCapturedFiles=async(cursor:string):Promise<FileCustodyPage>=>{
+    const response=await feature.invoke('artifact',{action:'list',limit:100,...cursor?{cursor}:{}},options);
+    const result=response.result as {items?:unknown;nextCursor?:unknown};
+    if(!result||!Array.isArray(result.items)||result.items.length>100)throw new Error('Captured file inventory acknowledgement is incomplete.');
+    const items:FileCustodyItem[]=[],seen=new Set<string>();
+    for(const item of result.items){
+      if(!item||typeof item!=='object'||Array.isArray(item))throw new Error('Captured file inventory contains an invalid entry.');
+      const row=item as Record<string,unknown>,reference=row.reference;
+      if(!reference||typeof reference!=='object'||Array.isArray(reference))throw new Error('Captured file inventory contains an invalid reference.');
+      const ref=reference as Record<string,unknown>;
+      if(typeof ref.id!=='string'||typeof ref.runId!=='string'||typeof ref.ownerScope!=='string'||typeof row.operationId!=='string'||typeof row.everLinked!=='boolean'||(row.status!=='published'&&row.status!=='released'))throw new Error('Captured file inventory identity is incomplete.');
+      if(seen.has(ref.id))throw new Error('Captured file inventory contains a duplicate reference.');
+      seen.add(ref.id);
+      if(ref.runId===`capture-${row.operationId}`)items.push({reference:reference as Json,status:row.status,everLinked:row.everLinked,operationId:row.operationId});
+    }
+    if(result.nextCursor!==null&&typeof result.nextCursor!=='string')throw new Error('Captured file inventory cursor is invalid.');
+    if(result.nextCursor===cursor)throw new Error('Captured file inventory cursor did not advance.');
+    return {items,nextCursor:result.nextCursor};
+  };
+  const downloadArtifact=async(reference:ArtifactReference)=>{
+    const chunks:Uint8Array[]=[];let offset=0;
+    while(true){
+      const response=await feature.invoke('artifact',{action:'page',artifactId:reference.id,offset,limit:65536},options);
+      const page=response.result as {reference:ArtifactReference;offset:number;dataBase64:string;nextOffset:number|null};
+      if(JSON.stringify(page.reference)!==JSON.stringify(reference)||page.offset!==offset||typeof page.dataBase64!=='string')throw new Error('Artifact page identity changed during download.');
+      const binary=atob(page.dataBase64),bytes=Uint8Array.from(binary,char=>char.charCodeAt(0));
+      if(bytes.length>65536||page.nextOffset!==null&&page.nextOffset!==offset+bytes.length)throw new Error('Artifact page sequence changed during download.');
+      chunks.push(bytes);offset+=bytes.length;
+      if(page.nextOffset===null)break;
+    }
+    if(offset!==reference.bytes)throw new Error('Artifact length changed during download.');
+    const all=new Uint8Array(offset);let position=0;for(const chunk of chunks){all.set(chunk,position);position+=chunk.length;}
+    const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',all))).map(byte=>byte.toString(16).padStart(2,'0')).join('');
+    if(digest!==reference.sha256)throw new Error('Artifact SHA-256 check failed.');
+    const url=URL.createObjectURL(new Blob([all],{type:reference.mediaType})),link=document.createElement('a');
+    link.href=url;link.download=`artifact-${reference.id}`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  const exportArtifact=async(reference:ArtifactReference,mode:'embedded'|'external')=>{
+    const response=await feature.invoke('artifact',{action:'export',selections:[{id:reference.id,mode}]},options);
+    const bundle=response.result as {format?:string;artifacts?:Array<{sourceId?:string;sha256?:string;bytes?:number;mode?:string;dataBase64?:string}>};
+    const item=bundle?.artifacts?.[0];
+    if(bundle?.format!=='loops-artifacts-v1'||bundle.artifacts?.length!==1||item?.sourceId!==reference.id||item.sha256!==reference.sha256||item.bytes!==reference.bytes||item.mode!==mode)throw new Error('Portable artifact export did not match the selected file.');
+    if(mode==='embedded'){
+      if(typeof item.dataBase64!=='string')throw new Error('Portable file export omitted its bytes.');
+      const binary=atob(item.dataBase64),bytes=Uint8Array.from(binary,char=>char.charCodeAt(0));
+      const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(byte=>byte.toString(16).padStart(2,'0')).join('');
+      if(bytes.length!==reference.bytes||digest!==reference.sha256)throw new Error('Portable file export failed its byte or SHA-256 check.');
+    }else if(item.dataBase64!==undefined)throw new Error('Reference manifest unexpectedly contains file bytes.');
+    const url=URL.createObjectURL(new Blob([JSON.stringify(bundle,null,2)],{type:'application/json'})),link=document.createElement('a');
+    link.href=url;link.download=`artifact-${reference.id}-${mode}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
   return <div className="loops-poc">
     <header className="lp-header"><div><div className="lp-kicker">OPENCLAW WORKSPACE</div><h1><span className="lp-brand">↻</span> Loops</h1><p>Build a flow. Inspect every step. Stay in control.</p></div><div className="lp-header-actions"><button onClick={create}>+ Create loop</button><select aria-label="Load an example" value="" onChange={e=>{const d=examples.find(x=>x.id===e.target.value);if(d){const copy=structuredClone(d);delete copy.limits.timeoutMs;newDefinition(copy,true);}}}><option value="" disabled>Load an example…</option>{examples.map(d=><option value={d.id} key={d.id}>{d.name}</option>)}</select><button onClick={()=>importRef.current?.click()}>Import</button><button onClick={exportDefinition} disabled={!definition||hasInvalidEvaluationDraft||hasInvalidDataSchemaDraft||hasInvalidCaseDraft}>Export</button><input ref={importRef} className="lp-hidden" type="file" accept="application/json,.json" onChange={e=>{const file=e.target.files?.[0];if(file)void onImport(file);e.target.value='';}}/></div></header>
     <FailureNotice failure={error} onDismiss={()=>setError('')}/>{notice&&<div className="lp-message" role="status">{notice}</div>}
@@ -265,14 +351,14 @@ export function Editor({host}:{host:ControlUiHost}){
       previewImport:(packageValue,environment)=>feature.invoke('package_preview',{package:packageValue,environment:environment as Record<string,unknown>},options),
       importPackage:async request=>{const result=await feature.invoke('package_import',{package:request.package,environment:request.environment as Record<string,unknown>,digest:request.digest,resolvedDigest:request.resolvedDigest,libraryDigest:request.libraryDigest,enabled:request.enabled},options);await refresh();return result;},
     }}/>}
-    <section className="lp-runs-panel">{definition?<RunLauncher key={JSON.stringify([draftScope,definition.id])} draft={definition} published={published} enabled={enabledRevision!==null} dirty={dirty} invalid={issues.length>0||hasInvalidEvaluationDraft||hasInvalidDataSchemaDraft||hasInvalidCaseDraft} busy={busy} authorized={Boolean(sessionKey)} onRun={start} onError={error=>setError(displayFailure(error))}/>:<div className="lp-run-input"><h2>Run this loop</h2><p>Choose a loop to run or test.</p></div>}
 
+    <section className="lp-runs-panel">{definition?<RunLauncher key={JSON.stringify([draftScope,definition.id])} draft={definition} published={published} enabled={enabledRevision!==null} dirty={dirty} invalid={issues.length>0||hasInvalidEvaluationDraft||hasInvalidDataSchemaDraft||hasInvalidCaseDraft} busy={busy} authorized={Boolean(sessionKey)} onRun={start} onStageFile={stageFile} onReleaseFile={releaseFile} onListFiles={listCapturedFiles} onError={error=>setError(displayFailure(error))}/>:<div className="lp-run-input"><h2>Run this loop</h2><p>Choose a loop to run or test.</p></div>}
       <div className="lp-run-inspection"><div className="lp-section-heading"><h2>Run inspection</h2><div><select ref={runSelectRef} aria-label="Select run" value={activeId} onChange={e=>selectRun(e.target.value)}><option value="">Choose a run…</option>{activeId&&!runs.some(item=>item.id===activeId)&&<option value={activeId}>Selected run · {activeId.slice(0,8)}</option>}{runs.map(r=><option key={r.id} value={r.id}>{r.slug} · r{r.revision} · {r.state} · {r.id.slice(0,8)}</option>)}</select><button onClick={()=>void perform(refresh)}>Refresh</button></div></div>
         <div className="lp-history-pages"><button disabled={historyCursor===0} onClick={()=>setHistoryCursor(Math.max(0,historyCursor-100))}>Newer runs</button><span aria-live="polite">{historyTotal?`${historyCursor+1}–${Math.min(historyCursor+100,historyTotal)} of ${historyTotal}`:'No runs'}</span><button disabled={historyCursor+100>=historyTotal} onClick={()=>setHistoryCursor(historyCursor+100)}>Older runs</button></div>
         <HistoryCleanup key={draftScope} disabled={!sessionKey||busy} invoke={(policy,applyPlanId)=>feature.invoke('retention',{policy,...applyPlanId?{applyPlanId}:{}},options)} onApplied={ids=>{if(ids.includes(activeId))selectRun('');void perform(refresh);}}/>
         <TransportCleanup key={`transport:${draftScope}`} disabled={!sessionKey||busy} invoke={(policy,applyPlanId)=>feature.invoke('maintenance',{policy,...applyPlanId?{applyPlanId}:{}},options)} release={input=>feature.invoke('transport_release',input,options)}/>
         {run?<><div className="lp-run-meta"><span className={`lp-badge ${run.state}`} role="status" aria-live="polite" aria-atomic="true">{runStateAnnouncement(run.state,Boolean(run.cleanupPending))}</span><code>{run.id}</code><span>r{run.definition.revision}</span><span>{run.executions} node executions</span><span>{run.source}</span></div><div className="lp-run-meta lp-muted"><span>{run.owner.agentId} · {run.owner.sessionId.slice(0,8)}</span><span>{new Date(run.createdAt).toLocaleString()}</span><span>Updated {new Date(run.updatedAt).toLocaleTimeString()}</span></div>
-        <RunInspection key={run.id} run={run} onSelectRun={selectRun} onExport={exportRunEvidence} onReadSource={source=>feature.readDocument(source.documentId,source.sha256,source.bytes,options)} onLookupMemoryMutation={(nodeId,mutationId)=>feature.invoke('memory',{runId:run.id,nodeId,operation:'mutation',key:mutationId},options)}/>
+        <RunInspection key={run.id} run={run} onSelectRun={selectRun} onExport={exportRunEvidence} onReadSource={source=>feature.readDocument(source.documentId,source.sha256,source.bytes,options)} onLookupMemoryMutation={(nodeId,mutationId)=>feature.invoke('memory',{runId:run.id,nodeId,operation:'mutation',key:mutationId},options)} onDownloadArtifact={downloadArtifact} onExportArtifact={exportArtifact}/>
         {run.cleanupPending&&<p role="status">Cancellation is recorded. Waiting for the host call to finish cleanup; its execution slot remains occupied.</p>}
         <FailureNotice failure={run.errorDetail??run.error??''} label="Run failure"/>
         {run.uncertainty&&<p className="lp-uncertainty">{run.uncertainty}</p>}

@@ -2,12 +2,13 @@ import {parentPort,workerData} from 'node:worker_threads';
 import {DatabaseSync,backup} from 'node:sqlite';
 import {chmodSync,existsSync} from 'node:fs';
 import {createHash} from 'node:crypto';
+import {artifactSchema,artifactStore,markLegacyMemoryOpaque,markLegacyRunsOpaque,validateArtifactStore} from './artifact-storage-worker.mjs';
 
 // Only this worker opens the plugin database. The host database is never used.
 let database;
 let startupError;
 let schemaVersion=0;
-const currentSchemaVersion=4;
+const currentSchemaVersion=5;
 let writable=false;
 const memoryName=/^[a-z][a-z0-9_-]{0,47}$/,memoryId=/^[a-zA-Z0-9_-]{1,128}$/,memoryDigest=/^[a-f0-9]{64}$/,memoryKey=/^[a-z][a-z0-9_.-]{0,63}$/;
 const exactFields=(value,fields)=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).sort().join(',')===fields.slice().sort().join(',');
@@ -89,6 +90,7 @@ if(existsSync(workerData.file)){
     if(database.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get())throw new Error('Invalid unversioned Loops database schema.');
   }else{
       if(schemaVersion<4&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('memory_records','memory_mutations','memory_receipts') LIMIT 1").get())throw new Error('Unexpected memory tables in an older Loops schema.');
+      if(schemaVersion<5&&database.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('artifact_operations','artifact_items','artifact_links','artifact_memory_links','artifact_memory_opaque','artifact_legacy_origins','artifact_legacy_run_refs','artifact_gc','artifact_gc_receipts','artifact_recovery_receipts','artifact_items_operation','artifact_links_item','artifact_memory_links_item','artifact_legacy_origins_source','artifact_legacy_run_refs_origin') LIMIT 1").get())throw new Error('Unexpected artifact custody tables in an older Loops schema.');
       // Check required columns and JSON syntax without materializing cold history.
       // Schema 1 legitimately lacks the retired-admission table added by schema 2.
       const tables={metadata:'key,value',loops:'id,record',revisions:'loop_id,revision,definition',runs:'id,owner_key,state,created_at,record',admissions:'request_key,fingerprint,run_id',attempts:'run_id,sequence,node_id,state,evidence',outputs:'run_id,node_id,value',events:'sequence,run_id,state,at',...schemaVersion>=2?{retired_admissions:'request_key,record'}:{},...schemaVersion>=4?{memory_records:'scope,loop_id,key,version,deleted,value_bytes,record',memory_mutations:'scope,loop_id,mutation_id,kind,receipt_count,receipt_bytes',memory_receipts:'scope,loop_id,mutation_id,ordinal,record'}:{}};
@@ -103,6 +105,7 @@ if(existsSync(workerData.file)){
         for(const table of Object.keys(tables))if(database.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())throw new Error('Invalid Loops state: saved records have no format version.');
       }
       if(schemaVersion>=4)validateMemoryStore();
+      if(schemaVersion>=5)validateArtifactStore(database);
     }
 }
 }catch(error){startupError=error;}
@@ -113,6 +116,7 @@ if(writable)throw new Error('Loops storage is already initialized.');
 database?.close();
 database=new DatabaseSync(workerData.file);
 writable=true;
+artifacts=artifactStore(database);
 database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
 if(schemaVersion>0&&schemaVersion<currentSchemaVersion){
   const destination=`${workerData.file}.before-schema-${currentSchemaVersion}-${Date.now()}.bak`;
@@ -120,13 +124,14 @@ if(schemaVersion>0&&schemaVersion<currentSchemaVersion){
   const snapshot=new DatabaseSync(destination,{readOnly:true});
   try{if(snapshot.prepare('PRAGMA quick_check').get().quick_check!=='ok'||snapshot.prepare('PRAGMA user_version').get().user_version!==schemaVersion)throw new Error('Pre-migration backup verification failed. The original schema has not been changed.');}finally{snapshot.close();}
 }
-// Schema 4 adds plugin-owned, owner-scoped memory with immutable mutation
-// receipts. Older readers must not silently discard value or tombstone history.
+// Schema 4 adds owner-scoped memory; schema 5 adds artifact reservations,
+// run links and cleanup leases. Older readers must not discard either history.
 try{database.exec(`
   BEGIN IMMEDIATE;
   CREATE TABLE IF NOT EXISTS memory_records(scope TEXT NOT NULL,loop_id TEXT NOT NULL,key TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),deleted INTEGER NOT NULL CHECK(deleted IN (0,1)),value_bytes INTEGER NOT NULL CHECK(value_bytes>=0),record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,loop_id,key));
   CREATE TABLE IF NOT EXISTS memory_mutations(scope TEXT NOT NULL,loop_id TEXT NOT NULL,mutation_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('effect','cleanup')),receipt_count INTEGER NOT NULL CHECK(receipt_count>0),receipt_bytes INTEGER NOT NULL CHECK(receipt_bytes>=0),PRIMARY KEY(scope,loop_id,mutation_id));
   CREATE TABLE IF NOT EXISTS memory_receipts(scope TEXT NOT NULL,loop_id TEXT NOT NULL,mutation_id TEXT NOT NULL,ordinal INTEGER NOT NULL CHECK(ordinal>=0),record TEXT NOT NULL CHECK(json_valid(record)),PRIMARY KEY(scope,loop_id,mutation_id,ordinal),FOREIGN KEY(scope,loop_id,mutation_id) REFERENCES memory_mutations(scope,loop_id,mutation_id) ON DELETE RESTRICT);
+  ${artifactSchema}
   CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS loops(id TEXT PRIMARY KEY, record TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS revisions(loop_id TEXT NOT NULL, revision INTEGER NOT NULL, definition TEXT NOT NULL, PRIMARY KEY(loop_id,revision));
@@ -139,9 +144,16 @@ try{database.exec(`
   CREATE TABLE IF NOT EXISTS attempts(run_id TEXT NOT NULL, sequence INTEGER NOT NULL, node_id TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(run_id,sequence));
   CREATE TABLE IF NOT EXISTS outputs(run_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(run_id,node_id));
   CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
+  `);
+// Legacy schema 4 had no artifact authority. Its preexisting JSON stays
+// byte-identical and is explicitly opaque until a fresh v5 Memory write.
+if(schemaVersion===4)markLegacyMemoryOpaque(database);
+if(schemaVersion>0&&schemaVersion<5)markLegacyRunsOpaque(database,schemaVersion);
+database.exec(`
   PRAGMA user_version=${currentSchemaVersion};
 `);
 validateMemoryStore();
+validateArtifactStore(database);
 const integrity=database.prepare('PRAGMA quick_check').get().quick_check;
 if(integrity!=='ok')throw new Error(`Loops database integrity check failed: ${integrity}`);
 database.exec('COMMIT');
@@ -219,6 +231,7 @@ const memoryMutation=({scope,loopId,mutationId})=>{
 // boundary a value can still be explicitly forgotten without discarding the
 // original receipt or allowing an unbounded cleanup ledger.
 const CLEANUP_RECEIPT_RESERVE_BYTES=2048;
+let artifacts;
 function memoryCommit({writes,mutationId}){
   if(!Array.isArray(writes)||writes.length<1||!memoryId.test(mutationId))throw new Error('Invalid memory batch.');
   const first=writes[0],scope=first?.scope,loopId=first?.loopId,budget=first?.budget;
@@ -264,7 +277,10 @@ function memoryCommit({writes,mutationId}){
       FROM memory_mutations WHERE scope=? AND loop_id=?`).get(scope,loopId);
     if(kind==='effect'&&(metadata.effects+1>budget.maxMutations||metadata.effect_bytes+receiptBytes>budget.maxReceiptBytes)||
       kind==='cleanup'&&(metadata.cleanups+1>metadata.effect_receipts||metadata.cleanup_bytes+receiptBytes>metadata.effect_receipts*CLEANUP_RECEIPT_RESERVE_BYTES))throw memoryQuota();
-    for(const item of prepared)database.prepare('INSERT INTO memory_records(scope,loop_id,key,version,deleted,value_bytes,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(scope,loop_id,key) DO UPDATE SET version=excluded.version,deleted=excluded.deleted,value_bytes=excluded.value_bytes,record=excluded.record').run(scope,loopId,item.write.key,item.record.version,Number(item.record.deleted),item.bytes,JSON.stringify(item.record));
+    for(const item of prepared){
+      database.prepare('INSERT INTO memory_records(scope,loop_id,key,version,deleted,value_bytes,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(scope,loop_id,key) DO UPDATE SET version=excluded.version,deleted=excluded.deleted,value_bytes=excluded.value_bytes,record=excluded.record').run(scope,loopId,item.write.key,item.record.version,Number(item.record.deleted),item.bytes,JSON.stringify(item.record));
+      artifacts.reconcileMemory(item.record);
+    }
     database.prepare('INSERT INTO memory_mutations(scope,loop_id,mutation_id,kind,receipt_count,receipt_bytes) VALUES (?,?,?,?,?,?)').run(scope,loopId,mutationId,kind,prepared.length,receiptBytes);
     for(let ordinal=0;ordinal<prepared.length;ordinal++)database.prepare('INSERT INTO memory_receipts(scope,loop_id,mutation_id,ordinal,record) VALUES (?,?,?,?,?)').run(scope,loopId,mutationId,ordinal,prepared[ordinal].receiptJson);
     database.exec('COMMIT');
@@ -276,6 +292,7 @@ function write(next,mode='full'){
   const runOnly=mode==='run',working=mode==='working';
   database.exec('BEGIN IMMEDIATE');
   try{
+    artifacts.assertNoGc();
     // The database is the committed baseline. Do not retain another copy of all
     // history in this worker or send old outputs back to JS just to compare them.
     if(runOnly&&!database.prepare("SELECT 1 FROM metadata WHERE key='version'").get())throw new Error('Initialize the Loops store before writing an execution checkpoint.');
@@ -299,9 +316,10 @@ function write(next,mode='full'){
       const owner=JSON.stringify([run.owner.agentId,run.owner.sessionKey,run.owner.sessionId]);
       validateRunMemoryWriteGrant(run,id,owner);
       const json=JSON.stringify(run);
-      const previous=database.prepare("SELECT state,record,record=? AS unchanged, COALESCE(json_extract(record,'$.requestFingerprintVersion'),1) AS fingerprintVersion FROM runs WHERE id=?").get(json,id);
-      if(previous?.unchanged)continue;
+      const previous=database.prepare("SELECT state,owner_key,record,record=? AS unchanged, COALESCE(json_extract(record,'$.requestFingerprintVersion'),1) AS fingerprintVersion FROM runs WHERE id=?").get(json,id);
+      if(previous?.unchanged&&previous.owner_key===owner)continue;
       if(previous&&previous.fingerprintVersion!==(run.requestFingerprintVersion??1))throw new Error('Admission fingerprint contract is immutable.');
+      if(previous&&previous.owner_key!==owner)throw new Error('Run owner identity is immutable.');
       if(previous&&memoryFingerprint(JSON.parse(previous.record).memoryWriteGrant??null)!==memoryFingerprint(run.memoryWriteGrant??null))throw new Error('Run memory write grant is immutable after admission.');
       database.prepare('INSERT INTO runs VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET owner_key=excluded.owner_key,state=excluded.state,created_at=excluded.created_at,record=excluded.record').run(id,owner,run.state,run.createdAt,json);
       const admission=database.prepare('SELECT run_id,fingerprint FROM admissions WHERE request_key=?').get(run.requestKey);
@@ -318,6 +336,7 @@ function write(next,mode='full'){
         if(database.prepare('SELECT 1 FROM outputs WHERE run_id=? AND node_id=? AND value=?').get(id,node,output))continue;
         database.prepare('INSERT INTO outputs VALUES (?,?,?) ON CONFLICT(run_id,node_id) DO UPDATE SET value=excluded.value').run(id,node,output);
       }
+      artifacts.reconcileRun(run,{newRun:!previous});
       if(!previous||previous.state!==run.state)database.prepare('INSERT INTO events(run_id,state,at) VALUES (?,?,?)').run(id,run.state,run.updatedAt);
     }
     if(!runOnly){
@@ -339,6 +358,7 @@ function write(next,mode='full'){
       if(current&&current.request_key!==key)throw new Error('History removal admission identity conflict.');
       if(Object.hasOwn(next.runs,id))throw new Error('History removal cannot retain the same working run.');
       for(const table of ['attempts','outputs','events'])database.prepare(`DELETE FROM ${table} WHERE run_id=?`).run(id);
+      artifacts.retireRun(id);
       database.prepare('DELETE FROM runs WHERE id=?').run(id);
     }
     }
@@ -381,6 +401,22 @@ parentPort.on('message',async message=>{
       case 'memory-page':result=memoryPage(message.payload);break;
       case 'memory-mutation':result=memoryMutation(message.payload);break;
       case 'memory-commit':result=memoryCommit(message.payload);break;
+      case 'artifact-operation':result=artifacts.operation(message.payload);break;
+      case 'artifact-reference-status':result=artifacts.referenceStatus(message.payload);break;
+      case 'artifact-operations-page':result=artifacts.operationsPage(message.payload);break;
+      case 'artifact-reserve':result=artifacts.reserve(message.payload);break;
+      case 'artifact-published':result=artifacts.published(message.payload);break;
+      case 'artifact-release-unlinked':result=artifacts.releaseUnlinked(message.payload);break;
+      case 'artifact-recover-publication':result=artifacts.recoverPublication(message.payload);break;
+      case 'artifact-snapshot':result=artifacts.snapshot(message.payload);break;
+      case 'artifact-begin-gc':result=artifacts.beginGc(message.payload);break;
+      case 'artifact-gc-lease':result=artifacts.gcLease(message.payload);break;
+      case 'artifact-has-gc-lease':result=!!database.prepare('SELECT 1 FROM artifact_gc LIMIT 1').get();break;
+      case 'artifact-recovery-inventory':result=artifacts.recoveryInventory(message.payload);break;
+      case 'artifact-recovery-receipt':result=artifacts.recoveryReceipt(message.payload);break;
+      case 'artifact-gc-receipt':result=artifacts.gcReceipt(message.payload);break;
+      case 'artifact-finish-gc':result=artifacts.finishGc(message.payload);break;
+      case 'artifact-recover-gc':result=artifacts.recoverGc(message.payload);break;
       case 'write':write(message.payload);break;
       case 'write-working':write(message.payload,'working');break;
       case 'write-run':write(message.payload,'run');break;

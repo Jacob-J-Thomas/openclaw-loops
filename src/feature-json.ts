@@ -22,11 +22,26 @@ export function fitsFeatureJson(value: unknown): boolean {
 
 // 16K code points also fit the host envelope when every character needs JSON
 // escaping or occupies a surrogate pair. Offsets always count code points.
-export function textPage(text: string, offset = 0, limit = 16000) {
+export function textPage(text: string, offset = 0, limit = 16000, maximum = 16000) {
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1) throw new Error('Page offset and limit must be nonnegative/positive safe integers.');
-  const characters = Array.from(text);
-  const end = Math.min(characters.length, offset + Math.min(limit, 16000));
-  return {text: characters.slice(offset, end).join(''), offset, nextOffset: end < characters.length ? end : null, totalCharacters: characters.length};
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 60000) throw new Error('Page maximum must be a positive bounded safe integer.');
+  const count = Math.min(limit, maximum);
+  // Most large transport snapshots are ASCII JSON/Base64. V8 searches that
+  // path without materializing an array of every character on every page.
+  if (text.search(/[^\p{ASCII}]/u) === -1) {
+    const end = Math.min(text.length, offset + count);
+    return {text: text.slice(offset, end), offset, nextOffset: end < text.length ? end : null, totalCharacters: text.length};
+  }
+  let total = 0, startUnit = text.length, endUnit = text.length;
+  for (let unit = 0; unit < text.length;) {
+    if (total === offset) startUnit = unit;
+    if (total === offset + count) endUnit = unit;
+    const first = text.charCodeAt(unit), second = text.charCodeAt(unit + 1);
+    unit += first >= 0xd800 && first <= 0xdbff && second >= 0xdc00 && second <= 0xdfff ? 2 : 1;
+    total++;
+  }
+  const end = Math.min(total, offset + count);
+  return {text: text.slice(startUnit, endUnit), offset, nextOffset: end < total ? end : null, totalCharacters: total};
 }
 
 // Fit the complete transport envelope while retaining the original document's

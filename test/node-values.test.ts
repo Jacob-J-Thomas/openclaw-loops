@@ -74,10 +74,11 @@ describe('explicit JSON node values',()=>{
     if(node.kind==='condition')node.predicate={left:literal(0),op:'equals',right:literal(0)};
     if(node.kind==='repeat'){node.body[0].prompt=literal('No inputs');node.body[1].predicate={left:'{{repeat.index}}',op:'greater-than',right:literal(5)};}
     if(node.kind==='evaluate'){node.value=literal(0);d.schemaVersion=3;}
+    if(node.kind==='artifact'&&node.artifact.operation==='capture')node.artifact.value=literal(null);
     if(node.kind==='wait')node.message=literal(null);if(node.kind==='review')node.proposal=literal(false);if(node.kind==='return')node.value=literal(0);
     // Lifecycle nodes are deliberately v3-only; the port registry remains
     // exhaustive without pretending a v2 graph can author context behavior.
-    if(node.kind==='context-lifecycle')d.schemaVersion=3;
+    if(node.kind==='context-lifecycle'||node.kind==='artifact')d.schemaVersion=3;
     if(node.kind==='memory'){
       d.schemaVersion=3;
       d.memoryPolicy={version:1,enabled:true,nodes:{node:{readPrefixes:['notes'],writeScopes:[],forgetPrefixes:[]}}};

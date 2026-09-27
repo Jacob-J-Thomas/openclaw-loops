@@ -55,7 +55,7 @@ export function compactToolInput<T>(schema:T):T{
   // A ref costs an object and a string. Keep only repetitions that save a
   // meaningful amount even after adding their definition and local refs.
   const selected=[...candidates.entries()]
-    .filter(([,entry])=>entry.count>1&&entry.size>=12)
+    .filter(([,entry])=>entry.count>1&&entry.size>=4)
     .sort(([,left],[,right])=>right.size-left.size);
   if(selected.length===0)return result;
   const names=new Map(selected.map(([key],index)=>[key,`loops_schema_${index + 1}`]));

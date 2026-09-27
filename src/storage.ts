@@ -13,6 +13,7 @@ import {outputs,runMetadataSchema} from './output-schemas.js';
 import {RetiredAdmissionSchema,type RetiredAdmission} from './retention.js';
 import {LoopError,storageError,requestError} from './errors.js';
 import type {MemoryPage,MemoryReceipt,MemoryRecord,MemoryRepository,MemoryWrite} from './memory-core.js';
+import type {ArtifactOwner,ArtifactReference,ArtifactRecoveryReadback,CleanupPlan} from './artifact-custody.js';
 import {assertContextState} from './context.js';
 
 export function validateState(value:unknown):State{
@@ -168,6 +169,31 @@ export class SqliteStorage implements Storage,IndexedRunStorage,MemoryRepository
       if(code==='LOOPS_MEMORY_QUOTA')throw requestError('Memory quota exceeded.','LOOPS_MEMORY_QUOTA');
       throw error;
     }
+  }
+  artifactOperation(owner:ArtifactOwner,operationId:string){return this.call<{status:'reserved'|'published'|'abandoned';references:Array<{reference:ArtifactReference;status:'reserved'|'published'|'released'|'retired'|'abandoned';everLinked:boolean;releasedAt?:string}>}|undefined>('artifact-operation',{owner,operationId});}
+  artifactReferenceStatus(owner:ArtifactOwner,id:string){return this.call<{operationId:string;status:'reserved'|'published'|'released'|'retired'|'abandoned';everLinked:boolean;releasedAt?:string}|undefined>('artifact-reference-status',{owner,id});}
+  artifactOperationsPage(owner:ArtifactOwner,cursor='',limit=50){return this.call<{items:Array<{operationId:string;status:'reserved'|'published'|'abandoned'}>;nextCursor:string|null}>('artifact-operations-page',{owner,cursor,limit});}
+  artifactReserve(owner:ArtifactOwner,refs:readonly ArtifactReference[],operationId:string){return this.call('artifact-reserve',{owner,refs,operationId});}
+  artifactPublished(owner:ArtifactOwner,refs:readonly ArtifactReference[],operationId:string){return this.call('artifact-published',{owner,refs,operationId});}
+  artifactReleaseUnlinked(owner:ArtifactOwner,id:string,operationId:string,at=new Date().toISOString()){
+    return this.call<{id:string;operationId:string;status:'released'|'retired';releasedAt:string}>('artifact-release-unlinked',{owner,id,operationId,at});
+  }
+  artifactRecoverPublication(owner:ArtifactOwner,operationId:string,readback:ArtifactRecoveryReadback[],recoveryId:string,at=new Date().toISOString()){
+    return this.call<{operationId:string;recoveryId:string;outcome:'published'|'abandoned'}>('artifact-recover-publication',{owner,operationId,readback,recoveryId,at});
+  }
+  artifactProtectedSnapshot(owner:ArtifactOwner){return new Set(this.call<string[]>('artifact-snapshot',{owner}));}
+  artifactBeginCleanup(owner:ArtifactOwner,token:string,plan:CleanupPlan,at=new Date().toISOString()){
+    const snapshot=this.call<{token:string;protectedIds:string[]}>('artifact-begin-gc',{owner,token,plan,at});
+    return new Set(snapshot.protectedIds);
+  }
+  artifactCleanupLease(owner:ArtifactOwner){return this.call<{token:string;startedAt:string;plan:CleanupPlan}|undefined>('artifact-gc-lease',{owner});}
+  artifactHasGcLease(){return this.call<boolean>('artifact-has-gc-lease');}
+  artifactRecoveryInventory(owner:ArtifactOwner,cursor='',limit=50){return this.call<{items:ArtifactReference[];nextCursor:string|null}>('artifact-recovery-inventory',{owner,cursor,limit});}
+  artifactRecoveryReceipt(owner:ArtifactOwner,recoveryId:string){return this.call<{targetType:'publication'|'cleanup';targetId:string;receipt:unknown}|undefined>('artifact-recovery-receipt',{owner,recoveryId});}
+  artifactCleanupReceipt(owner:ArtifactOwner,token:string){return this.call<(CleanupPlan&{removed:number})|undefined>('artifact-gc-receipt',{owner,token});}
+  artifactFinishCleanup(owner:ArtifactOwner,token:string,receipt:CleanupPlan&{removed:number}){return this.call<CleanupPlan&{removed:number}>('artifact-finish-gc',{owner,token,receipt});}
+  artifactRecoverCleanup(owner:ArtifactOwner,token:string,readback:ArtifactRecoveryReadback[],recoveryId:string,at=new Date().toISOString()){
+    return this.call<{token:string;recoveryId:string;outcome:'aborted'|'partial'|'all_absent';retiredIds:string[];remainingIds:string[]}>('artifact-recover-gc',{owner,token,readback,recoveryId,at});
   }
   write(state:State){this.call('write',state);}
   writeWorkingState(state:State){this.call('write-working',state);}
