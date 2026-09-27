@@ -127,6 +127,34 @@ export async function verifyMountedLauncherCustody(){
       checks.push('settled file survives compatible schema edit, replacement obeys release order, and type change retains owner custody without injecting a reference into text');await page.close();
     }
     {
+      const page=await open();await page.evaluate(()=>globalThis.__probe.setSchema('text'));
+      await page.getByRole('textbox',{name:'File text'}).fill('a populated old-type value');
+      await page.evaluate(()=>globalThis.__probe.setSchema('base'));
+      await page.getByLabel('Choose file for File').setInputFiles(file('current-schema.txt'));
+      await page.getByText('Captured and verified: capture-1').waitFor();
+      await page.getByRole('button',{name:'Test current draft'}).click();
+      await page.waitForFunction(()=>globalThis.__probe.calls.some(call=>call.kind==='run'));
+      assert.deepEqual(await page.evaluate(()=>globalThis.__probe.calls.map(call=>call.kind)),['capture','run']);
+      assert.equal(await page.evaluate(()=>globalThis.__probe.calls.find(call=>call.kind==='run').input.file.id),'capture-1');
+      checks.push('populated text-to-artifact transition accepts a current-schema capture without releasing it and admits Run');await page.close();
+    }
+    {
+      const page=await open();await page.getByLabel('Choose file for File').setInputFiles(file('old-artifact.txt'));
+      await page.getByText('Captured and verified: capture-1').waitFor();
+      await page.evaluate(()=>globalThis.__probe.setSchema('text'));
+      await page.getByRole('textbox',{name:'File text'}).fill('typed after old capture');
+      await page.evaluate(()=>globalThis.__probe.setSchema('base'));
+      await page.getByLabel('Choose file for File').setInputFiles(file('new-artifact.txt'));
+      await page.getByText('Captured and verified: capture-2').waitFor();
+      await page.getByRole('button',{name:'Test current draft'}).click();
+      await page.waitForFunction(()=>globalThis.__probe.calls.some(call=>call.kind==='run'));
+      assert.deepEqual(await page.evaluate(()=>globalThis.__probe.calls.map(call=>call.kind)),['capture','capture','run']);
+      assert.equal(await page.evaluate(()=>globalThis.__probe.calls.find(call=>call.kind==='run').input.file.id),'capture-2');
+      await page.getByRole('button',{name:'Refresh captured files'}).click();
+      await page.getByText(/capture-1 \(capture-op-1, owner owner-a\).*published/).waitFor();
+      checks.push('artifact-to-populated-text-to-artifact retains old custody while admitting a new capture and Run');await page.close();
+    }
+    {
       const page=await open();await page.evaluate(()=>globalThis.__probe.deferStage());
       await page.getByLabel('Choose file for File').setInputFiles(file('old-schema.txt'));
       await page.waitForFunction(()=>globalThis.__probe.pendingStages.length===1);
@@ -137,6 +165,23 @@ export async function verifyMountedLauncherCustody(){
       await page.getByLabel('Choose file for File').setInputFiles(file('new-schema.txt'));
       await page.getByText('Captured and verified: capture-2').waitFor();
       checks.push('genuinely stale in-flight schema capture is released, while a later current-schema capture selects normally');await page.close();
+    }
+    {
+      const page=await open();await page.getByLabel('Choose file for File').setInputFiles(file('old-artifact.txt'));
+      await page.getByText('Captured and verified: capture-1').waitFor();
+      await page.evaluate(()=>globalThis.__probe.deferRelease());
+      await page.getByRole('button',{name:'Release unused file'}).click();
+      await page.waitForFunction(()=>globalThis.__probe.pendingReleases.length===1);
+      await page.evaluate(()=>globalThis.__probe.setSchema('text'));
+      await page.getByRole('textbox',{name:'File text'}).fill('typed while release is pending');
+      await page.evaluate(()=>globalThis.__probe.resolveRelease());
+      await page.waitForFunction(()=>globalThis.__probe.pendingReleases.length===0);
+      assert.equal(await page.getByRole('textbox',{name:'File text'}).inputValue(),'typed while release is pending');
+      await page.evaluate(()=>globalThis.__probe.setSchema('base'));
+      await page.getByLabel('Choose file for File').setInputFiles(file('after-release.txt'));
+      await page.getByText('Captured and verified: capture-2').waitFor();
+      assert.deepEqual(await page.evaluate(()=>globalThis.__probe.calls.map(call=>call.kind)),['capture','release','capture']);
+      checks.push('type change during release preserves the newly typed value, then accepts a current-schema capture');await page.close();
     }
     {
       const page=await open();await page.getByLabel('Choose file for File').setInputFiles(file('settled.txt'));

@@ -124,7 +124,9 @@ export function RunLauncher({draft,published,enabled,dirty,invalid,busy,authoriz
   const chooseFile=(name:string,file:File)=>{
     const operation=begin(name);if(!operation)return;
     const epoch=generation.current,previous:Json|undefined=compatibleValues(inputsRef.current[target],definition)[name];
-    let expected:Json|undefined=previous;
+    // Compare the exact retained slot, even when its old type is hidden by the
+    // current schema. Only a compatible artifact is eligible for prior release.
+    let expected:Json|undefined=inputsRef.current[target]?.key===key?inputsRef.current[target]?.values[name]:undefined;
     void replaceCapturedFile({previous,release:releaseTracked,stage:()=>onStageFile(file),isCurrent:()=>isCurrent(operation,epoch),
       onPreviousReleased:()=>{const cleared=setValue(target,key,name,undefined,{value:previous});if(cleared)expected=undefined;return cleared;},
       onCaptured:reference=>setValue(target,key,name,reference,{value:expected}),
