@@ -4,12 +4,43 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync,fork,spawn,spawnSync} from 'node:child_process';
-import {appendLifecycleClientMilestone,createLifecycleOperations,finalizeLifecycleStartupDiagnostic,lifecycleChildProcessState,lifecycleFailureReceipt,lifecycleGatewayLogTimestamp,sanitizeLifecycleClientStartup,writeLifecycleStartupDiagnostic} from '../scripts/lifecycle-failure-receipt.mjs';
+import {PassThrough,Writable} from 'node:stream';
+import {appendLifecycleClientMilestone,beginLifecycleChildCleanup,createLifecycleOperations,finalizeLifecycleStartupDiagnostic,lifecycleChildProcessState,lifecycleFailureReceipt,lifecycleGatewayLogTimestamp,observeLifecycleLogFlush,sanitizeLifecycleClientStartup,waitForLifecycleLogFlush,writeLifecycleStartupDiagnostic} from '../scripts/lifecycle-failure-receipt.mjs';
 
 const directories=[];
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
 
 describe('sanitized lifecycle failure receipt',()=>{
+  it('attributes cleanup only to the most recently spawned client and Gateway',()=>{
+    const evidence={clientStopAttempted:true,clientStopCompleted:true,clientProcessState:'exited',gatewayStopAttempted:true,gatewayStopCompleted:true,gatewayProcessState:'exited'};
+    beginLifecycleChildCleanup(evidence,'client');
+    expect(evidence).toMatchObject({clientStopAttempted:false,clientStopCompleted:false,clientProcessState:undefined,gatewayStopCompleted:true,gatewayProcessState:'exited'});
+    beginLifecycleChildCleanup(evidence,'gateway');
+    expect(evidence).toEqual({clientStopAttempted:false,clientStopCompleted:false,clientProcessState:undefined,gatewayStopAttempted:false,gatewayStopCompleted:false,gatewayProcessState:undefined});
+  });
+
+  it('waits for a delayed Gateway log write and bounds a stalled or failed stream',async()=>{
+    const source=new PassThrough();
+    let finishWrite;
+    const received=[];
+    const target=new Writable({write(chunk,_encoding,done){received.push(chunk.toString());finishWrite=done;}});
+    const completion=observeLifecycleLogFlush(source,target);
+    source.end('terminal connection warning\n');
+    let settled=false;
+    const waiting=waitForLifecycleLogFlush(completion,1000).then(result=>{settled=true;return result;});
+    await new Promise(resolveDone=>setTimeout(resolveDone,0));
+    expect(settled).toBe(false);
+    expect(received).toEqual(['terminal connection warning\n']);
+    finishWrite();
+    await expect(waiting).resolves.toBe(true);
+    expect(settled).toBe(true);
+    await expect(waitForLifecycleLogFlush(new Promise(()=>{}),10)).resolves.toBe(false);
+    const failedSource=new PassThrough(),failedTarget=new Writable({write(_chunk,_encoding,done){done();}});
+    const failed=observeLifecycleLogFlush(failedSource,failedTarget);
+    failedSource.destroy(Error('private log failure'));
+    await expect(waitForLifecycleLogFlush(failed,1000)).resolves.toBe(false);
+  });
+
   it('normalizes only valid timestamps from the released host JSON log shape or a bounded text prefix',()=>{
     const secret='token=private-startup-secret /private/operator/openclaw.json';
     const structured={time:'2026-09-26T19:59:31.791-05:00',_meta:{date:'2026-09-27T00:59:31.791Z',path:secret},message:secret};

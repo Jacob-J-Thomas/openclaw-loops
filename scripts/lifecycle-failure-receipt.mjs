@@ -61,6 +61,30 @@ export function lifecycleChildProcessState(child){
     return 'alive';
   }catch{return 'unavailable';}
 }
+export function beginLifecycleChildCleanup(evidence,kind){
+  const prefix=kind==='gateway'?'gateway':'client';
+  evidence[`${prefix}StopAttempted`]=false;
+  evidence[`${prefix}StopCompleted`]=false;
+  evidence[`${prefix}ProcessState`]=undefined;
+}
+export function observeLifecycleLogFlush(source,target){
+  const completion=new Promise(resolve=>{
+    let settled=false;
+    const settle=value=>{if(settled)return;settled=true;source.off('error',failed);target.off('finish',finished);target.off('error',failed);target.off('close',closed);resolve(value);};
+    const finished=()=>settle(true),failed=()=>settle(false),closed=()=>settle(false);
+    source.once('error',failed);
+    target.once('finish',finished);
+    target.once('error',failed);
+    target.once('close',closed);
+  });
+  source.pipe(target);
+  return completion;
+}
+export async function waitForLifecycleLogFlush(completion,timeoutMs=5000){
+  let timer;
+  try{return await Promise.race([completion,new Promise(resolve=>{timer=setTimeout(()=>resolve(false),timeoutMs);})]);}
+  finally{clearTimeout(timer);}
+}
 const provenance=value=>({
   previous:{source:clean(own(own(value,'previous'),'source'),/^[0-9a-f]{40}$/),sha256:clean(own(own(value,'previous'),'sha256'),/^[0-9a-f]{64}$/),hostVersion:clean(own(own(value,'previous'),'hostVersion'),/^[0-9A-Za-z.+-]{1,64}$/)},
   current:{sha256:clean(own(own(value,'current'),'sha256'),/^[0-9a-f]{64}$/),hostVersion:clean(own(own(value,'current'),'hostVersion'),/^[0-9A-Za-z.+-]{1,64}$/)},
