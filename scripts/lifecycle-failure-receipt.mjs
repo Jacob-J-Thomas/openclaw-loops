@@ -6,7 +6,6 @@ const phases=new Set(['archive-validation','install-previous','backup-previous',
 const operations=new Set(['archive-validation','installer','installed-file-validation','gateway-readiness','sdk-client-startup','public-session-actions','client-shutdown','gateway-shutdown','profile-backup','profile-restore','state-validation','host-state-migration','rollback-staging','receipt-write','unknown']);
 const outcomes=new Set(['completed','failed','timed-out','not-started']);
 const processStates=new Set(['alive','exited','signaled','unavailable']);
-const timingPhases=new Set(['socket-open','challenge','connect-plan-ready','request-sent','hello','failed','fallback']);
 const clientMilestonePhases=['worker-entry','sdk-imported','client-started'];
 const descriptions={
   'storage-full':'Lifecycle storage capacity was exhausted.',
@@ -25,7 +24,6 @@ const own=(value,key)=>{
 const clean=(value,pattern)=>typeof value==='string'&&pattern.test(value)?value:'unknown';
 const elapsed=value=>Number.isSafeInteger(value)&&value>=0&&value<=86_400_000?value:0;
 const ordinal=value=>Number.isSafeInteger(value)&&value>=0&&value<=128?value:0;
-const timing=value=>({phase:timingPhases.has(own(value,'phase'))?own(value,'phase'):'unknown',generation:ordinal(own(value,'generation')),durationMs:elapsed(own(value,'durationMs')),phaseDurationMs:elapsed(own(value,'phaseDurationMs')),hasChallenge:own(value,'hasChallenge')===true,usedFallback:own(value,'usedFallback')===true});
 const validElapsed=value=>Number.isSafeInteger(value)&&value>=0&&value<=86_400_000;
 const clientMilestone=(value,expected,previous)=>{
   const phase=own(value,'phase'),sequence=own(value,'sequence');
@@ -63,6 +61,30 @@ export function lifecycleChildProcessState(child){
     return 'alive';
   }catch{return 'unavailable';}
 }
+export function beginLifecycleChildCleanup(evidence,kind){
+  const prefix=kind==='gateway'?'gateway':'client';
+  evidence[`${prefix}StopAttempted`]=false;
+  evidence[`${prefix}StopCompleted`]=false;
+  evidence[`${prefix}ProcessState`]=undefined;
+}
+export function observeLifecycleLogFlush(source,target){
+  const completion=new Promise(resolve=>{
+    let settled=false;
+    const settle=value=>{if(settled)return;settled=true;source.off('error',failed);target.off('finish',finished);target.off('error',failed);target.off('close',closed);resolve(value);};
+    const finished=()=>settle(true),failed=()=>settle(false),closed=()=>settle(false);
+    source.once('error',failed);
+    target.once('finish',finished);
+    target.once('error',failed);
+    target.once('close',closed);
+  });
+  source.pipe(target);
+  return completion;
+}
+export async function waitForLifecycleLogFlush(completion,timeoutMs=5000){
+  let timer;
+  try{return await Promise.race([completion,new Promise(resolve=>{timer=setTimeout(()=>resolve(false),timeoutMs);})]);}
+  finally{clearTimeout(timer);}
+}
 const provenance=value=>({
   previous:{source:clean(own(own(value,'previous'),'source'),/^[0-9a-f]{40}$/),sha256:clean(own(own(value,'previous'),'sha256'),/^[0-9a-f]{64}$/),hostVersion:clean(own(own(value,'previous'),'hostVersion'),/^[0-9A-Za-z.+-]{1,64}$/)},
   current:{sha256:clean(own(own(value,'current'),'sha256'),/^[0-9a-f]{64}$/),hostVersion:clean(own(own(value,'current'),'hostVersion'),/^[0-9A-Za-z.+-]{1,64}$/)},
@@ -98,9 +120,7 @@ function completed(value){
 
 export function sanitizeLifecycleClientStartup(value){
   if(!value||typeof value!=='object')return;
-  const entries=own(value,'timings'),timings=[];
-  if(Array.isArray(entries))for(const entry of entries.slice(0,8))timings.push(timing(entry));
-  return {restartOrdinal:ordinal(own(value,'restartOrdinal')),budgetMs:elapsed(own(value,'budgetMs')),listening:own(value,'listening')===true,gatewayProcessState:processState(own(value,'gatewayProcessState')),clientProcessState:processState(own(value,'clientProcessState')),elapsedMs:elapsed(own(value,'elapsedMs')),milestones:clientMilestones(own(value,'milestones')),timings};
+  return {restartOrdinal:ordinal(own(value,'restartOrdinal')),budgetMs:elapsed(own(value,'budgetMs')),listening:own(value,'listening')===true,gatewayProcessState:processState(own(value,'gatewayProcessState')),clientProcessState:processState(own(value,'clientProcessState')),elapsedMs:elapsed(own(value,'elapsedMs')),milestones:clientMilestones(own(value,'milestones'))};
 }
 
 // The verifier uses this recorder around the actual awaited operations. A
@@ -132,4 +152,64 @@ export function writeLifecycleFailureReceipt(directory,phase,error,artifacts,rea
   const receipt=lifecycleFailureReceipt(phase,error,artifacts,readiness,diagnostics);
   writeFileSync(resolve(directory,'receipt.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600});
   return receipt;
+}
+
+const logTimestamp=/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)$/;
+const normalizedLogTimestamp=value=>{
+  if(typeof value!=='string')return null;
+  const match=logTimestamp.exec(value);if(!match)return null;
+  const zone=match[3],hours=zone==='Z'?0:Number(zone.slice(1,3)),minutes=zone==='Z'?0:Number(zone.slice(4,6));
+  if(hours>14||minutes>59||(hours===14&&minutes!==0))return null;
+  const offset=zone==='Z'?0:(zone[0]==='+'?1:-1)*(hours*60+minutes);
+  const parsed=Date.parse(value);if(!Number.isFinite(parsed))return null;
+  const local=new Date(parsed+offset*60_000).toISOString();
+  if(local.slice(0,19)!==match[1]||Number(local.slice(20,23))!==Number((match[2]??'').padEnd(3,'0').slice(0,3)))return null;
+  return new Date(parsed).toISOString();
+};
+
+export function lifecycleGatewayLogTimestamp(line){
+  if(typeof line!=='string'||line.length>32_768)return null;
+  const prefix=/^\[?(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z)/.exec(line)?.[1];
+  if(prefix)return normalizedLogTimestamp(prefix);
+  try{
+    const entry=JSON.parse(line);
+    if(!entry||typeof entry!=='object'||Array.isArray(entry))return null;
+    return normalizedLogTimestamp(own(own(entry,'_meta'),'date'))??normalizedLogTimestamp(own(entry,'time'));
+  }catch{return null;}
+}
+
+// Optional startup evidence is an allowlist: neither worker errors nor Gateway
+// log text may enter the uploaded lifecycle artifact.
+export function writeLifecycleStartupDiagnostic(directory,value){
+  const take=(items,limit,convert)=>Array.isArray(items)?items.slice(-limit).map(convert):[];
+  const bounded=(value,max)=>Number.isSafeInteger(value)&&value>=0&&value<=max?value:0;
+  const sample=value=>({
+    workerElapsedMs:elapsed(own(value,'workerElapsedMs')),
+    parentReceivedElapsedMs:elapsed(own(value,'parentReceivedElapsedMs')),
+    rssBytes:bounded(own(value,'rssBytes'),1_000_000_000_000),
+    cpuUserMicros:bounded(own(value,'cpuUserMicros'),60_000_000),
+    cpuSystemMicros:bounded(own(value,'cpuSystemMicros'),60_000_000),
+    loopDelayMaxMs:elapsed(own(value,'loopDelayMaxMs')),
+    loopUtilization:Number.isFinite(own(value,'loopUtilization'))&&own(value,'loopUtilization')>=0&&own(value,'loopUtilization')<=1?own(value,'loopUtilization'):0,
+  });
+  const observation=value=>{
+    const phase=own(value,'phase'),detail=own(value,'detail');
+    const allowed=new Set(['client-construction-start','client-constructed','start-returned','hello-ok','connect-error','socket-close']);
+    return {phase:allowed.has(phase)?phase:'unknown',workerElapsedMs:elapsed(own(value,'workerElapsedMs')),parentReceivedElapsedMs:elapsed(own(value,'parentReceivedElapsedMs')),...(phase==='connect-error'&&['authorization','timeout','transport','other'].includes(detail)?{detail}:{}),...(phase==='socket-close'&&/^(?:[1-4]\d{3}|unknown)$/.test(detail)?{detail}:{})};
+  };
+  const resource=value=>({state:processState(own(value,'state')),...(own(value,'sample')==='unavailable'?{sample:'unavailable'}:{}),...(Number.isFinite(own(value,'cpuPercent'))&&own(value,'cpuPercent')>=0&&own(value,'cpuPercent')<=10000?{cpuPercent:own(value,'cpuPercent')}:{}),...(Number.isSafeInteger(own(value,'rssKiB'))&&own(value,'rssKiB')>=0&&own(value,'rssKiB')<=1_000_000_000?{rssKiB:own(value,'rssKiB')}:{}),processStatus:clean(own(value,'processStatus'),/^[A-Z+<NsL]{1,8}$/)});
+  const startup=value=>({phase:phases.has(own(value,'phase'))?own(value,'phase'):'unknown',restartOrdinal:ordinal(own(value,'restartOrdinal')),outcome:['ready','timeout','error'].includes(own(value,'outcome'))?own(value,'outcome'):'unknown',observations:take(own(value,'observations'),16,observation),resourceSamples:take(own(value,'resourceSamples'),16,sample),...(own(value,'startup')?{startup:sanitizeLifecycleClientStartup(own(value,'startup'))}:{}),...(own(value,'gatewayResource')?{gatewayResource:resource(own(value,'gatewayResource'))}:{})});
+  const log=value=>({status:['read','unavailable','refused-symlink','not-regular'].includes(own(value,'status'))?own(value,'status'):'unavailable',bytes:elapsed(own(value,'bytes')),tailTruncated:own(value,'tailTruncated')===true,lines:take(own(value,'lines'),24,line=>({category:['migration','plugin-service','gateway-ready','connection','warning-or-error','other'].includes(own(line,'category'))?own(line,'category'):'other',length:elapsed(own(line,'length')),timestamp:typeof own(line,'timestamp')==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/.test(own(line,'timestamp'))?own(line,'timestamp'):null}))});
+  const logs=own(value,'gatewayLogs');
+  const host=value=>({version:clean(own(value,'version'),/^[0-9A-Za-z.+-]{1,64}$/),packageSha256:clean(own(value,'packageSha256'),/^[0-9a-f]{64}$/),cliSha256:clean(own(value,'cliSha256'),/^[0-9a-f]{64}$/),clientSha256:clean(own(value,'clientSha256'),/^[0-9a-f]{64}$/)});
+  const cleanup=own(value,'cleanup');
+  const receipt={version:1,sourceHead:clean(own(value,'sourceHead'),/^[0-9a-f]{40}$/),previousSource:clean(own(value,'previousSource'),/^[0-9a-f]{40}$/),previousArchiveSha256:clean(own(value,'previousArchiveSha256'),/^[0-9a-f]{64}$/),currentArchiveSha256:clean(own(value,'currentArchiveSha256'),/^[0-9a-f]{64}$/),nodeVersion:clean(own(value,'nodeVersion'),/^v\d+\.\d+\.\d+$/),hosts:{previous:host(own(own(value,'hosts'),'previous')),current:host(own(own(value,'hosts'),'current'))},gatewayStartups:take(own(value,'gatewayStartups'),4,item=>({phase:phases.has(own(item,'phase'))?own(item,'phase'):'unknown',restartOrdinal:ordinal(own(item,'restartOrdinal')),budgetMs:elapsed(own(item,'budgetMs')),listeningElapsedMs:elapsed(own(item,'listeningElapsedMs'))})),clientStartups:take(own(value,'clientStartups'),4,startup),gatewayLogs:{host:['previous','current'].includes(own(logs,'host'))?own(logs,'host'):'unknown',stderr:log(own(logs,'stderr')),configured:log(own(logs,'configured'))},cleanup:{clientProcessState:processState(own(cleanup,'clientProcessState')),gatewayProcessState:processState(own(cleanup,'gatewayProcessState')),clientStopAttempted:own(cleanup,'clientStopAttempted')===true,gatewayStopAttempted:own(cleanup,'gatewayStopAttempted')===true,clientStopCompleted:own(cleanup,'clientStopCompleted')===true,gatewayStopCompleted:own(cleanup,'gatewayStopCompleted')===true}};
+  mkdirSync(directory,{recursive:true});
+  writeFileSync(resolve(directory,'startup-diagnostic.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600});
+  return receipt;
+}
+
+export function finalizeLifecycleStartupDiagnostic(writer,primaryError){
+  try{return {primaryError,diagnosticWritten:writer()===true};}
+  catch{return {primaryError,diagnosticWritten:false};}
 }

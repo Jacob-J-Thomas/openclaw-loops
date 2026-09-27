@@ -81,5 +81,6 @@ jobs:
             *.tgz
             evidence/ci/*.json
             evidence/ci/package-lifecycle/receipt.json
+            evidence/ci/package-lifecycle/startup-diagnostic.json
             evidence/ci/sustained-workload/receipt.json
           retention-days: 14

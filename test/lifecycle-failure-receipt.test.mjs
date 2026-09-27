@@ -1,15 +1,80 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync,fork,spawn,spawnSync} from 'node:child_process';
-import {appendLifecycleClientMilestone,createLifecycleOperations,lifecycleChildProcessState,lifecycleFailureReceipt,sanitizeLifecycleClientStartup} from '../scripts/lifecycle-failure-receipt.mjs';
+import {PassThrough,Writable} from 'node:stream';
+import {appendLifecycleClientMilestone,beginLifecycleChildCleanup,createLifecycleOperations,finalizeLifecycleStartupDiagnostic,lifecycleChildProcessState,lifecycleFailureReceipt,lifecycleGatewayLogTimestamp,observeLifecycleLogFlush,sanitizeLifecycleClientStartup,waitForLifecycleLogFlush,writeLifecycleStartupDiagnostic} from '../scripts/lifecycle-failure-receipt.mjs';
 
 const directories=[];
 afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
 
 describe('sanitized lifecycle failure receipt',()=>{
+  it('attributes cleanup only to the most recently spawned client and Gateway',()=>{
+    const evidence={clientStopAttempted:true,clientStopCompleted:true,clientProcessState:'exited',gatewayStopAttempted:true,gatewayStopCompleted:true,gatewayProcessState:'exited'};
+    beginLifecycleChildCleanup(evidence,'client');
+    expect(evidence).toMatchObject({clientStopAttempted:false,clientStopCompleted:false,clientProcessState:undefined,gatewayStopCompleted:true,gatewayProcessState:'exited'});
+    beginLifecycleChildCleanup(evidence,'gateway');
+    expect(evidence).toEqual({clientStopAttempted:false,clientStopCompleted:false,clientProcessState:undefined,gatewayStopAttempted:false,gatewayStopCompleted:false,gatewayProcessState:undefined});
+  });
+
+  it('waits for a delayed Gateway log write and bounds a stalled or failed stream',async()=>{
+    const source=new PassThrough();
+    let finishWrite;
+    const received=[];
+    const target=new Writable({write(chunk,_encoding,done){received.push(chunk.toString());finishWrite=done;}});
+    const completion=observeLifecycleLogFlush(source,target);
+    source.end('terminal connection warning\n');
+    let settled=false;
+    const waiting=waitForLifecycleLogFlush(completion,1000).then(result=>{settled=true;return result;});
+    await new Promise(resolveDone=>setTimeout(resolveDone,0));
+    expect(settled).toBe(false);
+    expect(received).toEqual(['terminal connection warning\n']);
+    finishWrite();
+    await expect(waiting).resolves.toBe(true);
+    expect(settled).toBe(true);
+    await expect(waitForLifecycleLogFlush(new Promise(()=>{}),10)).resolves.toBe(false);
+    const failedSource=new PassThrough(),failedTarget=new Writable({write(_chunk,_encoding,done){done();}});
+    const failed=observeLifecycleLogFlush(failedSource,failedTarget);
+    failedSource.destroy(Error('private log failure'));
+    await expect(waitForLifecycleLogFlush(failed,1000)).resolves.toBe(false);
+  });
+
+  it('normalizes only valid timestamps from the released host JSON log shape or a bounded text prefix',()=>{
+    const secret='token=private-startup-secret /private/operator/openclaw.json';
+    const structured={time:'2026-09-26T19:59:31.791-05:00',_meta:{date:'2026-09-27T00:59:31.791Z',path:secret},message:secret};
+    expect(lifecycleGatewayLogTimestamp(JSON.stringify(structured))).toBe('2026-09-27T00:59:31.791Z');
+    expect(lifecycleGatewayLogTimestamp(JSON.stringify({time:structured.time,_meta:{date:'2026-02-30T00:00:00Z'},message:secret}))).toBe('2026-09-27T00:59:31.791Z');
+    expect(lifecycleGatewayLogTimestamp('[2026-09-27T00:59:31.791Z] connection event '+secret)).toBe('2026-09-27T00:59:31.791Z');
+    for(const invalid of [JSON.stringify({time:'2026-02-30T00:00:00Z',message:secret}),JSON.stringify({time:'2026-09-27T00:59:31+14:30',message:secret}),JSON.stringify({message:`2026-09-27T00:59:31Z ${secret}`}),secret])expect(lifecycleGatewayLogTimestamp(invalid)).toBeNull();
+  });
+
+  it('finalizes an initialized startup diagnostic after failure without replacing the primary error or leaking raw observations',()=>{
+    const directory=mkdtempSync(join(tmpdir(),'loops-lifecycle-startup-'));directories.push(directory);
+    const secret='token=private-startup-secret /private/operator/openclaw.json';
+    const primary=new Error(`Gateway client startup timed out. ${secret}`);
+    const value={version:1,sourceHead:'a'.repeat(40),previousSource:'c'.repeat(40),previousArchiveSha256:'d'.repeat(64),currentArchiveSha256:'b'.repeat(64),nodeVersion:'v24.16.0',hosts:{previous:{version:'2026.9.5',packageSha256:'1'.repeat(64),cliSha256:'2'.repeat(64),clientSha256:'3'.repeat(64),raw:secret},current:{version:'2026.9.6',packageSha256:'4'.repeat(64),cliSha256:'5'.repeat(64),clientSha256:'6'.repeat(64),raw:secret}},gatewayStartups:[{phase:'upgrade',restartOrdinal:1,budgetMs:60_000,listeningElapsedMs:24_030,raw:secret}],clientStartups:Array.from({length:6},(_,index)=>({phase:'upgrade',restartOrdinal:index,outcome:'timeout',observations:Array.from({length:20},(_,sample)=>({phase:'connect-error',detail:'transport',workerElapsedMs:sample,parentReceivedElapsedMs:sample+2,raw:secret})),resourceSamples:Array.from({length:20},(_,sample)=>({workerElapsedMs:sample,parentReceivedElapsedMs:sample+2,rssBytes:320_000_000,loopDelayMaxMs:sample,loopUtilization:0.2,raw:secret})),gatewayResource:{state:'alive',rssKiB:100_000,raw:secret},startup:{restartOrdinal:index,budgetMs:15_000,elapsedMs:15_025,endpoint:secret},raw:secret})),gatewayLogs:{host:'previous',stderr:{status:'read',bytes:100,lines:[{category:'connection',length:50,timestamp:'2026-09-26T23:00:00Z',text:secret}]},configured:{status:'unavailable',raw:secret}},cleanup:{clientStopAttempted:true,clientStopCompleted:true,clientProcessState:'exited',gatewayStopAttempted:true,gatewayStopCompleted:true,gatewayProcessState:'signaled',raw:secret},raw:secret};
+    // The writer closes over data initialized in the verifier's try block; the
+    // finalizer is called later from finally, after that lexical block ends.
+    const writer=()=>{writeLifecycleStartupDiagnostic(directory,value);return true;};
+    const result=finalizeLifecycleStartupDiagnostic(writer,primary);
+    expect(result).toEqual({primaryError:primary,diagnosticWritten:true});
+    const file=join(directory,'startup-diagnostic.json'),text=readFileSync(file,'utf8'),receipt=JSON.parse(text);
+    expect(statSync(file).mode&0o777).toBe(0o600);
+    expect(receipt).toMatchObject({version:1,sourceHead:value.sourceHead,previousSource:value.previousSource,previousArchiveSha256:value.previousArchiveSha256,currentArchiveSha256:value.currentArchiveSha256,nodeVersion:value.nodeVersion,hosts:{previous:{version:'2026.9.5',clientSha256:'3'.repeat(64)},current:{version:'2026.9.6',clientSha256:'6'.repeat(64)}},gatewayLogs:{host:'previous',stderr:{status:'read',lines:[{category:'connection',length:50}]}},cleanup:{clientStopCompleted:true,gatewayStopCompleted:true,clientProcessState:'exited',gatewayProcessState:'signaled'}});
+    expect(receipt.clientStartups).toHaveLength(4);
+    expect(receipt.clientStartups[0].outcome).toBe('timeout');
+    expect(receipt.clientStartups[0].observations).toHaveLength(16);
+    expect(receipt.clientStartups[0].resourceSamples).toHaveLength(16);
+    expect(receipt.clientStartups[0].resourceSamples[0].rssBytes).toBe(320_000_000);
+    expect(text).not.toContain(secret);
+    expect(text).not.toMatch(/"(?:raw|text|endpoint|message|stack|token)"/);
+    expect(finalizeLifecycleStartupDiagnostic(writer)).toEqual({primaryError:undefined,diagnosticWritten:true});
+    const failed=finalizeLifecycleStartupDiagnostic(()=>{throw Error(secret);},primary);
+    expect(failed).toEqual({primaryError:primary,diagnosticWritten:false});
+    expect(readFileSync(file,'utf8')).toBe(text);
+  });
   it('identifies a host-state migration failure without exposing Doctor output',()=>{
     const privateOutput='private profile and credentials';
     const recorder=createLifecycleOperations(()=>({phase:'upgrade',restartOrdinal:0}));
@@ -118,16 +183,15 @@ describe('sanitized lifecycle failure receipt',()=>{
     expect(JSON.stringify(receipt)).not.toContain(secret);
   });
 
-  it('retains only bounded public client-startup timing and process evidence',()=>{
+  it('retains bounded client-startup process evidence without unsupported socket timing',()=>{
     const secret='token=private-client-token ws://private.gateway/profile';
     const timings=Array.from({length:9},(_,index)=>({phase:index===0?'socket-open':'challenge',generation:index,durationMs:index,phaseDurationMs:index,hasChallenge:index>0,usedFallback:false,plan:secret}));
     const receipt=lifecycleFailureReceipt('upgrade',new Error('Gateway client startup timed out.'),undefined,undefined,{clientStartup:{restartOrdinal:1,budgetMs:15_000,listening:true,gatewayProcessState:'alive',clientProcessState:'alive',elapsedMs:15_000,timings,endpoint:secret}});
     expect(receipt).toMatchObject({category:'timeout',clientStartup:{restartOrdinal:1,budgetMs:15_000,listening:true,gatewayProcessState:'alive',clientProcessState:'alive',elapsedMs:15_000}});
-    expect(receipt.clientStartup.timings.slice(0,2)).toMatchObject([{phase:'socket-open',generation:0},{phase:'challenge',generation:1,hasChallenge:true}]);
-    expect(receipt.clientStartup.timings).toHaveLength(8);
+    expect(receipt.clientStartup).not.toHaveProperty('timings');
     expect(JSON.stringify(receipt)).not.toContain(secret);
     const hostile={get timings(){throw Error(secret);},get gatewayProcessState(){throw Error(secret);}};
-    expect(sanitizeLifecycleClientStartup(hostile)).toMatchObject({gatewayProcessState:'unavailable',clientProcessState:'unavailable',timings:[]});
+    expect(sanitizeLifecycleClientStartup(hostile)).toMatchObject({gatewayProcessState:'unavailable',clientProcessState:'unavailable'});
   });
 
   it('accepts only ordered startup milestones and keeps worker execution separate from IPC receipt time',()=>{
@@ -149,20 +213,40 @@ describe('sanitized lifecycle failure receipt',()=>{
     expect(appendLifecycleClientMilestone([],{get type(){throw Error(secret);}},1)).toEqual([]);
   });
 
-  it('forwards an allowlisted public client timing without a timeout override',async()=>{
+  it('observes successful startup through supported public client callbacks without a timeout override',async()=>{
     const root=mkdtempSync(join(tmpdir(),'loops-client-worker-'));directories.push(root);
     const packageRoot=join(root,'node_modules','openclaw');mkdirSync(packageRoot,{recursive:true});
     writeFileSync(join(root,'package.json'),JSON.stringify({name:'worker-fixture',private:true,type:'module'}));
     writeFileSync(join(packageRoot,'package.json'),JSON.stringify({name:'openclaw',private:true,type:'module',exports:{'./plugin-sdk/gateway-runtime':'./gateway-runtime.mjs'}}));
-    writeFileSync(join(packageRoot,'gateway-runtime.mjs'),"export class GatewayClient { constructor(options){ this.options=options; } start(){ this.options.onTiming({phase:'challenge',generation:2,durationMs:7,phaseDurationMs:3,hasChallenge:true,usedFallback:false,plan:'token=private'}); this.options.onHelloOk(); } async stopAndWait(){} }");
+    writeFileSync(join(packageRoot,'gateway-runtime.mjs'),"export class GatewayClient { constructor(options){ if ('onTiming' in options) throw Error('unsupported timing hook'); this.options=options; } start(){ this.options.onHelloOk(); } async stopAndWait(){} }");
     const {LOOPS_GATEWAY_STARTUP_BUDGET_MS:_timeoutOverride,...env}=process.env;
     const worker=fork(new URL('./helpers/gateway-client-worker.mjs',import.meta.url),[],{cwd:root,env:{...env,LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:root,LOOPS_GATEWAY_URL:'ws://127.0.0.1:21961',LOOPS_GATEWAY_TOKEN:'private-token'},silent:true});
     const messages=[];
     await new Promise((resolveDone,reject)=>{const timer=setTimeout(()=>reject(Error('Worker did not stop.')),5_000);worker.on('message',message=>{messages.push(message);if(message?.type==='ready')worker.send({type:'stop'});});worker.once('error',reject);worker.once('exit',code=>{clearTimeout(timer);if(code===0)resolveDone();else reject(Error(`Worker exited ${code}.`));});});
-    expect(messages).toEqual(expect.arrayContaining([{type:'timing',timing:{phase:'challenge',generation:2,durationMs:7,phaseDurationMs:3,hasChallenge:true,usedFallback:false}},{type:'ready'},{type:'stopped'}]));
+    expect(messages).toEqual(expect.arrayContaining([{type:'ready'},{type:'stopped'}]));
+    expect(messages.filter(message=>message?.type==='startup-observation').map(message=>message.phase)).toEqual(['client-construction-start','client-constructed','hello-ok','start-returned']);
+    expect(messages.some(message=>message?.type==='timing')).toBe(false);
     expect(messages.filter(message=>message?.type==='startup-milestone').map(message=>[message.phase,message.sequence])).toEqual([['worker-entry',0],['sdk-imported',1],['client-started',2]]);
     expect(messages.findIndex(message=>message?.phase==='client-started')).toBeLessThan(messages.findIndex(message=>message?.type==='ready'));
     expect(JSON.stringify(messages)).not.toContain('private');
+  });
+
+  it('classifies a public client startup failure without publishing its error text or inferring socket state',async()=>{
+    const root=mkdtempSync(join(tmpdir(),'loops-client-failure-'));directories.push(root);
+    const packageRoot=join(root,'node_modules','openclaw');mkdirSync(packageRoot,{recursive:true});
+    writeFileSync(join(root,'package.json'),JSON.stringify({name:'worker-failure-fixture',private:true,type:'module'}));
+    writeFileSync(join(packageRoot,'package.json'),JSON.stringify({name:'openclaw',private:true,type:'module',exports:{'./plugin-sdk/gateway-runtime':'./gateway-runtime.mjs'}}));
+    writeFileSync(join(packageRoot,'gateway-runtime.mjs'),"export class GatewayClient { constructor(options){ if ('onTiming' in options) throw Error('unsupported timing hook'); this.options=options; } start(){ this.options.onClose(1006,'private profile'); this.options.onConnectError(Error('ECONNRESET token=private-startup-secret')); } async stopAndWait(){} }");
+    const worker=fork(new URL('./helpers/gateway-client-worker.mjs',import.meta.url),[],{cwd:root,env:{PATH:process.env.PATH??'/usr/bin:/bin',LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:root,LOOPS_GATEWAY_URL:'ws://127.0.0.1:21961',LOOPS_GATEWAY_TOKEN:'private-token'},silent:true});
+    const messages=[];
+    await new Promise((resolveDone,reject)=>{const timer=setTimeout(()=>reject(Error('Worker did not fail.')),5_000);worker.on('message',message=>messages.push(message));worker.once('error',reject);worker.once('exit',code=>{clearTimeout(timer);if(code===1)resolveDone();else reject(Error(`Worker exited ${code}.`));});});
+    const observations=messages.filter(message=>message?.type==='startup-observation');
+    expect(observations.map(message=>message.phase)).toEqual(['client-construction-start','client-constructed','socket-close','connect-error','start-returned']);
+    expect(observations.find(message=>message.phase==='socket-close')?.detail).toBe('1006');
+    expect(observations.find(message=>message.phase==='connect-error')?.detail).toBe('transport');
+    expect(JSON.stringify(observations)).not.toContain('private');
+    expect(messages.some(message=>message?.type==='ready')).toBe(false);
+    expect(messages.some(message=>message?.type==='timing')).toBe(false);
   });
 
   it('distinguishes bounded pre-entry, SDK-import, and post-import stalls using only owned fake workers',async()=>{

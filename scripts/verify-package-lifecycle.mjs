@@ -1,19 +1,23 @@
 import assert from 'node:assert/strict';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {cpSync,createWriteStream,existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,realpathSync,readdirSync,renameSync,rmSync,writeFileSync} from 'node:fs';
+import {closeSync,constants as fsConstants,cpSync,createWriteStream,existsSync,fstatSync,lstatSync,mkdirSync,openSync,readFileSync,readSync,readlinkSync,realpathSync,readdirSync,renameSync,rmSync,writeFileSync} from 'node:fs';
 import {execFileSync,spawn,spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {createConnection} from 'node:net';
 import {performance} from 'node:perf_hooks';
 import {resolve as pathResolve} from 'node:path';
 import {setTimeout as pause} from 'node:timers/promises';
-import {appendLifecycleClientMilestone,createLifecycleOperations,lifecycleChildProcessState,sanitizeLifecycleClientStartup,writeLifecycleFailureReceipt} from './lifecycle-failure-receipt.mjs';
+import {appendLifecycleClientMilestone,beginLifecycleChildCleanup,createLifecycleOperations,finalizeLifecycleStartupDiagnostic,lifecycleChildProcessState,lifecycleGatewayLogTimestamp,observeLifecycleLogFlush,sanitizeLifecycleClientStartup,waitForLifecycleLogFlush,writeLifecycleFailureReceipt,writeLifecycleStartupDiagnostic} from './lifecycle-failure-receipt.mjs';
 import {GATEWAY_STARTUP_BUDGET_MS,observeGatewayReadiness} from './gateway-readiness-evidence.mjs';
 
 const evidence=pathResolve(process.env.LOOPS_EVIDENCE_DIR??'evidence','package-lifecycle');
 let previous,current,previousSource,previousSha,currentSha,raw,profile,client,clientStartup;
 let hosts,completed=false,phase='archive-validation',readiness,restartOrdinal=-1,gatewayStartedAt=0;
+let activeGatewayName;
 let lifecycleFailure,primaryDiagnostic;
+let childState,clientChild;
+const cleanupEvidence={clientStopAttempted:false,gatewayStopAttempted:false,clientStopCompleted:false,gatewayStopCompleted:false};
+let writeStartupDiagnostic=()=>false;
 const operations=createLifecycleOperations(()=>({phase,restartOrdinal}));
 const {begin:beginOperation,complete:completeOperation,abandon:abandonOperation,record:operationRecord,run:observeOperation}=operations;
 beginOperation('archive-validation');
@@ -109,12 +113,73 @@ const verifyInstalled=(selected,archive,otherArchive)=>{
   completeOperation();
 };
 const protectedConfig=()=>{const value=JSON.parse(readFileSync(pathResolve(profile,'openclaw.json'))),plugin=value.plugins??{};return JSON.stringify({gateway:value.gateway,agents:value.agents,models:value.models,tools:value.tools,auth:value.auth,logging:value.logging,bindings:value.bindings,channels:value.channels,skills:value.skills,env:value.env,pluginEntry:plugin.entries?.['loops-poc']});};
-const childState={child:null},startupTimings=[],clientStartups=[];
-const start=selected=>{restartOrdinal++;gatewayStartedAt=Date.now();const child=spawn(process.execPath,[selected.cli,'gateway','run','--port',String(port),'--compact'],{cwd:selected.root,env,stdio:['ignore','ignore','pipe']});child.stderr.pipe(createWriteStream(pathResolve(raw,`${selected.name}-gateway.log`),{flags:'a',mode:0o600}));childState.child=child;return child;};
-stop=async()=>{const child=childState.child;if(!child)return false;if(child.exitCode!==null||child.signalCode!==null){childState.child=null;return false;}const wait=signal=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(`Gateway did not exit after ${signal}.`)),5000);child.once('exit',()=>{clearTimeout(timer);resolve();});child.kill(signal);});try{await wait('SIGTERM');}catch{await wait('SIGKILL');}childState.child=null;return true;};
+childState={child:null,logFlush:null,logReady:false};
+const startupTimings=[],clientStartups=[],startupDiagnostics=[];
+const boundedInteger=(value,max)=>Number.isSafeInteger(value)&&value>=0&&value<=max?value:0;
+const processSample=child=>{
+  if(!Number.isSafeInteger(child?.pid)||child.pid<1)return {state:lifecycleChildProcessState(child)};
+  try{
+    const result=spawnSync('ps',['-p',String(child.pid),'-o','%cpu=','-o','rss=','-o','stat='],{encoding:'utf8',timeout:1000,env:{PATH:'/usr/bin:/bin'}});
+    const fields=String(result.stdout??'').trim().split(/\s+/),cpu=Number(fields[0]),rss=Number(fields[1]);
+    return {state:lifecycleChildProcessState(child),...(result.status===0&&Number.isFinite(cpu)&&cpu>=0&&cpu<=10000&&Number.isSafeInteger(rss)&&rss>=0&&rss<=1_000_000_000?{cpuPercent:cpu,rssKiB:rss,processStatus:/^[A-Z+<NsL]{1,8}$/.test(fields[2]??'')?fields[2]:'unknown'}:{sample:'unavailable'})};
+  }catch{return {state:lifecycleChildProcessState(child),sample:'unavailable'};}
+};
+const gatewayLogTail=file=>{
+  let fd;
+  try{
+    if(lstatSync(file).isSymbolicLink())return {status:'refused-symlink'};
+    fd=openSync(file,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW);
+    const stat=fstatSync(fd);if(!stat.isFile())return {status:'not-regular'};
+    const length=Math.min(stat.size,32_768),buffer=Buffer.alloc(length);
+    if(length)readSync(fd,buffer,0,length,stat.size-length);
+    const tail=buffer.toString('utf8').split(/\r?\n/).filter(Boolean).slice(-24);
+    const category=line=>/migration|doctor|upgrade/i.test(line)?'migration':/loops-poc|plugin service|service.*start|service.*ready/i.test(line)?'plugin-service':/listening|gateway.*ready/i.test(line)?'gateway-ready':/websocket|connect|client/i.test(line)?'connection':/error|fail|warn/i.test(line)?'warning-or-error':'other';
+    return {status:'read',bytes:boundedInteger(stat.size,1_000_000_000),tailTruncated:stat.size>length,lines:tail.map(line=>({category:category(line),length:Math.min(line.length,16_384),timestamp:lifecycleGatewayLogTimestamp(line)}))};
+  }catch{return {status:'unavailable'};}finally{if(fd!==undefined)try{closeSync(fd);}catch{/* Optional diagnostics cannot change the lifecycle outcome. */}}
+};
+const safeHostIdentity=value=>{try{return value?hostIdentity(value):undefined;}catch{return undefined;}};
+const startupDiagnosticReceipt=()=>({version:1,sourceHead:source.head,previousSource,previousArchiveSha256:previousSha,currentArchiveSha256:currentSha,nodeVersion:process.version,hosts:{previous:safeHostIdentity(hosts?.previous),current:safeHostIdentity(hosts?.current)},gatewayStartups:startupTimings.slice(-4),clientStartups:startupDiagnostics.slice(-4),gatewayLogs:{host:activeGatewayName,stderr:raw&&activeGatewayName&&childState.logReady?gatewayLogTail(pathResolve(raw,`${activeGatewayName}-gateway.log`)):{status:'unavailable'},configured:profile?gatewayLogTail(pathResolve(profile,'gateway.log')):{status:'unavailable'}},cleanup:{...cleanupEvidence,clientProcessState:lifecycleChildProcessState(clientChild),gatewayProcessState:cleanupEvidence.gatewayProcessState??lifecycleChildProcessState(childState.child)}});
+writeStartupDiagnostic=()=>{writeLifecycleStartupDiagnostic(evidence,startupDiagnosticReceipt());return true;};
+const start=selected=>{beginLifecycleChildCleanup(cleanupEvidence,'gateway');restartOrdinal++;gatewayStartedAt=Date.now();activeGatewayName=selected.name;childState.logReady=false;const child=spawn(process.execPath,[selected.cli,'gateway','run','--port',String(port),'--compact'],{cwd:selected.root,env,stdio:['ignore','ignore','pipe']});childState.logFlush=observeLifecycleLogFlush(child.stderr,createWriteStream(pathResolve(raw,`${selected.name}-gateway.log`),{flags:'a',mode:0o600}));childState.child=child;return child;};
+stop=async()=>{const child=childState.child;if(!child)return false;cleanupEvidence.gatewayStopAttempted=true;let stopped=false;if(child.exitCode!==null||child.signalCode!==null){cleanupEvidence.gatewayStopCompleted=true;}else{const wait=signal=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(`Gateway did not exit after ${signal}.`)),5000);child.once('exit',()=>{clearTimeout(timer);resolve();});child.kill(signal);});try{await wait('SIGTERM');}catch{await wait('SIGKILL');}cleanupEvidence.gatewayStopCompleted=true;stopped=true;}cleanupEvidence.gatewayProcessState=lifecycleChildProcessState(child);childState.logReady=await waitForLifecycleLogFlush(childState.logFlush);childState.child=null;return stopped;};
 const probe=async(timeoutMs=1000)=>await new Promise((resolve,reject)=>{const socket=createConnection({host:'127.0.0.1',port});let settled=false;const finish=(callback,value)=>{if(settled)return;settled=true;socket.destroy();callback(value);};socket.setTimeout(timeoutMs,()=>finish(reject,Error('Gateway readiness probe timed out.')));socket.once('connect',()=>finish(resolve));socket.once('error',error=>finish(reject,error));});
 const waitForListening=async()=>{const deadline=Date.now()+GATEWAY_STARTUP_BUDGET_MS;let lastError;while(Date.now()<deadline){const child=childState.child;if(!child||child.exitCode!==null||child.signalCode!==null)throw Error('Gateway exited before listening.');try{await probe(Math.max(1,Math.min(1000,deadline-Date.now())));if(Date.now()>deadline)break;startupTimings.push({phase,restartOrdinal,budgetMs:GATEWAY_STARTUP_BUDGET_MS,listeningElapsedMs:Date.now()-gatewayStartedAt});return;}catch(error){lastError=error;await pause(Math.min(100,Math.max(0,deadline-Date.now())));}}readiness=await observeGatewayReadiness({child:childState.child,probe:async timeoutMs=>{try{await probe(timeoutMs);return true;}catch{return false;}},startedAt:gatewayStartedAt,restartOrdinal,remainingMs:()=>45000,pause});throw Error(`Gateway did not listen: ${String(lastError?.message??lastError)}`);};
-const connect=async selected=>await new Promise((resolve,reject)=>{const clientStartedAt=Date.now(),parentMonoStartedAt=performance.now(),startupBudgetMs=15_000,child=spawn(process.execPath,[worker],{cwd:selected.root,env:{...env,LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:selected.root,LOOPS_GATEWAY_URL:`ws://127.0.0.1:${port}`,LOOPS_GATEWAY_TOKEN:token},stdio:['ignore','ignore','pipe','ipc']});clientStartup={restartOrdinal,budgetMs:startupBudgetMs,listening:true,gatewayProcessState:lifecycleChildProcessState(childState.child),clientProcessState:lifecycleChildProcessState(child),elapsedMs:0,milestones:[],timings:[]};child.stderr.pipe(createWriteStream(pathResolve(raw,`${selected.name}-client.log`),{flags:'a',mode:0o600}));let settled=false,next=0;const pending=new Map(),snapshot=()=>{clientStartup={...clientStartup,gatewayProcessState:lifecycleChildProcessState(childState.child),clientProcessState:lifecycleChildProcessState(child),elapsedMs:Date.now()-clientStartedAt};};const clear=()=>{clearTimeout(timer);for(const {reject,timer} of pending.values()){clearTimeout(timer);reject(Error('Client worker exited.'));}pending.clear();};const fail=error=>{if(settled)return;settled=true;snapshot();clear();child.kill('SIGTERM');reject(error);};const timer=setTimeout(()=>fail(Error('Gateway client startup timed out.')),startupBudgetMs);const request=(method,params,timeoutMs=60000)=>new Promise((resolve,reject)=>{const id=++next,requestTimer=setTimeout(()=>{pending.delete(id);reject(Error(`Gateway request timed out: ${method}`));},timeoutMs);pending.set(id,{resolve,reject,timer:requestTimer});child.send({type:'request',id,method,params,timeoutMs});});const stopAndWait=()=>new Promise((resolve,reject)=>{if(child.exitCode!==null||child.signalCode!==null){resolve();return;}const timeout=setTimeout(()=>{child.kill('SIGKILL');reject(Error('Gateway client worker did not exit.'));},5000);child.once('exit',()=>{clearTimeout(timeout);resolve();});child.send({type:'stop'});});child.on('message',message=>{if(message?.type==='startup-milestone'&&!settled){clientStartup.milestones=appendLifecycleClientMilestone(clientStartup.milestones,message,Math.max(0,Math.floor(performance.now()-parentMonoStartedAt)));}else if(message?.type==='timing'&&Array.isArray(clientStartup?.timings)&&clientStartup.timings.length<8){clientStartup.timings.push(message.timing);}else if(message?.type==='ready'&&!settled){settled=true;snapshot();clientStartups.push(sanitizeLifecycleClientStartup(clientStartup));clearTimeout(timer);resolve({request,stopAndWait});}else if(message?.type==='error')fail(Error(message.message));else if(message?.type==='result'){const entry=pending.get(message.id);pending.delete(message.id);if(entry){clearTimeout(entry.timer);if(message.error)entry.reject(Error(message.error));else entry.resolve(message.result);}}});child.once('error',fail);child.once('exit',()=>{if(!settled)fail(Error('Gateway client worker exited before ready.'));else clear();});});
+const connect=async selected=>await new Promise((resolve,reject)=>{
+  const clientStartedAt=Date.now(),parentMonoStartedAt=performance.now(),startupBudgetMs=15_000;
+  beginLifecycleChildCleanup(cleanupEvidence,'client');
+  const child=spawn(process.execPath,[worker],{cwd:selected.root,env:{...env,LOOPS_GATEWAY_CLIENT_PROJECT_ROOT:selected.root,LOOPS_GATEWAY_URL:`ws://127.0.0.1:${port}`,LOOPS_GATEWAY_TOKEN:token},stdio:['ignore','ignore','pipe','ipc']});
+  clientChild=child;
+  clientStartup={restartOrdinal,budgetMs:startupBudgetMs,listening:true,gatewayProcessState:lifecycleChildProcessState(childState.child),clientProcessState:lifecycleChildProcessState(child),elapsedMs:0,milestones:[]};
+  const diagnostic={phase,restartOrdinal,observations:[],resourceSamples:[],outcome:'pending'};
+  child.stderr.pipe(createWriteStream(pathResolve(raw,`${selected.name}-client.log`),{flags:'a',mode:0o600}));
+  let settled=false,next=0;
+  const pending=new Map();
+  const parentElapsed=()=>Math.max(0,Math.floor(performance.now()-parentMonoStartedAt));
+  const snapshot=()=>{clientStartup={...clientStartup,gatewayProcessState:lifecycleChildProcessState(childState.child),clientProcessState:lifecycleChildProcessState(child),elapsedMs:Date.now()-clientStartedAt};};
+  const record=outcome=>{try{diagnostic.outcome=outcome;diagnostic.startup=sanitizeLifecycleClientStartup(clientStartup);if(outcome!=='ready')diagnostic.gatewayResource=processSample(childState.child);startupDiagnostics.push(diagnostic);}catch{/* Optional diagnostics cannot change the lifecycle outcome. */}};
+  const clear=()=>{clearTimeout(timer);for(const {reject,timer} of pending.values()){clearTimeout(timer);reject(Error('Client worker exited.'));}pending.clear();};
+  const fail=error=>{if(settled)return;settled=true;snapshot();clear();cleanupEvidence.clientStopAttempted=child.kill('SIGTERM');record(/timed out|timeout/i.test(String(error?.message??''))?'timeout':'error');reject(error);};
+  const timer=setTimeout(()=>fail(Error('Gateway client startup timed out.')),startupBudgetMs);
+  const request=(method,params,timeoutMs=60000)=>new Promise((resolve,reject)=>{const id=++next,requestTimer=setTimeout(()=>{pending.delete(id);reject(Error(`Gateway request timed out: ${method}`));},timeoutMs);pending.set(id,{resolve,reject,timer:requestTimer});child.send({type:'request',id,method,params,timeoutMs});});
+  const stopAndWait=()=>new Promise((resolve,reject)=>{cleanupEvidence.clientStopAttempted=true;if(child.exitCode!==null||child.signalCode!==null){cleanupEvidence.clientStopCompleted=true;resolve();return;}const timeout=setTimeout(()=>{child.kill('SIGKILL');reject(Error('Gateway client worker did not exit.'));},5000);child.once('exit',()=>{clearTimeout(timeout);cleanupEvidence.clientStopCompleted=true;resolve();});child.send({type:'stop'});});
+  child.on('message',message=>{
+    if(message?.type==='startup-milestone'&&!settled){clientStartup.milestones=appendLifecycleClientMilestone(clientStartup.milestones,message,parentElapsed());}
+    else if(message?.type==='startup-observation'&&!settled&&diagnostic.observations.length<16){
+      const phases=new Set(['client-construction-start','client-constructed','start-returned','hello-ok','connect-error','socket-close']);
+      const detail=String(message.detail??'');
+      if(phases.has(message.phase)&&Number.isSafeInteger(message.workerElapsedMs)&&message.workerElapsedMs>=0&&message.workerElapsedMs<=60_000)diagnostic.observations.push({phase:message.phase,workerElapsedMs:message.workerElapsedMs,parentReceivedElapsedMs:parentElapsed(),...(message.phase==='connect-error'&&['authorization','timeout','transport','other'].includes(detail)?{detail}:{}),...(message.phase==='socket-close'&&/^(?:[1-4]\d{3}|unknown)$/.test(detail)?{detail}:{})});
+    }
+    else if(message?.type==='startup-resource'&&!settled&&diagnostic.resourceSamples.length<16){
+      const integer=(value,max)=>Number.isSafeInteger(value)&&value>=0&&value<=max;
+      if(integer(message.workerElapsedMs,60_000)&&integer(message.rssBytes,1_000_000_000_000)&&integer(message.cpuUserMicros,60_000_000)&&integer(message.cpuSystemMicros,60_000_000)&&integer(message.loopDelayMaxMs,60_000)&&typeof message.loopUtilization==='number'&&Number.isFinite(message.loopUtilization)&&message.loopUtilization>=0&&message.loopUtilization<=1)diagnostic.resourceSamples.push({workerElapsedMs:message.workerElapsedMs,parentReceivedElapsedMs:parentElapsed(),rssBytes:message.rssBytes,cpuUserMicros:message.cpuUserMicros,cpuSystemMicros:message.cpuSystemMicros,loopDelayMaxMs:message.loopDelayMaxMs,loopUtilization:message.loopUtilization});
+    }
+    else if(message?.type==='ready'&&!settled){settled=true;snapshot();clientStartups.push(sanitizeLifecycleClientStartup(clientStartup));record('ready');clearTimeout(timer);resolve({request,stopAndWait});}
+    else if(message?.type==='error')fail(Error(message.message));
+    else if(message?.type==='result'){const entry=pending.get(message.id);pending.delete(message.id);if(entry){clearTimeout(entry.timer);if(message.error)entry.reject(Error(message.error));else entry.resolve(message.result);}}
+  });
+  child.once('error',fail);
+  child.once('exit',()=>{if(cleanupEvidence.clientStopAttempted)cleanupEvidence.clientStopCompleted=true;if(!settled)fail(Error('Gateway client worker exited before ready.'));else clear();});
+});
 const action=async(client,session,actionId,payload={})=>{return observeOperation('public-session-actions',async()=>{const response=await client.request('plugins.sessionAction',{pluginId:'loops-poc',actionId,agentId:'main',sessionKey:session.key,payload});assert.equal(response.ok,true,JSON.stringify(response));return response.result;});};
 const definition={slug:`package-lifecycle-${randomUUID().slice(0,8)}`,name:'Package lifecycle verification',description:'Disposable public API lifecycle fixture.',inputSchema:[{name:'value',label:'Value',type:'number',required:true}],capabilities:[],nodes:[{id:'input',kind:'input',label:'Input'},{id:'return',kind:'return',label:'Return',value:'{{input.value}}'}],edges:[{id:'next',source:'input',target:'return',port:'next'}],layout:{input:{x:0,y:0},return:{x:260,y:0}},limits:{maxExecutions:3,maxOutputBytes:4096}};
 const pluginState=pathResolve(profile,'state','loops-poc');
@@ -201,17 +266,19 @@ const pluginState=pathResolve(profile,'state','loops-poc');
 
   beginOperation('receipt-write');
   write('receipt.json',{source,previous:{source:previousSource,sha256:previousSha,fileCount:boundaries.previous.count,expectedHostVersion:expectedHostVersions.previous??null,host:identities.previous,cliVersion:runCli(hosts.previous,'--version').trim()},current:{sha256:currentSha,fileCount:boundaries.current.count,expectedHostVersion:expectedHostVersions.current??null,host:identities.current,cliVersion:runCli(hosts.current,'--version').trim()},rollbackArchiveSha256:previousSha,ordinaryInstallerRollback:true,rollbackInstallerReplacedCurrentBytes:true,node:process.version,profileConfigSha256:hash(pathResolve(profile,'openclaw.json')),profileInventoryEntries:Object.keys(backupInventory).length,loopId:created.record.definition.id,runId:run.id,fixtureOnly:true,noModelCalls:true,upgradePreserved:true,hostStateMigrationCompleted:true,hostDoctorConfigChanges,hostDoctorDisabledSkillsCount,uninstallRetainedState:true,reinstallPreservedHostDisable:true,explicitPublicHostEnable:true,cleanReinstallPreserved:true,matchedStoppedRestore:true,matchedStoppedFullProfileRestore:true,matchingPublicCliAndClient:true,gatewayStartups:startupTimings,clientStartups,operationOutcomes:operations.completed(),installations});
+  if(!finalizeLifecycleStartupDiagnostic(writeStartupDiagnostic).diagnosticWritten)console.error('Sanitized startup diagnostic could not be retained.');
   completeOperation();completed=true;
 }catch(error){
   lifecycleFailure=error;
   primaryDiagnostic=operations.snapshot();
 }finally{
   let cleanupError,cleanupDiagnostic;
-  try{if(client){beginOperation('client-shutdown');await client.stopAndWait();completeOperation();}}catch(error){cleanupError??=error;cleanupDiagnostic??=operationRecord('failed');}
-  try{beginOperation('gateway-shutdown');const stopped=await stop();if(stopped)completeOperation();else abandonOperation();}catch(error){cleanupError??=error;cleanupDiagnostic??=operationRecord('failed');}
+  try{if(client){cleanupEvidence.clientStopAttempted=true;beginOperation('client-shutdown');await client.stopAndWait();cleanupEvidence.clientStopCompleted=true;completeOperation();}}catch(error){cleanupError??=error;cleanupDiagnostic??=operationRecord('failed');}
+  try{const gatewayChild=childState?.child;beginOperation('gateway-shutdown');const stopped=await stop();if(gatewayChild)cleanupEvidence.gatewayProcessState=lifecycleChildProcessState(gatewayChild);if(stopped)completeOperation();else abandonOperation();}catch(error){cleanupError??=error;cleanupDiagnostic??=operationRecord('failed');}
   const primaryError=lifecycleFailure??cleanupError;
   if(primaryError){
     writeLifecycleFailureReceipt(evidence,phase,primaryError,{previous:{source:previousSource,sha256:previousSha,hostVersion:hosts?.previous?.version},current:{sha256:currentSha,hostVersion:hosts?.current?.version}},readiness,{...(primaryDiagnostic??{...cleanupDiagnostic,completedOperations:operations.completed()}),clientStartup,cleanupError:lifecycleFailure?cleanupError:undefined,cleanup:cleanupDiagnostic});
+    if(!finalizeLifecycleStartupDiagnostic(writeStartupDiagnostic,primaryError).diagnosticWritten)console.error('Sanitized startup diagnostic could not be retained.');
     let privateDiagnosticRetained=false;
     if(raw)try{mkdirSync(raw,{recursive:true,mode:0o700});writeFileSync(pathResolve(raw,'failure.txt'),String(primaryError?.stack??primaryError),{mode:0o600});privateDiagnosticRetained=true;}catch{/* The sanitized receipt remains the authoritative failure artifact. */}
     console.error(`Package lifecycle verification failed during ${phase}; private diagnostic evidence ${privateDiagnosticRetained?'was retained':'could not be retained'}.`);
